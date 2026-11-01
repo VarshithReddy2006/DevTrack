@@ -2,6 +2,7 @@
 import { Types } from 'mongoose';
 import { DsaProblem, DsaTopicProgress, DsaSubmission, DsaContest, DailyActivity, PlatformStats } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
+import { isReservedPlatformTopic } from './dsa.constants.js';
 import type {
   ApiDsaListResponse,
   ApiDsaProblem,
@@ -401,6 +402,11 @@ export async function bulkUpdateStatus(
   problemIds: string[],
   status: ApiDsaProblem['status']
 ): Promise<number> {
+  const userObjId = new Types.ObjectId(userId);
+  const objectIds = problemIds.map((id) => new Types.ObjectId(id));
+  const categories = await DsaProblem.distinct('category', {
+    _id: { $in: objectIds }, userId: userObjId,
+  });
   const update: Record<string, unknown> = { status };
 
   if (status === 'solved') {
@@ -409,13 +415,65 @@ export async function bulkUpdateStatus(
 
   const result = await DsaProblem.updateMany(
     {
-      _id: { $in: problemIds.map((id) => new Types.ObjectId(id)) },
-      userId: new Types.ObjectId(userId),
+      _id: { $in: objectIds },
+      userId: userObjId,
     },
     update
   );
 
+  // Legacy reserved-category problems still accept status changes. Their
+  // platform summaries are exclusively owned by platform-sync.
+  for (const category of categories) {
+    if (!isReservedPlatformTopic(category)) {
+      await reconcileBulkTopicProgress(userObjId, category);
+    }
+  }
   return result.modifiedCount;
+}
+
+async function reconcileBulkTopicProgress(userId: Types.ObjectId, topicName: string): Promise<void> {
+  // Read the existing revision BEFORE aggregating. Concurrent bulk requests
+  // must re-aggregate if another request has published newer counts.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const topic = await DsaTopicProgress.findOne({ userId, topicName }).select('_id __v').lean();
+    if (!topic) {
+      try {
+        await DsaTopicProgress.create({ userId, topicName });
+      } catch (error) {
+        if ((error as { code?: number }).code !== 11000) throw error;
+      }
+      continue;
+    }
+    const [counts] = await DsaProblem.aggregate([
+      { $match: { userId, category: topicName } },
+      {
+        $group: {
+          _id: null,
+          totalProblems: { $sum: 1 },
+          solvedCount: { $sum: { $cond: [{ $eq: ['$status', 'solved'] }, 1, 0] } },
+          easyCount: { $sum: { $cond: [{ $eq: ['$difficulty', 'easy'] }, 1, 0] } },
+          easySolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'easy'] }] }, 1, 0] } },
+          mediumCount: { $sum: { $cond: [{ $eq: ['$difficulty', 'medium'] }, 1, 0] } },
+          mediumSolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'medium'] }] }, 1, 0] } },
+          hardCount: { $sum: { $cond: [{ $eq: ['$difficulty', 'hard'] }, 1, 0] } },
+          hardSolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'hard'] }] }, 1, 0] } },
+        },
+      },
+      { $project: { _id: 0 } },
+    ]);
+    const version = (topic as { __v?: number }).__v;
+    const result = await DsaTopicProgress.updateOne(
+      { _id: topic._id, userId, __v: version === undefined ? { $exists: false } : version },
+      {
+        $set: counts ?? { totalProblems: 0, solvedCount: 0, easyCount: 0, easySolved: 0, mediumCount: 0, mediumSolved: 0, hardCount: 0, hardSolved: 0 },
+        $inc: { __v: 1 },
+      }
+    );
+    if (result.matchedCount) return;
+  }
+  // This is not a transaction. Surface failures so the caller can repeat the
+  // bulk request; reconciliation runs even when problem.modifiedCount is zero.
+  throw new Error('Topic progress changed concurrently; retry the bulk status update');
 }
 
 export async function getStats(userId: string): Promise<ApiDsaStats> {

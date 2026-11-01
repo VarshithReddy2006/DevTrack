@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
 import * as controller from './dsa.controller.js';
 import { z } from 'zod';
+import { isReservedPlatformTopic } from './dsa.constants.js';
 
 const router = Router();
 
@@ -12,7 +13,9 @@ const problemCreateSchema = z.object({
   difficulty: z.enum(['easy', 'medium', 'hard']),
   url: z.string().url(),
   tags: z.array(z.string()),
-  category: z.string().min(1),
+  category: z.string().min(1).refine((value) => !isReservedPlatformTopic(value), {
+    message: 'Category name is reserved for platform sync summaries',
+  }),
   notes: z.string().optional(),
 });
 
