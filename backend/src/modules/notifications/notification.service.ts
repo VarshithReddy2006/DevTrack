@@ -64,6 +64,56 @@ const NOTIF_KEYS = {
   userPreferences: (userId: string) => `notifications:prefs:${userId}`,
 };
 
+// Compare exact stored members and publish their read replacements together with
+// the counter change. A stale acknowledgement finds no old member and is inert.
+// Replacements are serialized in JS so nested arrays/nulls retain their shape.
+const ACKNOWLEDGE_NOTIFICATIONS = `
+local updates = {}
+for i = 1, #ARGV, 2 do
+  local score = redis.call('ZSCORE', KEYS[1], ARGV[i])
+  if score then
+    updates[#updates + 1] = { ARGV[i], ARGV[i + 1], score }
+  end
+end
+if #updates == 0 then return 0 end
+
+-- Validate counter state before any writes: Lua errors do not roll back writes.
+local storedCount = redis.call('GET', KEYS[2])
+local count = tonumber(storedCount or '0')
+if not count or (storedCount and not string.match(storedCount, '^%-?%d+$'))
+  or math.abs(count) > 9007199254740991 then
+  return redis.error_reply('Invalid notification unread counter')
+end
+
+for _, update in ipairs(updates) do
+  -- Insert first: removing the last old member must not delete the key/its TTL.
+  redis.call('ZADD', KEYS[1], update[3], update[2])
+  redis.call('ZREM', KEYS[1], update[1])
+end
+if storedCount then
+  local remaining = math.max(0, count - #updates)
+  redis.call('SET', KEYS[2], string.format('%.0f', remaining), 'KEEPTTL')
+end
+return #updates
+`;
+
+async function acknowledgeNotifications(userId: string, notificationId?: string): Promise<void> {
+  const redis = getRedisClient();
+  const key = NOTIF_KEYS.userNotifications(userId);
+  const members = await redis.zrange(key, 0, -1);
+  const replacements: string[] = [];
+  for (const member of members) {
+    const notification = JSON.parse(member) as Notification;
+    if (!notification.read && (notificationId === undefined || notification.id === notificationId)) {
+      replacements.push(member, JSON.stringify({ ...notification, read: true }));
+      if (notificationId !== undefined) break;
+    }
+  }
+  if (replacements.length) {
+    await redis.eval(ACKNOWLEDGE_NOTIFICATIONS, 2, key, NOTIF_KEYS.unreadCount(userId), ...replacements);
+  }
+}
+
 export const notificationService = {
   // ─── Create and deliver notification ─────────────────────────────────
   async create(
@@ -182,40 +232,12 @@ export const notificationService = {
 
   // ─── Mark as read ────────────────────────────────────────────────────
   async markAsRead(userId: string, notificationId: string): Promise<void> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.userNotifications(userId);
-
-    // Get all notifications
-    const results = await redis.zrange(key, 0, -1);
-
-    for (const result of results) {
-      const notif = JSON.parse(result) as Notification;
-      if (notif.id === notificationId && !notif.read) {
-        notif.read = true;
-        await redis.zadd(key, notif.createdAt.getTime(), JSON.stringify(notif));
-
-        await this.decrementUnreadCount(userId);
-        break;
-      }
-    }
+    await acknowledgeNotifications(userId, notificationId);
   },
 
   // ─── Mark all as read ───────────────────────────────────────────────
   async markAllAsRead(userId: string): Promise<void> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.userNotifications(userId);
-
-    const results = await redis.zrange(key, 0, -1);
-
-    for (const result of results) {
-      const notif = JSON.parse(result) as Notification;
-      if (!notif.read) {
-        notif.read = true;
-        await redis.zadd(key, notif.createdAt.getTime(), JSON.stringify(notif));
-      }
-    }
-
-    await redis.del(NOTIF_KEYS.unreadCount(userId));
+    await acknowledgeNotifications(userId);
   },
 
   // ─── Unread count helpers ───────────────────────────────────────────
