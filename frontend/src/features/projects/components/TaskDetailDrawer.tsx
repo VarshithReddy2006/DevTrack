@@ -2,11 +2,12 @@
 // TaskDetailDrawer.tsx — Side panel for editing a single task
 // ============================================================================
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Icon, type IconName } from '../../../components/shared/Icon';
 import { updateProjectTask } from '../../../services/projectsService';
 import type { ProjectTaskVM } from '../../../types/vm.types';
+import { useDialogFocus } from '../../../components/ui/useDialogFocus';
 
 interface TaskDetailDrawerProps {
   task: ProjectTaskVM | null;
@@ -43,7 +44,8 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
   const [newLabel, setNewLabel] = useState('');
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const titleRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
+  const titleId = React.useId();
 
   // Populate form when task changes
   useEffect(() => {
@@ -54,18 +56,8 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
       setPriority(task.priorityLabel.toLowerCase());
       setLabels([...task.labels]);
       setDirty(false);
-      setTimeout(() => titleRef.current?.focus(), 100);
     }
   }, [task]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
 
   const handleSave = async () => {
     if (!task || saving) return;
@@ -120,16 +112,21 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
 
           {/* Panel */}
           <motion.div
+            ref={dialogRef}
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 32, stiffness: 350 }}
             className="fixed right-0 top-0 bottom-0 z-[70] w-full max-w-[480px] bg-white border-l border-gray-200 shadow-2xl flex flex-col"
             onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            tabIndex={-1}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
-              <h3 className="text-[15px] font-bold text-dt-text">Edit Task</h3>
+              <h3 id={titleId} className="text-[15px] font-bold text-dt-text">Edit Task</h3>
               <div className="flex items-center gap-2">
                 {dirty && (
                   <span className="text-[10px] font-medium text-amber-500">Unsaved</span>
@@ -150,7 +147,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
               <div>
                 <label className="text-[10px] font-bold text-dt-textMuted uppercase tracking-wider mb-1.5 block">Title</label>
                 <input
-                  ref={titleRef}
+                  data-dialog-initial-focus
                   value={title}
                   onChange={(e) => { setTitle(e.target.value); markDirty(); }}
                   className="w-full text-[15px] font-semibold text-dt-text bg-transparent border border-gray-200 rounded-xl px-3.5 py-2.5 outline-none focus:border-dt-primary/40 transition-colors"
@@ -235,6 +232,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                       {label}
                       <button
                         onClick={() => handleRemoveLabel(label)}
+                        aria-label={`Remove ${label} label`}
                         className="text-dt-textMuted hover:text-red-500 transition-colors"
                       >
                         <Icon name="x-mark" size={10} />

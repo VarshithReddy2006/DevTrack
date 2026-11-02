@@ -5,6 +5,7 @@ import { Icon, type IconName } from '../components/shared/Icon';
 import { NetworkErrorPanel } from '../components/shared/NetworkErrorPanel';
 import { EmptyState } from '../components/shared/EmptyState';
 import { ConfirmationModal } from '../components/ui/ConfirmationModal';
+import { useDialogFocus } from '../components/ui/useDialogFocus';
 import { useProjectsData } from '../hooks/useProjectsData';
 import { ProjectDetailDrawer } from '../features/projects/components/ProjectDetailDrawer';
 import { ProjectListView } from '../features/projects/components/ProjectListView';
@@ -65,11 +66,14 @@ function statusProgress(card: ProjectCardVM): number {
 }
 
 /* ─── Create Project Modal ─── */
-const CreateProjectModal: React.FC<{
+export const CreateProjectModal: React.FC<{
   open: boolean;
   onClose: () => void;
   onCreate: (payload: ApiProjectCreatePayload) => Promise<void>;
 }> = ({ open, onClose, onCreate }) => {
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
+  const titleId = React.useId();
+  const descriptionId = React.useId();
   const [form, setForm] = React.useState({
     name: '',
     description: '',
@@ -112,19 +116,25 @@ const CreateProjectModal: React.FC<{
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={onClose}>
       <motion.div
+        ref={dialogRef}
         initial={{ opacity: 0, scale: 0.96, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.96, y: 10 }}
         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
         className="bg-white border border-gray-200 rounded-2xl shadow-2xl w-full max-w-lg p-8 mx-4"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
       >
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h2 className="text-xl font-bold text-dt-text tracking-tight">New Project</h2>
-            <p className="text-sm text-dt-textSecondary mt-1">Set up a new project workspace</p>
+            <h2 id={titleId} className="text-xl font-bold text-dt-text tracking-tight">New Project</h2>
+            <p id={descriptionId} className="text-sm text-dt-textSecondary mt-1">Set up a new project workspace</p>
           </div>
-          <button type="button" onClick={onClose} className="w-9 h-9 rounded-lg bg-gray-100 hover:bg-gray-200 cursor-pointer transition-colors flex items-center justify-center">
+          <button type="button" onClick={onClose} aria-label="Close new project dialog" className="w-9 h-9 rounded-lg bg-gray-100 hover:bg-gray-200 cursor-pointer transition-colors flex items-center justify-center">
             <Icon name="x-mark" size={18} className="text-dt-textSecondary" />
           </button>
         </div>
@@ -134,6 +144,7 @@ const CreateProjectModal: React.FC<{
             <label className="text-sm font-semibold text-dt-text mb-1.5 block">Project Name</label>
             <input
               type="text"
+              data-dialog-initial-focus
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               className="dt-input w-full"
@@ -246,7 +257,10 @@ const ProjectCard: React.FC<{
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-40px' }}
       transition={{ duration: 0.5, delay: index * 0.08, ease: [0.16, 1, 0.3, 1] }}
-      onClick={() => onOpen(p.id)}
+      onClick={(event) => {
+        event.currentTarget.querySelector<HTMLButtonElement>('[data-project-open]')?.focus();
+        onOpen(p.id);
+      }}
       className={[
         'group/card bg-white border border-gray-200/80 rounded-2xl overflow-hidden cursor-pointer',
         'hover:border-dt-primary/25 hover:shadow-[0_12px_40px_rgba(124,92,252,0.08)]',
@@ -279,7 +293,9 @@ const ProjectCard: React.FC<{
             </div>
             <div className="min-w-0">
               <h3 className="text-[17px] font-bold text-dt-text tracking-tight leading-snug truncate group-hover/card:text-dt-primary transition-colors duration-300">
-                {p.name}
+                <button type="button" data-project-open onClick={(event) => { event.stopPropagation(); onOpen(p.id); }} className="text-left focus-visible:outline-2 focus-visible:outline-dt-primary">
+                  {p.name}
+                </button>
               </h3>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${status.bg} ${status.color}`}>
@@ -294,7 +310,8 @@ const ProjectCard: React.FC<{
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onDelete(p.id); }}
-            className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center transition-all duration-200 opacity-0 group-hover/card:opacity-100 text-gray-400 hover:text-red-500 shrink-0"
+            className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center transition-all duration-200 opacity-0 group-hover/card:opacity-100 focus-visible:opacity-100 text-gray-400 hover:text-red-500 shrink-0"
+            aria-label={`Delete ${p.name}`}
             title="Delete project"
           >
             <Icon name="trash" size={15} />
@@ -384,7 +401,7 @@ const ProjectCard: React.FC<{
         <div className="flex items-center gap-2 pt-4 border-t border-gray-100">
           {p.repoUrl && (
             <button
-              onClick={() => window.open(p.repoUrl!, '_blank')}
+              onClick={(event) => { event.stopPropagation(); window.open(p.repoUrl!, '_blank'); }}
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-gray-50 hover:bg-gray-100 border border-gray-200 text-[12px] font-semibold text-dt-textSecondary hover:text-dt-text transition-all duration-200 group/link"
             >
               <Icon name="github" size={14} className="opacity-60 group-hover/link:opacity-100 transition-opacity" />
@@ -393,7 +410,7 @@ const ProjectCard: React.FC<{
           )}
           {p.liveUrl && (
             <button
-              onClick={() => window.open(p.liveUrl!, '_blank')}
+              onClick={(event) => { event.stopPropagation(); window.open(p.liveUrl!, '_blank'); }}
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-dt-primary/5 hover:bg-dt-primary/10 border border-dt-primary/10 text-[12px] font-semibold text-dt-primary hover:text-dt-primary transition-all duration-200 group/link"
             >
               <Icon name="external-link" size={14} className="opacity-70 group-hover/link:opacity-100 transition-opacity" />
@@ -555,6 +572,7 @@ const ProjectsPage: React.FC = () => {
             viewMode === 'grid' ? 'bg-white shadow-sm text-dt-text' : 'text-dt-textMuted hover:text-dt-text',
           ].join(' ')}
           title="Grid view (G)"
+          aria-label="Grid view"
         >
           <Icon name="squares-2x2" size={15} />
         </button>
@@ -566,6 +584,7 @@ const ProjectsPage: React.FC = () => {
             viewMode === 'board' ? 'bg-white shadow-sm text-dt-text' : 'text-dt-textMuted hover:text-dt-text',
           ].join(' ')}
           title="Board view (B)"
+          aria-label="Board view"
         >
           <Icon name="view-columns" size={15} />
         </button>
@@ -577,6 +596,7 @@ const ProjectsPage: React.FC = () => {
             viewMode === 'list' ? 'bg-white shadow-sm text-dt-text' : 'text-dt-textMuted hover:text-dt-text',
           ].join(' ')}
           title="List view (L)"
+          aria-label="List view"
         >
           <Icon name="bars-3" size={15} />
         </button>
