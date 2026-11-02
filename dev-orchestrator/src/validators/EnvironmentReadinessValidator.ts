@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import { createServer, Server } from 'net';
 import { EnvironmentValidationResult } from '../types/orchestrator.js';
+import { isSupportedNodeVersion, SUPPORTED_NODE_VERSIONS } from '../utils/nodeVersion.js';
 
 dotenv.config({ path: '../.env' });
 
@@ -44,26 +45,25 @@ export class EnvironmentReadinessValidator {
     checks.push(...portCheck.checks);
     errors.push(...portCheck.errors);
 
-    // Only fail on critical errors (missing env vars), infrastructure can be warnings
+    // Unsupported Node and missing required variables fail; infrastructure remains a warning.
     const criticalErrors = errors.filter(e => e.includes('environment variable'));
+    const nodeErrors = nodeVersionCheck.status === 'fail' ? [nodeVersionCheck.message] : [];
     
     return {
-      valid: criticalErrors.length === 0,
-      errors: criticalErrors,
-      warnings: [...warnings, ...errors.filter(e => !e.includes('environment variable'))],
+      valid: criticalErrors.length === 0 && nodeErrors.length === 0,
+      errors: [...criticalErrors, ...nodeErrors],
+      warnings: [...warnings, ...errors.filter(e => !e.includes('environment variable') && e !== nodeVersionCheck.message)],
       checks
     };
   }
 
   private checkNodeVersion(): EnvironmentValidationResult['checks'][0] {
     const nodeVersion = process.version;
-    const majorVersion = parseInt(nodeVersion.slice(1).split('.')[0]);
-    
-    if (majorVersion < 18) {
+    if (!isSupportedNodeVersion(nodeVersion)) {
       return {
         name: 'Node.js Version',
         status: 'fail',
-        message: `Node.js ${nodeVersion} is too old. Requires Node.js >= 18.0.0`
+        message: `Node.js ${nodeVersion} is unsupported. Requires ${SUPPORTED_NODE_VERSIONS}`
       };
     }
 
