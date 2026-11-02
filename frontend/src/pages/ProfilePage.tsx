@@ -174,7 +174,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
   }
 
   return (
-    <div className="profile-page-container">
+    <div className={isPublicView ? 'profile-page-container px-4 py-6 sm:px-8' : 'profile-page-container'}>
       <div className="profile-page-glow" />
 
       <PageShell
@@ -197,32 +197,36 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
             {/* ─── 2. Badge Ecosystem ──────────────────────────────────── */}
             <ProfileAchievementsCard />
 
-            {/* ─── 3. Settings Matrix ──────────────────────────────────── */}
-            <div className="profile-grid">
-              <PersonalInfoCard profile={activeProfile} onUpdate={isPublicView ? () => {} : updateField} />
-              <CareerGoalsCard
-                profile={activeProfile}
-                onUpdate={isPublicView ? () => {} : updateField}
-                onAddTech={isPublicView ? () => {} : addTechStack}
-                onRemoveTech={isPublicView ? () => {} : removeTechStack}
-              />
-            </div>
+            {/* ─── 3 + 4. Settings Matrix and Connectivity Row (owner only) ───
+                Public viewers, signed in or not, only get the read-only stats. */}
+            {!isPublicView && (
+              <>
+                <div className="profile-grid">
+                  <PersonalInfoCard profile={activeProfile} onUpdate={updateField} />
+                  <CareerGoalsCard
+                    profile={activeProfile}
+                    onUpdate={updateField}
+                    onAddTech={addTechStack}
+                    onRemoveTech={removeTechStack}
+                  />
+                </div>
 
-            {/* ─── 4. Connectivity Row ─────────────────────────────────── */}
-            <div className="profile-grid">
-              <CPProfilesCard
-                profile={activeProfile}
-                leetcode={activeLeetcode as any}
-                codeforces={activeCodeforces as any}
-                codechef={activeCodechef as any}
-                onUpdate={isPublicView ? () => {} : updateField}
-                onFetchAll={isPublicView ? (async () => ({ success: true, message: '' })) : fetchAllPlatforms}
-                syncState={isPublicView ? 'idle' : syncState}
-                syncMessage={isPublicView ? null : syncMessage}
-                lastSyncedAt={isPublicView ? null : lastSyncedAt}
-              />
-              <SocialProfilesCard profile={activeProfile} onUpdate={isPublicView ? () => {} : updateField} />
-            </div>
+                <div className="profile-grid">
+                  <CPProfilesCard
+                    profile={activeProfile}
+                    leetcode={activeLeetcode as any}
+                    codeforces={activeCodeforces as any}
+                    codechef={activeCodechef as any}
+                    onUpdate={updateField}
+                    onFetchAll={fetchAllPlatforms}
+                    syncState={syncState}
+                    syncMessage={syncMessage}
+                    lastSyncedAt={lastSyncedAt}
+                  />
+                  <SocialProfilesCard profile={activeProfile} onUpdate={updateField} />
+                </div>
+              </>
+            )}
 
             {/* ─── 5. Platform Telemetry (Sorted) ───────────────────────── */}
             {(hasAnyStats || isLoading) && (
