@@ -3,8 +3,9 @@ import { Play, Pause, RotateCcw, Activity, Clock, Target, ChevronDown, BarChart2
 import { motion } from 'framer-motion';
 
 import { ConfirmationModal } from '../ui/ConfirmationModal';
-import { useRuntimeState } from '../../hooks/useRuntimeState';
+import { useRuntimeState, type RuntimeState } from '../../hooks/useRuntimeState';
 import { activityService } from '../../services/activityService';
+import type { FocusSessionState } from '../../services/activityService';
 import { useQueryClient } from '@tanstack/react-query';
 import { useMissionStore } from '../../store/missionStore';
 
@@ -56,6 +57,14 @@ const SESSION_MODES = [
   { id: 'arch', label: 'Architecture', color: 'text-cyan-600', bg: 'bg-cyan-500', hoverBg: 'hover:bg-cyan-600', stroke: '#06b6d4', dur: 120 },
 ];
 
+export function focusRemainingSeconds(session: FocusSessionState, now = Date.now()): number {
+  const totalMs = (session.duration ?? 0) * 60_000;
+  const activeMs = session.activeDurationMs ?? 0;
+  const runningMs = session.status !== 'paused' && session.isActive
+    ? Math.max(0, now - Date.parse(session.lastResumedAt ?? session.startedAt ?? '')) : 0;
+  return Math.max(0, Math.ceil((totalMs - activeMs - (Number.isFinite(runningMs) ? runningMs : 0)) / 1000));
+}
+
 export const PomodoroTimer = () => {
   const { data: runtimeState } = useRuntimeState();
   const queryClient = useQueryClient();
@@ -66,6 +75,7 @@ export const PomodoroTimer = () => {
   const [selectedDuration, setSelectedDuration] = useState<number>(SESSION_MODES[0].dur);
   const [timeLeft, setTimeLeft] = useState<number>(SESSION_MODES[0].dur * 60);
   const [status, setStatus] = useState<'idle' | 'running' | 'paused' | 'finished'>('idle');
+  const [changing, setChanging] = useState(false);
   
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -76,47 +86,70 @@ export const PomodoroTimer = () => {
   // Recovery logic: Sync with backend session state
   useEffect(() => {
     if (runtimeState?.sessionContext?.isActive) {
-      const startedAt = new Date(runtimeState.sessionContext.startedAt!).getTime();
-      const now = Date.now();
-      const elapsedSeconds = Math.floor((now - startedAt) / 1000);
-      const totalSeconds = (runtimeState.sessionContext as any).duration * 60;
-      
-      const remaining = Math.max(0, totalSeconds - elapsedSeconds);
-      
-      const modeId = (runtimeState.sessionContext as any).mode;
+      const session = runtimeState.sessionContext;
+      const remaining = focusRemainingSeconds(session);
+      const modeId = session.mode;
       const mode = SESSION_MODES.find(m => m.id === modeId) || SESSION_MODES[0];
       
       setActiveMode(mode);
-      setSelectedDuration((runtimeState.sessionContext as any).duration);
+      setSelectedDuration(session.duration ?? mode.dur);
       setTimeLeft(remaining);
-      setStatus(remaining > 0 ? 'running' : 'finished');
+      setStatus(session.status === 'paused' ? 'paused' : remaining > 0 ? 'running' : 'finished');
     }
   }, [runtimeState]);
 
-  useEffect(() => {
-    if (status === 'idle') {
-      setTimeLeft(selectedDuration * 60);
+  const applySession = (session: FocusSessionState) => {
+    queryClient.setQueryData<RuntimeState>(['runtime-state'], previous => previous
+      ? { ...previous, sessionContext: { ...previous.sessionContext, ...session } } : previous);
+    if (session.isActive) {
+      setTimeLeft(focusRemainingSeconds(session));
+      setStatus(session.status === 'paused' ? 'paused' : 'running');
+    } else {
+      setStatus('idle');
     }
-  }, [selectedDuration, status]);
+  };
 
   const handleStartFocus = async () => {
+    if (changing) return;
+    setChanging(true);
     try {
-      setStatus('running');
-      await activityService.startFocusSession(selectedDuration, activeMode.id);
-      queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
+      const response = await activityService.startFocusSession(selectedDuration, activeMode.id);
+      applySession(response.data);
+      void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
     } catch (err) {
       console.error('Failed to start focus session', err);
+    } finally {
+      setChanging(false);
     }
   };
 
   const handleStopFocus = async () => {
     try {
-      setStatus('idle');
       await activityService.stopFocusSession();
-      queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      setStatus('idle');
+      setTimeLeft(selectedDuration * 60);
+      void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
     } catch (err) {
       console.error('Failed to stop focus session', err);
+    }
+  };
+
+  const handleCancelFocus = async (): Promise<boolean> => {
+    if (changing) return false;
+    setChanging(true);
+    try {
+      await activityService.cancelFocusSession();
+      setStatus('idle');
+      setTimeLeft(selectedDuration * 60);
+      void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
+      return true;
+    } catch (err) {
+      console.error('Failed to cancel focus session', err);
+      void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
+      return false;
+    } finally {
+      setChanging(false);
     }
   };
 
@@ -164,17 +197,32 @@ export const PomodoroTimer = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
-  const handleStartPause = () => {
+  const handleStartPause = async () => {
+    if (changing) return;
     if (status === 'idle') {
-      handleStartFocus();
-    } else {
-      setStatus(status === 'running' ? 'paused' : 'running');
+      await handleStartFocus();
+    } else if (status === 'running' || status === 'paused') {
+      setChanging(true);
+      try {
+        await queryClient.cancelQueries({ queryKey: ['runtime-state'] });
+        const response = status === 'running'
+          ? await activityService.pauseFocusSession()
+          : await activityService.resumeFocusSession();
+        applySession(response.data);
+        void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
+      } catch (err) {
+        console.error('Failed to change focus session state', err);
+        void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
+      } finally {
+        setChanging(false);
+      }
     }
   };
   
   const handleReset = () => { 
     if (status !== 'idle') {
-      handleStopFocus();
+      void handleCancelFocus();
+      return;
     }
     setStatus('idle'); 
     setTimeLeft(selectedDuration * 60); 
@@ -192,12 +240,12 @@ export const PomodoroTimer = () => {
     }
   };
 
-  const handleConfirmModeChange = () => {
+  const handleConfirmModeChange = async () => {
     if (!pendingMode) return;
     const mode = pendingMode;
     setModeConfirmOpen(false);
     setPendingMode(null);
-    handleStopFocus();
+    if (!await handleCancelFocus()) return;
     setActiveMode(mode);
     setSelectedDuration(mode.dur);
     setStatus('idle');
@@ -353,14 +401,15 @@ export const PomodoroTimer = () => {
              <div className="flex items-center gap-3 w-full max-w-[280px] px-2">
                <button
                  onClick={handleStartPause}
+                 disabled={changing || status === 'finished'}
                  className={`flex-1 py-3 px-6 rounded-[18px] text-[14px] font-black text-white flex items-center justify-center gap-2 transition-all duration-300 shadow-md ${
                    status === 'running' ? 'bg-amber-500 hover:bg-amber-600 hover:shadow-lg hover:-translate-y-0.5' : `${activeMode.bg} ${activeMode.hoverBg} hover:shadow-[0_10px_25px_rgba(15,23,42,0.15)] hover:-translate-y-0.5`
                  }`}
                >
-                 {status === 'running' ? <><Pause size={16} fill="currentColor" /> Pause</> : <><Play size={16} fill="currentColor" /> Start Focus</>}
+                 {status === 'running' ? <><Pause size={16} fill="currentColor" /> Pause</> : <><Play size={16} fill="currentColor" /> {status === 'paused' ? 'Resume Focus' : 'Start Focus'}</>}
                </button>
                <button
-                 onClick={handleReset} disabled={status === 'idle'}
+                 onClick={handleReset} disabled={status === 'idle' || changing}
                  className="w-[50px] h-[50px] rounded-[18px] bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-800 hover:shadow-md disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-300 shadow-sm"
                >
                  <RotateCcw size={16} />

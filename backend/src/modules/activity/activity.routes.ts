@@ -27,6 +27,9 @@ router.get('/', authMiddleware, asyncHandler(controller.getAll));
 // Focus Sessions
 router.post('/focus/start', authMiddleware, validateBody(focusSessionSchema), asyncHandler(controller.startFocusSession));
 router.post('/focus/heartbeat', authMiddleware, asyncHandler(controller.heartbeatFocusSession));
+router.post('/focus/pause', authMiddleware, asyncHandler(controller.pauseFocusSession));
+router.post('/focus/resume', authMiddleware, asyncHandler(controller.resumeFocusSession));
+router.post('/focus/cancel', authMiddleware, asyncHandler(controller.cancelFocusSession));
 router.post('/focus/stop', authMiddleware, asyncHandler(controller.stopFocusSession));
 
 // Granular (kept for backward compat)

@@ -85,6 +85,27 @@ export async function heartbeatFocusSession(req: AuthenticatedRequest, res: Resp
   successResponse(res, state.sessionContext, 'Focus session heartbeat');
 }
 
+export async function pauseFocusSession(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const { unifiedRuntimeStateService } = await import('../runtime-state/unifiedRuntimeState.service.js');
+  const state = await unifiedRuntimeStateService.pauseFocusSession(req.user!.id);
+  if (!state) { commonErrors.badRequest(res, 'No running focus session'); return; }
+  successResponse(res, state.sessionContext, 'Focus session paused');
+}
+
+export async function resumeFocusSession(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const { unifiedRuntimeStateService } = await import('../runtime-state/unifiedRuntimeState.service.js');
+  const state = await unifiedRuntimeStateService.resumeFocusSession(req.user!.id);
+  if (!state) { commonErrors.badRequest(res, 'No paused focus session'); return; }
+  successResponse(res, state.sessionContext, 'Focus session resumed');
+}
+
+export async function cancelFocusSession(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const { unifiedRuntimeStateService } = await import('../runtime-state/unifiedRuntimeState.service.js');
+  const state = await unifiedRuntimeStateService.cancelFocusSession(req.user!.id);
+  if (!state) { commonErrors.badRequest(res, 'No active focus session'); return; }
+  successResponse(res, state.sessionContext, 'Focus session cancelled');
+}
+
 export async function stopFocusSession(req: AuthenticatedRequest, res: Response): Promise<void> {
   const { unifiedRuntimeStateService } = await import('../runtime-state/unifiedRuntimeState.service.js');
   const state = await unifiedRuntimeStateService.stopFocusSession(req.user!.id);

@@ -63,6 +63,9 @@ export interface SessionContext {
   duration?: number;
   startedAt?: Date;
   lastHeartbeat?: Date;
+  status?: 'running' | 'paused' | 'completed' | 'abandoned';
+  activeDurationMs?: number;
+  lastResumedAt?: Date | null;
   problemsThisSession: number;
   xpThisSession: number;
 }
@@ -203,6 +206,9 @@ const unifiedRuntimeStateSchema = new Schema<IUnifiedRuntimeState>(
       duration: { type: Number },
       startedAt: { type: Date },
       lastHeartbeat: { type: Date },
+      status: { type: String, enum: ['running', 'paused', 'completed', 'abandoned'] },
+      activeDurationMs: { type: Number, default: 0, min: 0 },
+      lastResumedAt: { type: Date, default: null },
       problemsThisSession: { type: Number, default: 0 },
       xpThisSession: { type: Number, default: 0 },
     },

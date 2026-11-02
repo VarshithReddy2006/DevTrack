@@ -4,6 +4,9 @@ import type { ApiResponse } from '../types/api.types';
 
 export interface FocusSessionState {
   isActive: boolean;
+  status?: 'running' | 'paused' | 'completed' | 'abandoned';
+  activeDurationMs?: number;
+  lastResumedAt?: string | null;
   startedAt?: string;
   lastHeartbeat?: string;
   duration?: number;
@@ -33,6 +36,21 @@ export const activityService = {
    */
   async heartbeatFocusSession(): Promise<ApiResponse<FocusSessionState>> {
     const { data } = await axiosClient.post<ApiResponse<FocusSessionState>>('/activity/focus/heartbeat');
+    return data;
+  },
+
+  async pauseFocusSession(): Promise<ApiResponse<FocusSessionState>> {
+    const { data } = await axiosClient.post<ApiResponse<FocusSessionState>>('/activity/focus/pause');
+    return data;
+  },
+
+  async resumeFocusSession(): Promise<ApiResponse<FocusSessionState>> {
+    const { data } = await axiosClient.post<ApiResponse<FocusSessionState>>('/activity/focus/resume');
+    return data;
+  },
+
+  async cancelFocusSession(): Promise<ApiResponse<FocusSessionState>> {
+    const { data } = await axiosClient.post<ApiResponse<FocusSessionState>>('/activity/focus/cancel');
     return data;
   },
 
