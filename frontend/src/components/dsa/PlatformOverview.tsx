@@ -100,16 +100,8 @@ export const PlatformOverview: React.FC<PlatformOverviewProps> = React.memo(({ t
 
         <div className="flex items-center gap-6 px-6 py-3 rounded-2xl bg-white/40 border border-dt-primary/5 backdrop-blur-md shadow-sm">
           <div className="flex flex-col items-center">
-            <span className="text-[9px] font-black text-dt-textSecondary/40 uppercase tracking-widest mb-1">Active Nodes</span>
-            <span className="text-[14px] font-black text-dt-text tracking-tighter">{items.length} Points</span>
-          </div>
-          <div className="w-px h-8 bg-dt-primary/10" />
-          <div className="flex flex-col items-center">
-            <span className="text-[9px] font-black text-dt-textSecondary/40 uppercase tracking-widest mb-1">Global Health</span>
-            <div className="flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span className="text-[14px] font-black text-dt-text tracking-tighter">99.8%</span>
-            </div>
+            <span className="text-[9px] font-black text-dt-textSecondary/40 uppercase tracking-widest mb-1">Platforms shown</span>
+            <span className="text-[14px] font-black text-dt-text tracking-tighter">{items.length}</span>
           </div>
         </div>
       </div>
@@ -142,13 +134,9 @@ export const PlatformOverview: React.FC<PlatformOverviewProps> = React.memo(({ t
                   <div>
                     <h4 className="text-[17px] font-black text-dt-text tracking-tight group-hover/item:text-dt-primary transition-colors">{label[item.platform]}</h4>
                     <div className="flex items-center gap-1.5 mt-1">
-                      <div className={`w-1.5 h-1.5 rounded-full ${theme.accent} animate-pulse shadow-[0_0_8px_currentColor]`} />
-                      <span className="text-[9px] font-black text-dt-textSecondary/50 uppercase tracking-widest">Active Node</span>
+                      <span className="text-[9px] font-black text-dt-textSecondary/50 uppercase tracking-widest">Platform stats</span>
                     </div>
                   </div>
-                </div>
-                <div className="text-[10px] font-black text-dt-textSecondary/30 uppercase tracking-widest group-hover/item:text-dt-primary/40 transition-colors">
-                  {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </div>
               </div>
 
@@ -160,35 +148,18 @@ export const PlatformOverview: React.FC<PlatformOverviewProps> = React.memo(({ t
                   </span>
                   <span className="text-[12px] font-black text-dt-textSecondary/40 uppercase tracking-widest mb-1">Solved</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className={`px-2 py-1 rounded-lg ${theme.glow} border border-transparent group-hover/item:border-current transition-all duration-500`}>
-                    <span className={`text-[10px] font-black ${theme.accent}`}>+12% Velocity</span>
-                  </div>
-                  <div className="w-1.5 h-1.5 rounded-full bg-dt-textSecondary/20" />
-                  <span className="text-[10px] font-black text-dt-textSecondary/50 uppercase tracking-widest">Ecosystem Index: {item.stat.split(' ')[0]}</span>
-                </div>
-              </div>
-
-              {/* Micro-Visualizer */}
-              <div className="flex items-end gap-1 h-12 mb-8 relative z-10 group-hover/item:scale-x-105 transition-transform duration-700 origin-left">
-                {Array.from({ length: 12 }).map((_, i) => (
-                  <div
-                    key={i}
-                    className={`flex-1 rounded-t-[3px] rounded-b-[1px] transition-all duration-700 ${theme.accent} bg-current opacity-20 group-hover/item:opacity-40`}
-                    style={{ height: `${20 + Math.random() * 80}%`, transitionDelay: `${i * 30}ms` }}
-                  />
-                ))}
+                {item.rating != null && <span className="text-[10px] font-black text-dt-textSecondary/50 uppercase tracking-widest">Rating: {item.rating}</span>}
               </div>
 
               {/* Ecosystem Footer */}
               <div className="mt-auto pt-6 border-t border-dt-primary/10 flex items-center justify-between relative z-10">
                 <div className="flex flex-col gap-1">
-                  <span className="text-[9px] font-black text-dt-textSecondary/40 uppercase tracking-[0.2em]">Platform Mastery</span>
-                  <span className="text-[13px] font-black text-dt-text tracking-tighter">Elite Contributor</span>
+                  <span className="text-[9px] font-black text-dt-textSecondary/40 uppercase tracking-[0.2em]">Platform</span>
+                  <span className="text-[13px] font-black text-dt-text tracking-tighter">{label[item.platform]}</span>
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <span className="text-[9px] font-black text-dt-textSecondary/40 uppercase tracking-[0.2em]">Global Rank</span>
-                  <span className="text-[13px] font-black text-dt-text tracking-tighter">#{item.rank ?? '—'}</span>
+                  <span className="text-[13px] font-black text-dt-text tracking-tighter">{item.rank ? `#${item.rank}` : 'Unavailable'}</span>
                 </div>
               </div>
 
