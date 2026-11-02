@@ -11,6 +11,7 @@ import {
   AnalyzeATSSchema,
   CreateEvidenceClaimSchema,
   GenerateReportSchema,
+  DossierExportSchema,
 } from '../dto/index.js';
 
 const router = Router();
@@ -48,6 +49,7 @@ router.post('/evidence-claims', validateRequest({ body: CreateEvidenceClaimSchem
 router.get('/evidence-claims', controller.getEvidenceClaims);
 
 // Export routes
+router.post('/dossier-pdf', validateRequest({ body: DossierExportSchema }), controller.exportDossier);
 router.post('/export', validateRequest({ body: ExportResumeSchema }), controller.exportResume);
 router.get('/export-history', controller.getExportHistory);
 

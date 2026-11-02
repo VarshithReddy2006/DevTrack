@@ -6,9 +6,21 @@ import { logger } from '../../../shared/logger.js';
 import type { Types } from 'mongoose';
 import { ResumeIntelligenceReportEngine } from '../reports/ResumeIntelligenceReportEngine.js';
 import { ResumeSession } from '../../../db/models/resumeSession.model.js';
+import { ResumeExportService } from '../export/ResumeExportService.js';
 
 const service = new ResumeIntelligenceService();
 const reportEngine = new ResumeIntelligenceReportEngine();
+const dossierExport = new ResumeExportService();
+
+export async function exportDossier(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const pdf = await dossierExport.generateDossierPDF(getUserId(req), req.body.sessionId);
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="devtrack-dossier.pdf"', 'Cache-Control': 'private, no-store' });
+    res.send(pdf);
+  } catch (error) {
+    next(error);
+  }
+}
 
 /**
  * Extract and validate userId from request context safely

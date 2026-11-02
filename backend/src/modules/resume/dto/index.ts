@@ -58,6 +58,8 @@ export const GenerateReportSchema = z.object({
   sessionId: z.string().min(1),
 });
 
+export const DossierExportSchema = z.object({ sessionId: z.string().trim().min(1).max(200) });
+
 // Type exports
 export type CreateResumeProfileDTO = z.infer<typeof CreateResumeProfileSchema>;
 export type UpdateResumeProfileDTO = z.infer<typeof UpdateResumeProfileSchema>;
