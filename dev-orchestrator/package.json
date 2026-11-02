@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || >=24.0.0"
+  },
   "description": "Unified development runtime orchestrator for DevTrack platform",
   "scripts": {
     "dev:all": "tsx src/index.ts",
     "health:check": "tsx src/health-check.ts",
-    "clean:runtime": "tsx src/clean-runtime.ts"
+    "clean:runtime": "tsx src/clean-runtime.ts",
+    "test:node-version": "tsx --test src/utils/nodeVersion.test.ts"
   },
   "dependencies": {
     "chalk": "^4.1.2",

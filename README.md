@@ -136,7 +136,7 @@ graph TD
 | Domain | Technologies | Details |
 |---|---|---|
 | **Frontend** | React 19, Vite 8, TypeScript 5.9 | Tailwind CSS 4, Framer Motion 12, Zustand 5, TanStack Query 5, Axios, Clerk React |
-| **Backend** | Express 5.1, Node.js 20+, TypeScript 5.9 | Mongoose 8.14, BullMQ 5.76, ioredis 5.10, Zod 3.24, Helmet 8.1, Clerk Express |
+| **Backend** | Express 5.1, Node.js 22.13–22.x or 24+, TypeScript 5.9 | Mongoose 8.14, BullMQ 5.76, ioredis 5.10, Zod 3.24, Helmet 8.1, Clerk Express |
 | **Datastores** | MongoDB 7.0+, Redis 7.0+ | MongoDB for persistence; Redis for caching, pub/sub channels, and BullMQ queues |
 | **AI & Document Parsing** | Google Gemini, OpenAI, PDF/DOCX Parsers | `@google/generative-ai`, `openai`, `pdf-parse`, `mammoth` |
 | **Testing** | Vitest 4, Playwright 1.48 | Unit & integration test suites, end-to-end browser specs |
@@ -193,7 +193,7 @@ DevTrack/
 ## Quick Start & Installation
 
 ### Prerequisites
-* **Node.js:** `>= 18.0.0` (Node 22 LTS recommended)
+* **Node.js:** 22.13.0 or newer in the 22 series, or 24.0.0+ (Node 23 is unsupported by locked dependencies). CI and Docker use Node 22.
 * **npm:** `>= 9.0.0`
 * **Docker Desktop:** For running local MongoDB and Redis instances
 * **Clerk Account:** Free account at [clerk.com](https://clerk.com) for authentication credentials

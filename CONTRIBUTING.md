@@ -58,7 +58,7 @@ Follow the existing architecture and module conventions when adding or modifying
 
 ### Prerequisites
 
-- Node.js 18 or later, subject to the versions supported by the current project dependencies.
+- Node.js 22.13.0 or newer in the 22 series, or 24.0.0+. The locked frontend dependencies do not support Node 23.
 - npm 9 or later.
 - Docker Desktop for local MongoDB and Redis.
 - Git and a GitHub account.
