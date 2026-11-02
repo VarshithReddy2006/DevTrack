@@ -17,6 +17,8 @@ export interface IFocusSession extends Document {
   completedAt?: Date;
   plannedDurationMinutes: number;
   actualDurationMinutes: number;
+  activeDurationMs: number;
+  lastResumedAt?: Date | null;
   
   // Quality & Consistency
   focusQualityScore: number; // 0-100
@@ -39,6 +41,8 @@ const FocusSessionSchema = new Schema<IFocusSession>(
     completedAt: { type: Date },
     plannedDurationMinutes: { type: Number, required: true },
     actualDurationMinutes: { type: Number, default: 0 },
+    activeDurationMs: { type: Number, default: 0, min: 0 },
+    lastResumedAt: { type: Date, default: null },
     
     focusQualityScore: { type: Number, default: 0 },
     heartbeatCount: { type: Number, default: 0 },

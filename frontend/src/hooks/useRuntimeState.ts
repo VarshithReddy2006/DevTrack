@@ -60,6 +60,9 @@ export interface RuntimeState {
   // Session & messaging
   sessionContext: {
     isActive: boolean;
+    status?: 'running' | 'paused' | 'completed' | 'abandoned';
+    activeDurationMs?: number;
+    lastResumedAt?: string | null;
     sessionId?: string;
     mode?: string;
     duration?: number;

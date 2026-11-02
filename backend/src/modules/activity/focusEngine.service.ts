@@ -12,21 +12,50 @@ export interface FocusSessionResult {
   sessionId: string;
   qualityScore: number;
   actualDuration: number;
+  activeDurationMs: number;
+}
+
+export interface FocusTiming {
+  activeDurationMs: number;
+  lastResumedAt: Date | null;
 }
 
 export class FocusEngine {
   /**
    * Starts a new focus session and persists it.
    */
-  async startSession(userId: string, mode: string, durationMinutes: number): Promise<string> {
+  async startSession(userId: string, mode: string, durationMinutes: number): Promise<{ sessionId: string; startedAt: Date }> {
+    const startedAt = new Date();
     const session = await FocusSession.create({
       userId: new Types.ObjectId(userId),
       mode,
       status: 'running',
-      startedAt: new Date(),
+      startedAt,
+      lastResumedAt: startedAt,
+      activeDurationMs: 0,
       plannedDurationMinutes: durationMinutes,
     });
-    return session._id.toString();
+    return { sessionId: session._id.toString(), startedAt };
+  }
+
+  async pauseSession(sessionId: string): Promise<FocusTiming | null> {
+    const session = await FocusSession.findById(sessionId);
+    if (!session || session.status !== 'running') return null;
+    const now = new Date();
+    session.activeDurationMs = (session.activeDurationMs ?? 0) + Math.max(0, now.getTime() - (session.lastResumedAt ?? session.startedAt).getTime());
+    session.lastResumedAt = null;
+    session.status = 'paused';
+    await session.save();
+    return { activeDurationMs: session.activeDurationMs, lastResumedAt: null };
+  }
+
+  async resumeSession(sessionId: string): Promise<FocusTiming | null> {
+    const session = await FocusSession.findById(sessionId);
+    if (!session || session.status !== 'paused') return null;
+    session.lastResumedAt = new Date();
+    session.status = 'running';
+    await session.save();
+    return { activeDurationMs: session.activeDurationMs ?? 0, lastResumedAt: session.lastResumedAt };
   }
 
   /**
@@ -44,10 +73,12 @@ export class FocusEngine {
    */
   async completeSession(sessionId: string): Promise<FocusSessionResult | null> {
     const session = await FocusSession.findById(sessionId);
-    if (!session || session.status !== 'running') return null;
+    if (!session || !['running', 'paused'].includes(session.status)) return null;
 
     const completedAt = new Date();
-    const actualDurationMinutes = Math.round((completedAt.getTime() - session.startedAt.getTime()) / 60000);
+    const activeDurationMs = (session.activeDurationMs ?? 0) + (session.status === 'running'
+      ? Math.max(0, completedAt.getTime() - (session.lastResumedAt ?? session.startedAt).getTime()) : 0);
+    const actualDurationMinutes = Math.round(activeDurationMs / 60000);
     
     // Quality Score Heuristics
     // 1. Completion Rate (0-50 pts)
@@ -73,6 +104,8 @@ export class FocusEngine {
     session.status = 'completed';
     session.completedAt = completedAt;
     session.actualDurationMinutes = actualDurationMinutes;
+    session.activeDurationMs = activeDurationMs;
+    session.lastResumedAt = null;
     session.focusQualityScore = qualityScore;
 
     await session.save();
@@ -81,6 +114,7 @@ export class FocusEngine {
       sessionId: session._id.toString(),
       qualityScore,
       actualDuration: actualDurationMinutes,
+      activeDurationMs,
     };
   }
 
@@ -89,7 +123,7 @@ export class FocusEngine {
    */
   async abortSession(sessionId: string): Promise<void> {
     await FocusSession.updateOne(
-      { _id: new Types.ObjectId(sessionId) },
+      { _id: new Types.ObjectId(sessionId), status: { $in: ['running', 'paused'] } },
       { status: 'abandoned', completedAt: new Date() }
     );
   }
