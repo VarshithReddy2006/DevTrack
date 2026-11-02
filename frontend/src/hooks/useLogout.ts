@@ -1,12 +1,11 @@
 import { useRef, useState } from 'react';
 import { useClerk } from '@clerk/clerk-react';
-import { useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/userStore';
 import { useUIStore } from '../store/uiStore';
+import { beginSignOut, finishSignOut } from '../lib/signOutBarrier';
 
 export function useLogout(redirectTo: '/' | '/login') {
   const { signOut } = useClerk();
-  const navigate = useNavigate();
   const logoutCleanup = useUserStore(s => s.logoutCleanup);
   const addToast = useUIStore(s => s.addToast);
   const pending = useRef(false);
@@ -16,6 +15,7 @@ export function useLogout(redirectTo: '/' | '/login') {
     if (pending.current) return;
     pending.current = true;
     setIsLoggingOut(true);
+    beginSignOut();
 
     try {
       // The callback replaces Clerk's default redirect, so cleanup finishes
@@ -30,7 +30,9 @@ export function useLogout(redirectTo: '/' | '/login') {
             message: 'Could not clear all local data. Reload before signing in again.',
           });
         }
-        navigate(redirectTo, { replace: true });
+        // The account boundary may have unmounted this hook while cleanup ran.
+        window.history.replaceState(null, '', redirectTo);
+        window.dispatchEvent(new PopStateEvent('popstate'));
       });
     } catch {
       addToast({
@@ -38,6 +40,7 @@ export function useLogout(redirectTo: '/' | '/login') {
         message: 'Please try again. If this continues, reload the page.',
       });
     } finally {
+      finishSignOut();
       pending.current = false;
       setIsLoggingOut(false);
     }

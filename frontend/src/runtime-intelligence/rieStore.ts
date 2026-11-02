@@ -137,6 +137,7 @@ export const useRIEStore = create<RIEState>()(
     }),
     {
       name: 'rie-storage',
+      skipHydration: true,
     }
   )
 );

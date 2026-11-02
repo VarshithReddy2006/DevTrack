@@ -477,6 +477,7 @@ export const useProgressionStore = create<ProgressionState>()(
       }),
       {
         name: 'mission-storage',
+        skipHydration: true,
         partialize: (state) => ({
           missions: state.missions,
           activeMissionId: state.activeMissionId,
