@@ -32,7 +32,7 @@ vi.mock('@clerk/clerk-react', async () => {
       (listener) => { clerk.listeners.add(listener); return () => { clerk.listeners.delete(listener); }; },
       () => clerk.signedIn,
     );
-    return { isLoaded: true, isSignedIn };
+    return { isLoaded: true, isSignedIn, userId: isSignedIn ? 'synthetic-clerk-user' : null };
   }
   return {
     useAuth,
@@ -43,6 +43,10 @@ vi.mock('@clerk/clerk-react', async () => {
 });
 
 vi.mock('../providers/AppProviders', () => ({ AppProviders: ({ children }: { children: React.ReactNode }) => children }));
+vi.mock('../lib/accountBoundary', async () => ({ prepareAccount: async (userId: string | null) => {
+  if (!userId) await (await import('../lib/signOutBarrier')).waitForSignOut();
+  return true;
+} }));
 vi.mock('../components/layout/AppShell', async () => {
   const { Outlet } = await import('react-router-dom');
   return { AppShell: () => <Outlet /> };
@@ -199,8 +203,7 @@ describe.each(controls)('%s custom logout', (path, label, redirect) => {
     useUserStore.setState({ logoutCleanup: cleanupSpy });
     const { button } = await openControl(path, label);
     fireEvent.click(button);
-    await screen.findByRole('heading', { name: 'Sign in to DevTrack' });
-    expect(cleanupSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(cleanupSpy).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('button', { name: /Signing out/ })).toBeNull();
     expect(localStorage.getItem('devtrack-profile')).not.toBeNull();
     await act(async () => { gate.resolve(); });

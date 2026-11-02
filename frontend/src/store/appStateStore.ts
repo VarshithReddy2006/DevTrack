@@ -133,6 +133,7 @@ interface AppState {
 // LocalStorage helpers
 // ---------------------------------------------------------------------------
 const STORAGE_KEY = 'devtrack_notifications';
+let notificationStorageKey: string | null = null;
 const MAX_ITEMS = 50;
 const PERSIST_COUNT = 20;
 let toastCounter = 0;
@@ -140,7 +141,7 @@ let notifCounter = 0;
 
 function loadFromStorage(): Notification[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = notificationStorageKey ? localStorage.getItem(notificationStorageKey) : null;
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed;
@@ -153,13 +154,19 @@ function loadFromStorage(): Notification[] {
 function saveToStorage(notifications: Notification[]) {
   try {
     const toSave = notifications.slice(0, PERSIST_COUNT);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    if (notificationStorageKey) localStorage.setItem(notificationStorageKey, JSON.stringify(toSave));
   } catch {
     // Ignore storage errors
   }
 }
 
 const initialNotifications = loadFromStorage();
+
+export function setNotificationAccount(userId: string | null) {
+  notificationStorageKey = userId ? `${STORAGE_KEY}:${encodeURIComponent(userId)}` : null;
+  const notifications = loadFromStorage();
+  useAppStateStore.setState({ notifications, unreadCount: notifications.filter(n => !n.read).length });
+}
 
 export const THEME_STORAGE_KEY = 'devtrack_theme';
 

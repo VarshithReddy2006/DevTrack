@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '@clerk/clerk-react';
@@ -8,6 +8,7 @@ import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { AppRouter } from './router';
 import { springCalm } from './lib/motion';
 import { useUserStore } from './store/userStore';
+import { prepareAccount } from './lib/accountBoundary';
 
 const BootSplash: React.FC = () => (
   <motion.div 
@@ -39,19 +40,30 @@ const BootSplash: React.FC = () => (
   </motion.div>
 );
 
-const AuthSyncGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isLoaded, isSignedIn } = useAuth();
+export const AuthSyncGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isLoaded, isSignedIn, userId } = useAuth();
+  const identity = isSignedIn ? userId : null;
+  const [readyIdentity, setReadyIdentity] = useState<string | null | undefined>(undefined);
   const fetchMe = useUserStore((s) => s.fetchMe);
   const user = useUserStore((s) => s.user);
 
   useEffect(() => {
-    if (isLoaded && isSignedIn && !user) {
+    if (!isLoaded || (isSignedIn && !userId)) return;
+    let active = true;
+    void prepareAccount(identity ?? null, undefined, () => active).then(ready => {
+      if (active && ready) setReadyIdentity(identity ?? null);
+    }).catch(error => console.error('Failed to isolate account state', error));
+    return () => { active = false; };
+  }, [isLoaded, isSignedIn, userId, identity]);
+
+  useEffect(() => {
+    if (isLoaded && isSignedIn && readyIdentity === identity && !user) {
       // Sync local user store with our backend when Clerk says we are signed in
       fetchMe();
     }
-  }, [isLoaded, isSignedIn, user, fetchMe]);
+  }, [isLoaded, isSignedIn, identity, readyIdentity, user, fetchMe]);
 
-  if (!isLoaded) {
+  if (!isLoaded || (isSignedIn && !userId) || readyIdentity !== identity) {
     return <BootSplash />;
   }
 
@@ -60,16 +72,16 @@ const AuthSyncGate: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
 function App() {
   return (
-    <BrowserRouter>
-      <AppProviders>
-        <ToastContainer />
-        <AuthSyncGate>
+    <AuthSyncGate>
+      <BrowserRouter>
+        <AppProviders>
+          <ToastContainer />
           <ErrorBoundary pageName="App">
             <AppRouter />
           </ErrorBoundary>
-        </AuthSyncGate>
-      </AppProviders>
-    </BrowserRouter>
+        </AppProviders>
+      </BrowserRouter>
+    </AuthSyncGate>
   );
 }
 
