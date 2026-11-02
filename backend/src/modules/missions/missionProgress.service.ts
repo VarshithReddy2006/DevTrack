@@ -138,6 +138,9 @@ function shouldCountTowardMission(
   if (activityType === 'dsa_solve' && mission.category === 'dsa') {
     const missionTitle = mission.title.toLowerCase();
 
+    // Use the same contest marker as the dsa_contest branch below.
+    if (missionTitle.includes('contest')) return false;
+
     // If mission specifies difficulty, check metadata
     if (missionTitle.includes('easy') && metadata?.difficulty !== 'easy') return false;
     if (missionTitle.includes('medium') && metadata?.difficulty !== 'medium') return false;
