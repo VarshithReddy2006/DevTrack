@@ -70,9 +70,12 @@ export const ProjectListView: React.FC<ProjectListViewProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: isDeleting ? 0.3 : 1 }}
             transition={{ duration: 0.2, delay: i * 0.02 }}
-            onClick={() => onOpen(p.id)}
+            onClick={(event) => {
+              event.currentTarget.querySelector<HTMLButtonElement>('[data-project-open]')?.focus();
+              onOpen(p.id);
+            }}
             className={[
-              'grid grid-cols-[1fr_110px_80px_80px_100px_44px] gap-4 px-5 py-3.5 items-center cursor-pointer',
+              'group grid grid-cols-[1fr_110px_80px_80px_100px_44px] gap-4 px-5 py-3.5 items-center cursor-pointer',
               'border-b border-gray-50 last:border-b-0',
               'hover:bg-gray-50/60 transition-colors duration-150',
               isDeleting ? 'pointer-events-none' : '',
@@ -80,7 +83,11 @@ export const ProjectListView: React.FC<ProjectListViewProps> = ({
           >
             {/* Name + description */}
             <div className="min-w-0">
-              <h4 className="text-[13.5px] font-semibold text-dt-text truncate leading-snug">{p.name}</h4>
+              <h4 className="text-[13.5px] font-semibold text-dt-text truncate leading-snug">
+                <button type="button" data-project-open onClick={(event) => { event.stopPropagation(); onOpen(p.id); }} className="text-left focus-visible:outline-2 focus-visible:outline-dt-primary">
+                  {p.name}
+                </button>
+              </h4>
               {p.techStack.length > 0 && (
                 <div className="flex items-center gap-1.5 mt-0.5">
                   {p.techStack.slice(0, 3).map(t => (
@@ -117,8 +124,9 @@ export const ProjectListView: React.FC<ProjectListViewProps> = ({
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); onDelete(p.id); }}
-              className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center text-gray-400 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+              className="w-8 h-8 rounded-lg hover:bg-red-50 flex items-center justify-center text-gray-400 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
               title="Delete"
+              aria-label={`Delete ${p.name}`}
             >
               <Icon name="trash" size={14} />
             </button>

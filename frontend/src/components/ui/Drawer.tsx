@@ -1,6 +1,8 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/design-system/tokens.css';
+import { useId } from 'react';
+import { useDialogFocus } from './useDialogFocus';
 
 interface DrawerProps {
   open: boolean;
@@ -13,6 +15,8 @@ interface DrawerProps {
 
 export function Drawer({ open, onClose, title, side = 'right', children, className }: DrawerProps) {
   const from = side === 'right' ? '100%' : '-100%';
+  const dialogRef = useDialogFocus<HTMLElement>(onClose);
+  const titleId = useId();
 
   return (
     <AnimatePresence>
@@ -26,6 +30,7 @@ export function Drawer({ open, onClose, title, side = 'right', children, classNa
             onClick={onClose}
           />
           <motion.aside
+            ref={dialogRef}
             initial={{ x: from }}
             animate={{ x: 0 }}
             exit={{ x: from }}
@@ -37,10 +42,13 @@ export function Drawer({ open, onClose, title, side = 'right', children, classNa
             )}
             role="dialog"
             aria-modal="true"
+            aria-labelledby={title ? titleId : undefined}
+            aria-label={title ? undefined : 'Drawer'}
+            tabIndex={-1}
           >
             {title && (
               <div className="h-14 px-4 flex items-center justify-between border-b border-zinc-800 shrink-0">
-                <h2 className="font-semibold text-sm">{title}</h2>
+                <h2 id={titleId} className="font-semibold text-sm">{title}</h2>
                 <button type="button" onClick={onClose} className="p-2 text-zinc-500 hover:text-zinc-300" aria-label="Close">
                   <X size={18} />
                 </button>

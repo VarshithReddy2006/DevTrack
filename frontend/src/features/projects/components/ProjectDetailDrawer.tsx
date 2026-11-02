@@ -25,6 +25,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { Icon, type IconName } from '../../../components/shared/Icon';
 import { useProjectDetail } from '../../../hooks/useProjectsData';
+import { useDialogFocus } from '../../../components/ui/useDialogFocus';
 import { createProjectTask, updateProjectTask } from '../../../services/projectsService';
 import { TaskDetailDrawer } from './TaskDetailDrawer';
 import { ActivityFeed } from './ActivityFeed';
@@ -105,7 +106,7 @@ const InlineTaskCreator: React.FC<{
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleSubmit();
-    if (e.key === 'Escape') { setIsOpen(false); setTitle(''); }
+    if (e.key === 'Escape') { e.stopPropagation(); setIsOpen(false); setTitle(''); }
   };
 
   if (!isOpen) {
@@ -186,7 +187,9 @@ const SortableTaskCard: React.FC<{
       ].join(' ')}
     >
       <p className="text-[13px] font-medium text-dt-text leading-snug line-clamp-2 mb-2">
-        {task.title}
+        <button type="button" onClick={(event) => { event.stopPropagation(); onEdit(task); }} onKeyDown={(event) => { if (event.key === ' ' || event.key === 'Enter') event.stopPropagation(); }} className="text-left focus-visible:outline-2 focus-visible:outline-dt-primary">
+          {task.title}
+        </button>
       </p>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -577,15 +580,7 @@ const OverviewTab: React.FC<{ detail: ProjectDetailVM }> = ({ detail }) => {
 export const ProjectDetailDrawer: React.FC<ProjectDetailDrawerProps> = ({ projectId, onClose }) => {
   const { data: detail, status, refresh } = useProjectDetail(projectId);
   const [activeTab, setActiveTab] = useState<DrawerTab>('overview');
-  const drawerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  const drawerRef = useDialogFocus<HTMLDivElement>(onClose);
 
   const handleBackdropClick = useCallback((e: React.MouseEvent) => {
     if (e.target === e.currentTarget) onClose();

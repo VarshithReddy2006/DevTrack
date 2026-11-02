@@ -79,14 +79,15 @@ export const ProjectBoardView: React.FC<ProjectBoardViewProps> = ({
               const isDeleting = deletingId === p.id;
 
               return (
-                <motion.div
+                <motion.button
                   key={p.id}
+                  type="button"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: isDeleting ? 0.3 : 1, y: 0 }}
                   transition={{ duration: 0.3, delay: i * 0.05 }}
                   onClick={() => onOpen(p.id)}
                   className={[
-                    'bg-white border border-gray-200 rounded-xl p-3.5 cursor-pointer',
+                    'bg-white border border-gray-200 rounded-xl p-3.5 cursor-pointer text-left w-full focus-visible:outline-2 focus-visible:outline-dt-primary',
                     'hover:border-dt-primary/20 hover:shadow-sm transition-all duration-200',
                     isDeleting ? 'pointer-events-none' : '',
                   ].join(' ')}
@@ -121,7 +122,7 @@ export const ProjectBoardView: React.FC<ProjectBoardViewProps> = ({
                     </div>
                     <span className="text-[10px] text-dt-textMuted/60 font-medium">{p.updatedAgo}</span>
                   </div>
-                </motion.div>
+                </motion.button>
               );
             })}
           </div>
