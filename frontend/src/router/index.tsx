@@ -105,6 +105,18 @@ export const AppRouter: React.FC = () => {
         }
       />
 
+      {/* Public profile: reachable without signing in, so it lives outside ProtectedLayout */}
+      <Route
+        path="/u/:username"
+        element={
+          <ErrorBoundary pageName="Public Profile">
+            <Suspense fallback={<PageFallback />}>
+              <ProfilePage isPublicView={true} />
+            </Suspense>
+          </ErrorBoundary>
+        }
+      />
+
       {/* Protected Routes Layout */}
       <Route element={<ProtectedLayout />}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -142,16 +154,6 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="Progress">
               <Suspense fallback={<PageFallback />}>
                 <ProfilePage />
-              </Suspense>
-            </ErrorBoundary>
-          }
-        />
-        <Route
-          path="/u/:username"
-          element={
-            <ErrorBoundary pageName="Public Profile">
-              <Suspense fallback={<PageFallback />}>
-                <ProfilePage isPublicView={true} />
               </Suspense>
             </ErrorBoundary>
           }

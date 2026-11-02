@@ -13,8 +13,8 @@ import codechefLogo from '@/assets/logos/CodeChef.png';
 // ---------------------------------------------------------------------------
 // Helper: Codeforces Rank Colors (Premium Palette)
 // ---------------------------------------------------------------------------
-function cfRankColor(rank: string): string {
-  const r = rank.toLowerCase();
+function cfRankColor(rank?: string): string {
+  const r = (rank ?? '').toLowerCase();
   if (r.includes('legendary') || r.includes('tourist')) return '#ef4444';
   if (r.includes('grandmaster')) return '#f87171';
   if (r.includes('master')) return '#fb923c';
