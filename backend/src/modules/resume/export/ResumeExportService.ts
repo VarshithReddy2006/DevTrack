@@ -11,6 +11,14 @@ import path from 'path';
 import puppeteer from 'puppeteer';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 
+// Report fields may contain resume text. Escape them before inserting into HTML.
+function escapeReport(value: any): any {
+  if (typeof value === 'string') return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
+  if (Array.isArray(value)) return value.map(escapeReport);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeReport(item)]));
+  return value;
+}
+
 export interface IExportOptions {
   userId: Types.ObjectId;
   resumeProfileId: Types.ObjectId;
@@ -72,7 +80,7 @@ export class ResumeExportService {
     if (options.exportType === 'pdf') {
       try {
         if (options.sessionId) {
-           await this.generateDossierPDF(options.userId, options.sessionId, fullPath);
+           fs.writeFileSync(fullPath, await this.generateDossierPDF(options.userId, options.sessionId));
         } else {
            // Basic profile PDF
            await this.generateProfilePDF(options.resumeProfileId, fullPath);
@@ -116,13 +124,14 @@ export class ResumeExportService {
   /**
    * Generates a high-fidelity recruiter-grade HTML representation of the 14-section dossier
    */
-  private async generateDossierPDF(userId: Types.ObjectId, sessionId: string, exportPath: string): Promise<string> {
-    const session = await ResumeSession.findOne({ userId, sessionId });
-    if (!session || !session.reportState || !session.reportState.generated) {
-      throw new Error(`Report not generated yet for session ${sessionId}`);
+  async generateDossierPDF(userId: Types.ObjectId, sessionId: string): Promise<Buffer> {
+    const session = await ResumeSession.findOne({ userId, sessionId, currentStage: 'COMPLETED' });
+    if (!session?.reportState?.generated || !session.reportState.reportData) {
+      throw Object.assign(new Error('Dossier not found'), { statusCode: 404 });
     }
 
-    const report = session.reportState.reportData;
+    const report = escapeReport(session.reportState.reportData);
+    const safeSessionId = escapeReport(sessionId);
 
     const htmlContent = `
 <!DOCTYPE html>
@@ -283,7 +292,7 @@ export class ResumeExportService {
       <h1>DevTrack Engineering Dossier</h1>
       <span>SECURE LEVEL II AUDIT REPORT</span>
     </div>
-    <span style="font-weight: bold;">Session ID: ${sessionId}</span>
+    <span style="font-weight: bold;">Session ID: ${safeSessionId}</span>
   </div>
 
   <div class="grid-summary">
@@ -390,20 +399,18 @@ export class ResumeExportService {
 </html>
 `;
 
-    // Write PDF to disk using Puppeteer
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
     try {
-      const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
       const page = await browser.newPage();
+      await page.setRequestInterception(true);
+      page.on('request', request => { void request.abort(); });
       await page.setContent(htmlContent, { waitUntil: 'networkidle0' as any });
-      await page.pdf({ path: exportPath, format: 'A4', printBackground: true });
+      const pdf = Buffer.from(await page.pdf({ format: 'A4', printBackground: true }));
+      if (!pdf.subarray(0, 5).equals(Buffer.from('%PDF-'))) throw new Error('Invalid dossier PDF');
+      return pdf;
+    } finally {
       await browser.close();
-      logger.info(`[ResumeExportService] High-trust PDF dossier written to ${exportPath}`);
-    } catch (err) {
-      logger.error('[ResumeExportService] Puppeteer PDF generation failed', err);
-      throw err;
     }
-
-    return exportPath;
   }
 
   private async generateProfilePDF(profileId: Types.ObjectId, exportPath: string): Promise<string> {

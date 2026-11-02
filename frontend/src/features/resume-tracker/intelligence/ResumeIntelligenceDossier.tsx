@@ -10,6 +10,8 @@ export const ResumeIntelligenceDossier: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const fetchReport = async () => {
     if (!currentSession?.sessionId) return;
@@ -61,22 +63,25 @@ export const ResumeIntelligenceDossier: React.FC = () => {
   }, [currentSession?.sessionId]);
 
   const handleExportPDF = async () => {
-    if (!currentSession?.sessionId) return;
+    if (!currentSession?.sessionId || exporting) return;
     try {
-      // Trigger export route (mocked in server to download or print)
-      const res = await api.post('/resume-intelligence/export', {
-        variantId: currentSession.sessionId,
-        exportType: 'pdf',
-        includeATSAnalysis: true
-      });
-      
-      if (res.data?.success) {
-        alert('Dossier exported successfully! Your PDF file is now compiling.');
-      }
+      setExporting(true);
+      setExportError(null);
+      const res = await api.post('/resume-intelligence/dossier-pdf', { sessionId: currentSession.sessionId }, { responseType: 'blob' });
+      if (!(res.data instanceof Blob) || !res.data.size || !String(res.headers['content-type'] || '').toLowerCase().startsWith('application/pdf')) throw new Error('Invalid PDF response');
+      const url = URL.createObjectURL(res.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'devtrack-dossier.pdf';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) {
       console.error(err);
-      alert('Could not download PDF. Using system printing instead.');
-      window.print();
+      setExportError('Could not download the dossier PDF. Please try again.');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -122,12 +127,14 @@ export const ResumeIntelligenceDossier: React.FC = () => {
         </div>
         <button 
           onClick={handleExportPDF}
+          disabled={exporting}
           className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 transition-all rounded-xl text-xs font-black text-white shadow-lg shrink-0"
         >
           <Download size={14} />
-          EXPORT DOSSIER → PDF
+          {exporting ? 'EXPORTING…' : 'EXPORT DOSSIER → PDF'}
         </button>
       </div>
+      {exportError && <p role="alert">{exportError}</p>}
 
       {/* Grid of Key Scores & Executive Summary */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
