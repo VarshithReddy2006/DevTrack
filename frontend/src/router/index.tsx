@@ -29,6 +29,7 @@ const RoadmapIntelligencePage = lazy(() => import('../pages/readiness/RoadmapInt
 const EvolutionIntelligencePage = lazy(() => import('../pages/readiness/EvolutionIntelligencePage'));
 const AIGuidancePage = lazy(() => import('../pages/readiness/AIGuidancePage'));
 const BetaDashboardPage = lazy(() => import('../pages/admin/BetaDashboardPage'));
+const NotFoundPage = lazy(() => import('../pages/NotFoundPage'));
 
 const skeletonVariants = {
   initial: { opacity: 0 },
@@ -276,8 +277,19 @@ export const AppRouter: React.FC = () => {
         <Route path="/achievements" element={<Navigate to="/profile" replace />} />
         <Route path="/leaderboard" element={<Navigate to="/profile" replace />} />
         <Route path="/notifications" element={<Navigate to="/dashboard" replace />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
+
+      {/* Unknown URLs get a real 404 page, signed in or not */}
+      <Route
+        path="*"
+        element={
+          <ErrorBoundary pageName="Not Found">
+            <Suspense fallback={<PageFallback />}>
+              <NotFoundPage />
+            </Suspense>
+          </ErrorBoundary>
+        }
+      />
     </Routes>
   );
 };
