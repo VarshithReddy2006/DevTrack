@@ -70,7 +70,7 @@ docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs -f
 ```
 
-> **Port note:** `docker-compose.prod.yml` defaults API to port **4000**. Development uses **3001**. Set `PORT` and `API_PORT` consistently across your environment.
+> **Port note:** `docker-compose.prod.yml` publishes the API on host port **4000** by default and routes it to container port **3001**. Override only the host port with `API_PORT`. Development publishes container port 3001 directly.
 
 
 ---
@@ -116,7 +116,7 @@ Copy `.env.example` (root) as a starting template for production.
 
 Copy `frontend/.env.example` as a starting template.
 
-> **Docker build note:** The frontend `Dockerfile` may accept a `VITE_API_URL` build arg. The application code reads `VITE_API_BASE_URL` - ensure your CI/CD injects the correct variable name.
+> **Docker build note:** The frontend image accepts `VITE_API_BASE_URL` and `VITE_CLERK_PUBLISHABLE_KEY` build arguments, matching the variables read by the application. Both values are public client configuration embedded by Vite. Never pass `CLERK_SECRET_KEY` or another server-only secret as a frontend build argument.
 
 ---
 
@@ -125,15 +125,18 @@ Copy `frontend/.env.example` as a starting template.
 ### Development full-stack
 
 ```bash
+export VITE_CLERK_PUBLISHABLE_KEY=pk_test_your_key
+docker compose config
+docker compose build
 docker compose up --build
 ```
 
 
 Services: `mongo` (7), `redis` (7-alpine), `backend`, `frontend` (Nginx).
 
-- Frontend: ports 80/443, proxies `/api` to backend
+- Frontend: port 80, proxies `/api` to backend
 - Backend: port 3001
-- Requires `backend/.env` with Clerk and AI keys
+- Requires `VITE_CLERK_PUBLISHABLE_KEY` in the shell or root `.env` for the frontend build. `backend/.env` is optional for Compose parsing but runtime features require the documented backend credentials.
 
 ### Production split topology
 
@@ -143,7 +146,10 @@ Services: `mongo` (7), `redis` (7-alpine), `backend`, `frontend` (Nginx).
 - `worker-sync` (2 replicas), `worker-xp`, `worker-resume`, `worker-dataset`, `worker-maint`
 - `mongo`, `redis` with health checks
 
-Requires `.env.production` at the repo root.
+Use `docker compose --env-file .env.production -f docker-compose.prod.yml ...`
+when `.env.production` supplies values used in Compose interpolation (for example
+`MONGODB_URI`, `MONGO_USER`, `MONGO_PASS`, or `API_PORT`). The file is also loaded
+into backend containers when present; it is optional for configuration parsing.
 
 ### Shell deploy script
 
