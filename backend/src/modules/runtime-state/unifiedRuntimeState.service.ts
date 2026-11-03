@@ -23,6 +23,7 @@ import { eventBus } from '../../shared/sse/index.js';
 import { logger } from '../../shared/logger.js';
 import { getUserXp } from '../xp/processor.js';
 import { getStreakStatus } from '../streak/streak.service.js';
+import type { FocusSessionResult } from '../activity/focusEngine.service.js';
 
 export interface RuntimeStateEvent {
   eventId: string;
@@ -263,27 +264,39 @@ export class UnifiedRuntimeStateService {
     });
   }
 
-  async stopFocusSession(userId: string): Promise<IUnifiedRuntimeState> {
+  /**
+   * Stops the user's focus session. `completed` is set only for the call that
+   * actually moved a running/paused session to completed, so callers can award
+   * XP and streak exactly once. Replays and stops with no session return
+   * `completed: null` and leave the runtime state alone.
+   */
+  async stopFocusSession(userId: string): Promise<{ state: IUnifiedRuntimeState; completed: FocusSessionResult | null }> {
     const state = await this.getRuntimeStateFresh(userId);
-    let qualityScore = 100;
-    let activeDurationMs = state?.sessionContext?.activeDurationMs ?? 0;
-    
-    if (state?.sessionContext?.sessionId) {
+    const sessionId = state?.sessionContext?.sessionId;
+    let completed: FocusSessionResult | null = null;
+
+    if (sessionId) {
       const { focusEngine } = await import('../activity/focusEngine.service.js');
-      const result = await focusEngine.completeSession(state.sessionContext.sessionId);
-      if (result) {
-        qualityScore = result.qualityScore;
-        activeDurationMs = result.activeDurationMs;
-      }
+      completed = await focusEngine.completeSession(sessionId);
     }
 
-    return await this.updateFromEvent({
+    // Nothing was running and the stored context is already inactive: no-op.
+    if (!completed && !state?.sessionContext?.isActive) {
+      return { state: state ?? await this.rebuildRuntimeState(userId), completed: null };
+    }
+
+    const updated = await this.updateFromEvent({
       eventId: `focus_stop_${userId}_${Date.now()}`,
       eventType: 'focus_session_stopped',
       userId,
       timestamp: new Date(),
-      data: { stoppedAt: new Date(), qualityScore, activeDurationMs },
+      data: {
+        stoppedAt: new Date(),
+        qualityScore: completed?.qualityScore ?? 100,
+        activeDurationMs: completed?.activeDurationMs ?? state?.sessionContext?.activeDurationMs ?? 0,
+      },
     });
+    return { state: updated, completed };
   }
 
   async invalidateState(userId: string): Promise<void> {
