@@ -39,7 +39,7 @@ export const ExportResumeSchema = z.object({
 // ATS Analysis DTOs
 export const AnalyzeATSSchema = z.object({
   variantId: z.string().optional(),
-  targetKeywords: z.array(z.string()).optional(),
+  targetKeywords: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
 });
 
 // Evidence Claim DTOs

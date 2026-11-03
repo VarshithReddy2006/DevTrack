@@ -8,6 +8,7 @@ import { UserStreakLog } from '../../db/models/userStreakLog.model.js';
 import { ProfileView } from '../../db/models/profileView.model.js';
 import { VerificationEngine } from './verification.engine.js';
 import mongoose from 'mongoose';
+import { escapeRegExp } from '../../shared/regex.js';
 
 export class PublicProfileService {
   /**
@@ -131,7 +132,7 @@ export class PublicProfileService {
     
     // If not found, check if user exists and create basic profile
     if (!profile) {
-      const user = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
+      const user = await User.findOne({ username: new RegExp(`^${escapeRegExp(username)}$`, 'i') });
       if (!user) throw new Error('Profile not found');
       
       await this.computeProfile(user._id as mongoose.Types.ObjectId);
