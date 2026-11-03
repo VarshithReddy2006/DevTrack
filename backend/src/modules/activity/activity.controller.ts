@@ -108,7 +108,18 @@ export async function cancelFocusSession(req: AuthenticatedRequest, res: Respons
 
 export async function stopFocusSession(req: AuthenticatedRequest, res: Response): Promise<void> {
   const { unifiedRuntimeStateService } = await import('../runtime-state/unifiedRuntimeState.service.js');
-  const state = await unifiedRuntimeStateService.stopFocusSession(req.user!.id);
+  const { state, completed } = await unifiedRuntimeStateService.stopFocusSession(req.user!.id);
+
+  // Nothing was running (never started, or this is a replay of an earlier stop).
+  // Succeed so the client can reset its timer, but award nothing.
+  if (!completed) {
+    successResponse(res, state.sessionContext, 'No running focus session to stop');
+    return;
+  }
+
+  // One session, one ledger key: a retry or double click collapses in the XP
+  // unique index and in the streak log's per-day source list.
+  const sourceId = `focus_${completed.sessionId}`;
 
   // Record as an activity event
   await service.createActivity(req.user!.id, {
@@ -130,7 +141,7 @@ export async function stopFocusSession(req: AuthenticatedRequest, res: Response)
   await queue.add('focus-session-completed', {
     userId: req.user!.id,
     sourceType: 'focus_session',
-    sourceId: `focus_${Date.now()}`,
+    sourceId,
     metadata: { duration: state.sessionContext.duration },
   });
 
@@ -144,7 +155,7 @@ export async function stopFocusSession(req: AuthenticatedRequest, res: Response)
   await recordActivity({
     userId: req.user!.id,
     streakType: 'focus',
-    source: `focus_${Date.now()}`,
+    source: sourceId,
     timezone,
   });
 

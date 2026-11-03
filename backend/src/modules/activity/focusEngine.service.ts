@@ -101,17 +101,27 @@ export class FocusEngine {
 
     const qualityScore = Math.min(100, Math.max(0, Math.round(score)));
 
-    session.status = 'completed';
-    session.completedAt = completedAt;
-    session.actualDurationMinutes = actualDurationMinutes;
-    session.activeDurationMs = activeDurationMs;
-    session.lastResumedAt = null;
-    session.focusQualityScore = qualityScore;
-
-    await session.save();
+    // Flip the status atomically. If another request already completed (or
+    // cancelled) this session between the read above and now, the filter no
+    // longer matches and exactly one caller gets a result.
+    const completed = await FocusSession.findOneAndUpdate(
+      { _id: session._id, status: session.status },
+      {
+        $set: {
+          status: 'completed',
+          completedAt,
+          actualDurationMinutes,
+          activeDurationMs,
+          lastResumedAt: null,
+          focusQualityScore: qualityScore,
+        },
+      },
+      { new: true }
+    );
+    if (!completed) return null;
 
     return {
-      sessionId: session._id.toString(),
+      sessionId: completed._id.toString(),
       qualityScore,
       actualDuration: actualDurationMinutes,
       activeDurationMs,
