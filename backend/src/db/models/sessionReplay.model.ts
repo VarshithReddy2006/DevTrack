@@ -115,7 +115,6 @@ const SessionReplaySchema = new Schema<ISessionReplay>({
 });
 
 // Indexes
-SessionReplaySchema.index({ sessionId: 1 });
 SessionReplaySchema.index({ userId: 1 });
 SessionReplaySchema.index({ betaUserId: 1 });
 SessionReplaySchema.index({ cohortId: 1 });

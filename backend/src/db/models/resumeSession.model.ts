@@ -189,12 +189,10 @@ const resumeSessionSchema = new Schema<IResumeSession>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     userId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
     },
     
     uploadMetadata: {
@@ -226,7 +224,6 @@ const resumeSessionSchema = new Schema<IResumeSession>(
       required: true,
       enum: ['UPLOADED', 'VALIDATING', 'PARSING', 'EXTRACTING', 'ATS_ANALYZING', 'EMBEDDING', 'SEMANTIC_ANALYZING', 'RECOMMENDING', 'REPLAY_GENERATING', 'REPORT_GENERATING', 'COMPLETED', 'FAILED', 'DEGRADED'],
       default: 'UPLOADED',
-      index: true,
     },
 
     
@@ -361,7 +358,6 @@ const resumeSessionSchema = new Schema<IResumeSession>(
 );
 
 // Indexes
-resumeSessionSchema.index({ sessionId: 1 }, { unique: true });
 resumeSessionSchema.index({ userId: 1 });
 resumeSessionSchema.index({ currentStage: 1 });
 resumeSessionSchema.index({ 'timestamps.uploadedAt': -1 });

@@ -44,9 +44,7 @@ const BetaUserSchema = new Schema<IBetaUser>({
 });
 
 // Indexes
-BetaUserSchema.index({ userId: 1 });
 BetaUserSchema.index({ email: 1 });
-BetaUserSchema.index({ inviteCode: 1 });
 BetaUserSchema.index({ cohortId: 1 });
 BetaUserSchema.index({ status: 1 });
 BetaUserSchema.index({ invitedAt: 1 });

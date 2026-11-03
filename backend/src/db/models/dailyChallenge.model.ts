@@ -17,7 +17,7 @@ export interface IDailyChallenge extends Document {
 
 const dailyChallengeSchema = new Schema<IDailyChallenge>(
   {
-    date: { type: String, required: true, unique: true, index: true },
+    date: { type: String, required: true, unique: true },
     title: { type: String, required: true },
     titleSlug: { type: String, required: true },
     description: { type: String, required: true },

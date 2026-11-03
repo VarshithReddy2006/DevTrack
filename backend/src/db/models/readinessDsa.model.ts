@@ -40,7 +40,7 @@ export interface IReadinessDsa extends Document {
 
 const ReadinessDsaSchema = new Schema<IReadinessDsa>(
   {
-    userId: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, unique: true },
     totalSolves: { type: Number, default: 0 },
     hardProblemProgression: { type: Number, default: 0 },
     solveConsistency: { type: Number, default: 0 },

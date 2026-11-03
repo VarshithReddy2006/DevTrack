@@ -26,7 +26,7 @@ export interface IUserXp extends Document {
 
 const userXpSchema = new Schema<IUserXp>(
   {
-    userId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true, unique: true },
     totalXp: { type: Number, default: 0, min: 0 },
     currentLevel: { type: Number, default: 1, min: 1 },
     xpToNextLevel: { type: Number, default: 100, min: 0 },

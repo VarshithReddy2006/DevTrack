@@ -65,12 +65,10 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
       type: Schema.Types.ObjectId,
       ref: 'ResumeProfile',
       required: true,
-      index: true,
     },
     variantId: {
       type: String,
       default: null,
-      index: true,
     },
     claimText: {
       type: String,
