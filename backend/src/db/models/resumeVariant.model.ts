@@ -47,13 +47,11 @@ const resumeVariantSchema = new Schema<IResumeVariant>(
       type: Schema.Types.ObjectId,
       ref: 'ResumeProfile',
       required: true,
-      index: true,
     },
     variantId: {
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     roleType: {
       type: String,
@@ -124,6 +122,5 @@ const resumeVariantSchema = new Schema<IResumeVariant>(
 // Indexes
 resumeVariantSchema.index({ userId: 1, roleType: 1 });
 resumeVariantSchema.index({ resumeProfileId: 1 });
-resumeVariantSchema.index({ variantId: 1 });
 
 export const ResumeVariant = model<IResumeVariant>('ResumeVariant', resumeVariantSchema);

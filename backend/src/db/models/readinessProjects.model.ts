@@ -48,7 +48,7 @@ export interface IReadinessProjects extends Document {
 
 const ReadinessProjectsSchema = new Schema<IReadinessProjects>(
   {
-    userId: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, unique: true },
     projectCredibilityScore: { type: Number, default: 0 },
     infrastructureSophistication: { type: Number, default: 0 },
     engineeringMaturity: { type: Number, default: 0 },

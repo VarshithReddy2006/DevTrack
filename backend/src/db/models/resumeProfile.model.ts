@@ -54,7 +54,6 @@ const resumeProfileSchema = new Schema<IResumeProfile>(
       ref: 'User',
       required: true,
       unique: true,
-      index: true,
     },
     targetRole: {
       type: String,
@@ -143,7 +142,6 @@ const resumeProfileSchema = new Schema<IResumeProfile>(
 );
 
 // Indexes
-resumeProfileSchema.index({ userId: 1 });
 resumeProfileSchema.index({ credibilityScore: -1 });
 resumeProfileSchema.index({ atsScore: -1 });
 

@@ -31,7 +31,7 @@ export interface IReadinessSkills extends Document {
 
 const ReadinessSkillsSchema = new Schema<IReadinessSkills>(
   {
-    userId: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, unique: true },
     domains: [
       {
         name: { type: String },

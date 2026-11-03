@@ -57,7 +57,6 @@ const resumeVersionSchema = new Schema<IResumeVersion>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     roleVariant: {
       type: String,
@@ -109,6 +108,5 @@ const resumeVersionSchema = new Schema<IResumeVersion>(
 // Indexes
 resumeVersionSchema.index({ userId: 1, createdAt: -1 });
 resumeVersionSchema.index({ resumeProfileId: 1, createdAt: -1 });
-resumeVersionSchema.index({ versionId: 1 });
 
 export const ResumeVersion = model<IResumeVersion>('ResumeVersion', resumeVersionSchema);

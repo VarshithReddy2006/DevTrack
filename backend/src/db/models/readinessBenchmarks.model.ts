@@ -33,7 +33,7 @@ export interface IReadinessBenchmarks extends Document {
 
 const ReadinessBenchmarksSchema = new Schema<IReadinessBenchmarks>(
   {
-    userId: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, unique: true },
     cohortSegments: [
       {
         cohortId: { type: String },
