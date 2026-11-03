@@ -68,7 +68,8 @@ BASE_URL=http://localhost:5173
 
 ## Test Fixtures
 
-`e2e/fixtures/sample-resume.txt` — sample resume for upload tests.
+`e2e/fixtures/sample-resume.pdf` is a tracked synthetic PDF for the resume browser flow.
+`sample-resume.txt` remains available for other tests.
 
 ## Key Assertions
 
@@ -91,7 +92,18 @@ All scenarios verify user-friendly error messages and no silent data loss.
 
 ## CI
 
-E2E tests are not currently in the PR check workflow (`.github/workflows/pr-checks.yml`). Run locally before merging intelligence-related changes.
+PR checks run the resume browser flow in Chromium with a disposable MongoDB process,
+an isolated Redis service, the real upload worker, and a fixed test-only Clerk identity.
+The fixture server rejects an inherited MongoDB URI and uses no personal credentials.
+Playwright traces, screenshots, video, and JUnit output are uploaded on failure.
+
+To run this flow locally, start a disposable Redis service on `127.0.0.1:6379`, then run:
+
+```bash
+npm run test:e2e:resume --prefix frontend
+```
+
+Other E2E specs are not part of PR CI yet.
 
 ## Related Docs
 

@@ -1,0 +1,63 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 685 >>
+stream
+BT
+/F1 12 Tf
+60 750 Td
+(Alex Example) Tj
+0 -24 Td
+(Software Engineer | alex@example.test) Tj
+0 -24 Td
+(SUMMARY) Tj
+0 -24 Td
+(Backend engineer building reliable APIs and worker systems.) Tj
+0 -24 Td
+(EXPERIENCE) Tj
+0 -24 Td
+(Engineer, Example Labs, 2022 to present) Tj
+0 -24 Td
+(Built Node.js and Express REST services with MongoDB and Redis.) Tj
+0 -24 Td
+(Designed BullMQ job processing and idempotent event handling.) Tj
+0 -24 Td
+(PROJECTS) Tj
+0 -24 Td
+(Developer analytics platform using TypeScript and React.) Tj
+0 -24 Td
+(EDUCATION) Tj
+0 -24 Td
+(BSc Computer Science) Tj
+0 -24 Td
+(SKILLS) Tj
+0 -24 Td
+(TypeScript, JavaScript, Node.js, Express, MongoDB, Redis, Docker, React) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000317 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1052
+%%EOF
