@@ -41,7 +41,6 @@ const resumeExportSchema = new Schema<IResumeExport>(
     variantId: {
       type: String,
       default: null,
-      index: true,
     },
     exportType: {
       type: String,
@@ -61,7 +60,6 @@ const resumeExportSchema = new Schema<IResumeExport>(
       type: String,
       enum: ['pending', 'passed', 'failed', 'warning'],
       default: 'pending',
-      index: true,
     },
     exportVersion: {
       type: String,

@@ -220,9 +220,6 @@ const PublicProfileSchema = new Schema<IPublicProfile>(
   { timestamps: true }
 );
 
-PublicProfileSchema.index({ username: 1 }, { unique: true });
-PublicProfileSchema.index({ slug: 1 }, { unique: true });
-PublicProfileSchema.index({ userId: 1 }, { unique: true });
 PublicProfileSchema.index({ visibility: 1, isIndexable: 1 });
 PublicProfileSchema.index({ 'antiGaming.isFlagged': 1 });
 PublicProfileSchema.index({ 'snapshot.computedAt': -1 });

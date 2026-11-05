@@ -146,7 +146,7 @@ export interface IUnifiedRuntimeState extends Document {
 
 const unifiedRuntimeStateSchema = new Schema<IUnifiedRuntimeState>(
   {
-    userId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true, unique: true },
     
     // Core progression
     xp: { type: Number, default: 0, min: 0 },

@@ -35,7 +35,7 @@ export interface IUserAnalytics extends Document {
 
 const userAnalyticsSchema = new Schema<IUserAnalytics>(
   {
-    userId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true, unique: true },
 
     // Streak
     currentStreak: { type: Number, default: 0, min: 0 },

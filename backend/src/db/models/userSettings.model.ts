@@ -58,7 +58,6 @@ const userSettingsSchema = new Schema<IUserSettings>(
       ref: 'User',
       required: true,
       unique: true,
-      index: true,
     },
     platforms: {
       github: { type: platformSchema, default: () => ({}) },
@@ -106,7 +105,6 @@ const userSettingsSchema = new Schema<IUserSettings>(
   }
 );
 
-// Indexes
-userSettingsSchema.index({ userId: 1 }, { unique: true });
+// Indexes: userId is unique-indexed on the field itself, so it is not repeated here.
 
 export const UserSettings = model<IUserSettings>('UserSettings', userSettingsSchema);

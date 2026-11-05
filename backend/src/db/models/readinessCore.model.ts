@@ -35,7 +35,7 @@ export interface IReadinessCore extends Document {
 
 const ReadinessCoreSchema = new Schema<IReadinessCore>(
   {
-    userId: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, unique: true },
     overallScore: { type: Number, default: 0 },
     confidence: { type: Number, default: 0 },
     trustWeight: { type: Number, default: 1.0 },

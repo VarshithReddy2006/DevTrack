@@ -29,7 +29,6 @@ const recommendationSchema = new Schema<IRecommendationDocument>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     recommendations: {
       type: [recommendationItemSchema],

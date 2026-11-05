@@ -35,7 +35,7 @@ export interface IReadinessRoadmap extends Document {
 
 const ReadinessRoadmapSchema = new Schema<IReadinessRoadmap>(
   {
-    userId: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, unique: true },
     verifiedNodes: [
       {
         nodeId: { type: String },

@@ -117,7 +117,6 @@ const atsAnalysisSchema = new Schema<IATSAnalysis>(
     variantId: {
       type: String,
       default: null,
-      index: true,
     },
     exportId: {
       type: Schema.Types.ObjectId,

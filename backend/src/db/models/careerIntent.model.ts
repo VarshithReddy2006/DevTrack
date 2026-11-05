@@ -25,7 +25,7 @@ export interface ICareerIntent extends Document {
 
 const CareerIntentSchema = new Schema<ICareerIntent>(
   {
-    userId: { type: String, required: true, unique: true, index: true },
+    userId: { type: String, required: true, unique: true },
     dreamRole: { type: String, required: true },
     targetPackage: { type: String, default: '' },
     targetCompanyTier: { type: String, default: '' },

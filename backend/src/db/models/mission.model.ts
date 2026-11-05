@@ -63,7 +63,6 @@ const missionSchema = new Schema<IMission>(
     expiresAt: {
       type: Date,
       required: true,
-      index: true,
     },
     completedAt: {
       type: Date,

@@ -37,7 +37,6 @@ const semanticAnalysisSchema = new Schema<ISemanticAnalysis>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     extractedSkills: {
       languages: [String],

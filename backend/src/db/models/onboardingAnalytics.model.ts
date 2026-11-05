@@ -68,7 +68,7 @@ export interface IOnboardingAnalytics extends Document {
 
 const onboardingAnalyticsSchema = new Schema<IOnboardingAnalytics>(
   {
-    userId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true, unique: true },
 
     // Funnel tracking
     funnelSteps: {

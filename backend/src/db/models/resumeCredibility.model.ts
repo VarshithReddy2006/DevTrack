@@ -27,7 +27,6 @@ const resumeCredibilitySchema = new Schema<IResumeCredibility>({
     type: String,
     required: true,
     unique: true,
-    index: true,
   },
   overallCredibility: { type: Number, required: true, default: 0 },
   dsaCredibility: { type: Number, required: true, default: 0 },

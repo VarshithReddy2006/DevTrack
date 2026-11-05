@@ -48,7 +48,6 @@ const BetaCohortSchema = new Schema<IBetaCohort>({
 });
 
 // Indexes
-BetaCohortSchema.index({ cohortId: 1 });
 BetaCohortSchema.index({ status: 1 });
 BetaCohortSchema.index({ type: 1 });
 BetaCohortSchema.index({ priority: -1 });

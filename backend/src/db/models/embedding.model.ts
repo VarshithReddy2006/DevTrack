@@ -40,7 +40,6 @@ const embeddingSchema = new Schema<IEmbedding>(
     sessionId: {
       type: String,
       required: true,
-      index: true,
     },
     chunkIndex: {
       type: Number,
@@ -49,7 +48,6 @@ const embeddingSchema = new Schema<IEmbedding>(
     userId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
     },
     
     vector: {
@@ -82,7 +80,6 @@ const embeddingSchema = new Schema<IEmbedding>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     
     contentType: {
@@ -136,7 +133,6 @@ const embeddingSchema = new Schema<IEmbedding>(
 embeddingSchema.index({ sessionId: 1 });
 embeddingSchema.index({ sessionId: 1, chunkIndex: 1 });
 embeddingSchema.index({ userId: 1 });
-embeddingSchema.index({ contentHash: 1 }, { unique: true });
 embeddingSchema.index({ contentType: 1 });
 embeddingSchema.index({ generatedAt: -1 });
 embeddingSchema.index({ embeddingVersion: 1 });

@@ -67,7 +67,7 @@ export interface IFeatureUsageAnalytics extends Document {
 
 const featureUsageAnalyticsSchema = new Schema<IFeatureUsageAnalytics>(
   {
-    featureName: { type: String, required: true, unique: true, index: true },
+    featureName: { type: String, required: true, unique: true },
     featureCategory: { type: String, required: true, index: true },
 
     // Discovery metrics

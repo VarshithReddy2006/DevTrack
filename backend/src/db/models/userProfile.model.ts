@@ -27,7 +27,6 @@ const userProfileSchema = new Schema<IUserProfile>(
       ref: 'User',
       required: true,
       unique: true,
-      index: true,
     },
     roleTitle: {
       type: String,
@@ -74,7 +73,6 @@ const userProfileSchema = new Schema<IUserProfile>(
   }
 );
 
-// Indexes
-userProfileSchema.index({ userId: 1 }, { unique: true });
+// Indexes: userId is unique-indexed on the field itself, so it is not repeated here.
 
 export const UserProfile = model<IUserProfile>('UserProfile', userProfileSchema);
