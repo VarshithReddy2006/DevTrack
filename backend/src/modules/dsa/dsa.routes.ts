@@ -1,6 +1,7 @@
 // src/modules/dsa/dsa.routes.ts
 import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
+import { validateQuery } from '../../middleware/validation.js';
 import * as controller from './dsa.controller.js';
 import { z } from 'zod';
 import { isReservedPlatformTopic } from './dsa.constants.js';
@@ -34,7 +35,12 @@ const bulkUpdateSchema = z.object({
   status: z.enum(['unsolved', 'attempted', 'solved', 'revisit']),
 });
 
-router.get('/problems', authMiddleware, asyncHandler(controller.getProblems));
+// Only the search term is checked here, the other filters are read as before.
+const problemListQuerySchema = z.object({
+  search: z.string().max(100).optional(),
+}).passthrough();
+
+router.get('/problems', authMiddleware, validateQuery(problemListQuerySchema), asyncHandler(controller.getProblems));
 router.get('/problems/:id', authMiddleware, asyncHandler(controller.getProblemById));
 router.post('/problems', authMiddleware, validateBody(problemCreateSchema), asyncHandler(controller.createProblem));
 // Static PATCH paths must precede /problems/:id to avoid being treated as IDs.

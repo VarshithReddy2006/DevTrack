@@ -2,6 +2,7 @@
 import { Types } from 'mongoose';
 import { DsaProblem, DsaTopicProgress, DsaSubmission, DsaContest, DailyActivity, PlatformStats } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
+import { escapeRegExp } from '../../shared/regex.js';
 import { isReservedPlatformTopic } from './dsa.constants.js';
 import type {
   ApiDsaListResponse,
@@ -297,9 +298,10 @@ export async function getProblems(userId: string, filters: ApiDsaFilters): Promi
   if (filters.platform) query.platform = filters.platform;
   if (filters.isFavorite !== undefined) query.isFavorite = filters.isFavorite;
   if (filters.search) {
+    const searchRegex = new RegExp(escapeRegExp(filters.search), 'i');
     query.$or = [
-      { title: { $regex: filters.search, $options: 'i' } },
-      { tags: { $in: [new RegExp(filters.search, 'i')] } },
+      { title: searchRegex },
+      { tags: searchRegex },
     ];
   }
 

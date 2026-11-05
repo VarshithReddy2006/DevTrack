@@ -5,6 +5,7 @@ import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { Types } from 'mongoose';
+import { AnalyzeATSSchema } from '../../../modules/resume/dto/index.js';
 
 vi.mock('../../../db/models/atsAnalysis.model.js');
 vi.mock('../../../db/models/resumeProfile.model.js');
@@ -137,5 +138,56 @@ describe('ATSCompatibilityEngine', () => {
 
     // Verification claims being unverified or flagged causes penalty up to 10
     expect(result.atsScore).toBeLessThan(90);
+  });
+  describe('keyword coverage with regex characters', () => {
+    const content = 'Built services in C++ and C#. Also used Node.js, nodexjs-style tooling and (parens) daily.';
+
+    const coverage = async (targetKeywords: string[]) => {
+      const result = await engine.analyze({ userId, resumeProfileId, content, targetKeywords });
+      return result.keywordCoverage as Array<{ keyword: string; found: boolean; frequency: number }>;
+    };
+
+    it('does not throw for keywords like c++, c# and (', async () => {
+      await expect(coverage(['c++', 'c#', '(', '[', '\\', '*'])).resolves.toHaveLength(6);
+    });
+
+    it('matches symbol keywords literally', async () => {
+      const result = await coverage(['c++', 'c#']);
+      expect(result[0]).toMatchObject({ keyword: 'c++', found: true, frequency: 1 });
+      expect(result[1]).toMatchObject({ keyword: 'c#', found: true, frequency: 1 });
+    });
+
+    it('treats . as a literal dot', async () => {
+      const result = await coverage(['node.js', 'node.x']);
+      expect(result[0]).toMatchObject({ found: true, frequency: 1 });
+      expect(result[1]).toMatchObject({ found: false, frequency: 0 });
+    });
+
+    it('does not treat .* as a wildcard', async () => {
+      const result = await coverage(['.*']);
+      expect(result[0]).toMatchObject({ found: false, frequency: 0 });
+    });
+
+    it('still respects word boundaries for plain keywords', async () => {
+      const result = await coverage(['node', 'script']);
+      expect(result[0]).toMatchObject({ found: true, frequency: 1 });
+      expect(result[1]).toMatchObject({ found: false, frequency: 0 });
+    });
+  });
+
+  describe('AnalyzeATSSchema targetKeywords', () => {
+    it('accepts symbol keywords', () => {
+      expect(AnalyzeATSSchema.safeParse({ targetKeywords: ['c++', 'c#', '.net'] }).success).toBe(true);
+    });
+
+    it('rejects too many keywords', () => {
+      const keywords = Array.from({ length: 51 }, (_, i) => `kw${i}`);
+      expect(AnalyzeATSSchema.safeParse({ targetKeywords: keywords }).success).toBe(false);
+    });
+
+    it('rejects empty and oversized keywords', () => {
+      expect(AnalyzeATSSchema.safeParse({ targetKeywords: ['  '] }).success).toBe(false);
+      expect(AnalyzeATSSchema.safeParse({ targetKeywords: ['a'.repeat(101)] }).success).toBe(false);
+    });
   });
 });

@@ -4,6 +4,7 @@ import type { IParserWarning, IFormattingWarning, IKeywordCoverage, ISectionInte
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { logger } from '../../../shared/logger.js';
+import { escapeRegExp } from '../../../shared/regex.js';
 
 export interface IATSAnalysisInput {
   userId: Types.ObjectId;
@@ -222,7 +223,9 @@ export class ATSCompatibilityEngine {
 
     return targetKeywords.map(keyword => {
       const keywordLower = keyword.toLowerCase();
-      const regex = new RegExp(`\\b${keywordLower}\\b`, 'gi');
+      // \b does not work next to symbols (c++, c#, .net), so use lookarounds
+      // that only reject neighbouring word characters.
+      const regex = new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(keywordLower)}(?![A-Za-z0-9_])`, 'gi');
       const matches = content.match(regex) || [];
       const frequency = matches.length;
 
