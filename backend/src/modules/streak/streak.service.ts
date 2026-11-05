@@ -165,14 +165,30 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
   };
 
   // ── Step 5: Update UserAnalytics ─────────────────────────────────────────
+  // currentStreak is one field shared by every type, so a typed recalculation only
+  // takes it over with an equal or longer streak. The type that already holds the
+  // field can still lower it, that is a real broken streak, and so can anyone if no
+  // type holds it yet. Without this, one day of focus would knock a 10 day dsa streak
+  // back to 1 and milestones would fire again.
+  const previousShared = analytics?.currentStreak ?? 0;
+  const sharedStreakHolder = analytics?.currentStreakType ?? null;
+  const holdsSharedStreak = isUnified || sharedStreakHolder === null || sharedStreakHolder === streakType;
+  const updatesSharedStreak = holdsSharedStreak || currentStreak >= previousShared;
+
   const update: Record<string, unknown> = {
-    currentStreak,
     bestStreak,
-    currentStreakType: streakType,
-    lastActiveDate: streakDays[0] ?? null,
     updatedAt: new Date(),
     computedAt: new Date(),
   };
+
+  if (updatesSharedStreak) {
+    update.currentStreak = currentStreak;
+    update.currentStreakType = streakType;
+    update.lastActiveDate = streakDays[0] ?? null;
+  } else if (streakDays[0] && (!analytics?.lastActiveDate || streakDays[0] > analytics.lastActiveDate)) {
+    // Still real activity, it just didn't win the shared counter. Only move this forward.
+    update.lastActiveDate = streakDays[0];
+  }
 
   // Consume streak freeze if it was used during calculation
   if (freezeConsumed) {

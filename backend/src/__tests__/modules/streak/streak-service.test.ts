@@ -460,6 +460,72 @@ describe('Streak Service — unified recalculation and milestone ledger', () => 
     expect(await UserAnalytics.findOne({ userId }).lean()).toMatchObject({ currentStreak: 3, currentStreakType: 'dsa' });
   });
 
+  it('does not let a shorter typed streak lower the shared counter', async () => {
+    await seedDays(['2026-10-21', '2026-10-20', '2026-10-19', '2026-10-18', '2026-10-17'], 'dsa');
+    await recalculateStreak(userId, 'dsa');
+    await seedDays(['2026-10-21'], 'focus');
+
+    // The caller still gets the focus streak, only the shared field stays put.
+    const focus = await recalculateStreak(userId, 'focus');
+    expect(focus).toMatchObject({ currentStreak: 1, streakType: 'focus', bestStreak: 5 });
+    expect(await UserAnalytics.findOne({ userId }).lean()).toMatchObject({
+      currentStreak: 5, bestStreak: 5, currentStreakType: 'dsa',
+    });
+  });
+
+  it('does not pay a milestone again after a shorter typed recalculation', async () => {
+    await seedDays(['2026-10-21', '2026-10-20', '2026-10-19'], 'dsa');
+    await seedDays(['2026-10-21'], 'focus');
+    await recalculateStreak(userId, 'dsa');
+    await recalculateStreak(userId, 'focus');
+    await recalculateStreak(userId, 'dsa');
+    await recalculateStreak(userId, 'unified');
+    expect(getXpProcessingQueue().add).toHaveBeenCalledTimes(1);
+    expect(eventBus.emitStreakMilestone).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the type holding the shared counter lower it when its streak breaks', async () => {
+    await seedDays(['2026-10-21', '2026-10-20', '2026-10-19'], 'dsa');
+    await recalculateStreak(userId, 'dsa');
+    await seedDays(['2026-10-25'], 'dsa');
+    vi.setSystemTime(new Date('2026-10-25T12:00:00Z'));
+
+    await recalculateStreak(userId, 'dsa');
+    expect(await UserAnalytics.findOne({ userId }).lean()).toMatchObject({
+      currentStreak: 1, bestStreak: 3, currentStreakType: 'dsa',
+      lastActiveDate: new Date('2026-10-25T00:00:00Z'),
+    });
+  });
+
+  it('moves lastActiveDate forward without taking over the shared counter', async () => {
+    await seedDays(['2026-10-20', '2026-10-19', '2026-10-18'], 'dsa');
+    await recalculateStreak(userId, 'dsa');
+    await seedDays(['2026-10-21'], 'focus');
+    await recalculateStreak(userId, 'focus');
+    expect(await UserAnalytics.findOne({ userId }).lean()).toMatchObject({
+      currentStreak: 3, currentStreakType: 'dsa',
+      lastActiveDate: new Date('2026-10-21T00:00:00Z'),
+    });
+  });
+
+  it('does not move lastActiveDate back for a type with older activity', async () => {
+    await seedDays(['2026-10-21', '2026-10-20', '2026-10-19'], 'dsa');
+    await recalculateStreak(userId, 'dsa');
+    await seedDays(['2026-10-20'], 'focus');
+    await recalculateStreak(userId, 'focus');
+    expect(await UserAnalytics.findOne({ userId }).lean()).toMatchObject({
+      currentStreak: 3, lastActiveDate: new Date('2026-10-21T00:00:00Z'),
+    });
+  });
+
+  it('accepts focus as a currentStreakType', async () => {
+    await seedDays(['2026-10-21'], 'focus');
+    await recalculateStreak(userId, 'focus');
+    const analytics = await UserAnalytics.findOne({ userId });
+    expect(analytics?.currentStreakType).toBe('focus');
+    expect(analytics?.validateSync()).toBeUndefined();
+  });
+
   it('pays a milestone once when unified and dsa recalculations alternate', async () => {
     await seedDays(['2026-10-21', '2026-10-20', '2026-10-19'], 'dsa');
     await recalculateStreak(userId, 'dsa');
