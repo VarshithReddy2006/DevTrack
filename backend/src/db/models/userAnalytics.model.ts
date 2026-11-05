@@ -10,7 +10,7 @@ export interface IUserAnalytics extends Document {
   // Streak fields
   currentStreak: number;
   bestStreak: number;
-  currentStreakType: 'dsa' | 'github' | 'unified' | null;
+  currentStreakType: 'dsa' | 'github' | 'unified' | 'focus' | null;
   lastActiveDate: Date | null;
   streakFreezeUntil: Date | null;
 
@@ -40,7 +40,7 @@ const userAnalyticsSchema = new Schema<IUserAnalytics>(
     // Streak
     currentStreak: { type: Number, default: 0, min: 0 },
     bestStreak: { type: Number, default: 0, min: 0 },
-    currentStreakType: { type: String, enum: ['dsa', 'github', 'unified', null], default: null },
+    currentStreakType: { type: String, enum: ['dsa', 'github', 'unified', 'focus', null], default: null },
     lastActiveDate: { type: Date, default: null },
     streakFreezeUntil: { type: Date, default: null },
 

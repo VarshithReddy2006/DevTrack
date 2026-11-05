@@ -11,6 +11,7 @@ import { unifiedRuntimeStateService } from '../runtime-state/unifiedRuntimeState
 
 const STREAK_FREEZE_DAYS = 1; // Freeze grants 1 day of protection
 const MAX_VALID_AGE_DAYS = 2; // Reject activity older than 2 days (anti-cheat)
+const ALL_STREAK_TYPES: StreakType[] = ['dsa', 'github', 'focus', 'unified'];
 
 export interface RecordActivityPayload {
   userId: string;
@@ -112,13 +113,29 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
   const userObjId = new Types.ObjectId(userId);
   const timezone = await getUserTimezone(userId);
 
-  // Get all logs for this user and streak type, sorted by date descending
-  const logs = await UserStreakLog.find({ userId: userObjId, streakType })
+  // Get all logs for this user and streak type, sorted by date descending.
+  // Nothing writes 'unified' logs, so 'unified' is the union of every type's days.
+  const isUnified = streakType === 'unified';
+  const logs = await UserStreakLog.find({
+    userId: userObjId,
+    streakType: isUnified ? { $in: ALL_STREAK_TYPES } : streakType,
+  })
     .sort({ date: -1 })
-    .limit(365); // Cap at 1 year for performance
+    .limit(365 * (isUnified ? ALL_STREAK_TYPES.length : 1)); // Cap at 1 year of days for performance
 
   if (logs.length === 0) {
-    return resetStreak(userId, streakType);
+    // currentStreak is one field per user. Only reset it when the user has no
+    // activity at all; a single type without logs must not zero the others' streak.
+    if (isUnified) return resetStreak(userId, streakType);
+    const existing = await UserAnalytics.findOne({ userId: userObjId }).lean();
+    return {
+      currentStreak: 0,
+      bestStreak: existing?.bestStreak ?? 0,
+      streakType,
+      lastActiveDate: null,
+      isActiveToday: false,
+      streakFreezeUntil: existing?.streakFreezeUntil ?? null,
+    };
   }
 
   // Fetch analytics for freeze data before calculating streak
@@ -148,14 +165,30 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
   };
 
   // ── Step 5: Update UserAnalytics ─────────────────────────────────────────
+  // currentStreak is one field shared by every type, so a typed recalculation only
+  // takes it over with an equal or longer streak. The type that already holds the
+  // field can still lower it, that is a real broken streak, and so can anyone if no
+  // type holds it yet. Without this, one day of focus would knock a 10 day dsa streak
+  // back to 1 and milestones would fire again.
+  const previousShared = analytics?.currentStreak ?? 0;
+  const sharedStreakHolder = analytics?.currentStreakType ?? null;
+  const holdsSharedStreak = isUnified || sharedStreakHolder === null || sharedStreakHolder === streakType;
+  const updatesSharedStreak = holdsSharedStreak || currentStreak >= previousShared;
+
   const update: Record<string, unknown> = {
-    currentStreak,
     bestStreak,
-    currentStreakType: streakType,
-    lastActiveDate: streakDays[0] ?? null,
     updatedAt: new Date(),
     computedAt: new Date(),
   };
+
+  if (updatesSharedStreak) {
+    update.currentStreak = currentStreak;
+    update.currentStreakType = streakType;
+    update.lastActiveDate = streakDays[0] ?? null;
+  } else if (streakDays[0] && (!analytics?.lastActiveDate || streakDays[0] > analytics.lastActiveDate)) {
+    // Still real activity, it just didn't win the shared counter. Only move this forward.
+    update.lastActiveDate = streakDays[0];
+  }
 
   // Consume streak freeze if it was used during calculation
   if (freezeConsumed) {
@@ -183,13 +216,16 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
   if (hitMilestone) {
     eventBus.emitStreakMilestone(userId, currentStreak, streakType);
 
-    // Trigger streak bonus XP via queue
+    // Trigger streak bonus XP via queue. The ledger key is the milestone plus the
+    // day this streak started, so recalculating the same streak again (or from a
+    // different type) hits the XpTransaction unique index instead of paying twice.
     try {
       const queue = getXpProcessingQueue();
+      const streakStart = streakDays[streakDays.length - 1].toISOString().split('T')[0];
       await queue.add('streak-milestone', {
         userId,
         sourceType: 'daily_streak',
-        sourceId: `streak_${currentStreak}_${Date.now()}`,
+        sourceId: `streak_${hitMilestone}_${streakStart}`,
         metadata: { streakDays: currentStreak, streakType },
       });
       logger.info('[streak] XP bonus queued for milestone', {
