@@ -1,6 +1,7 @@
 // src/modules/projects/projects.routes.ts
 import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
+import { validateParams, objectIdSchema } from '../../middleware/validation.js';
 import * as controller from './projects.controller.js';
 import { z } from 'zod';
 
@@ -46,15 +47,18 @@ const taskUpdateSchema = z.object({
   dueDate: z.string().nullable().optional(),
 });
 
+const projectIdParamsSchema = z.object({ id: objectIdSchema });
+const taskParamsSchema = z.object({ id: objectIdSchema, taskId: objectIdSchema });
+
 router.get('/', authMiddleware, asyncHandler(controller.getProjects));
 router.get('/stats', authMiddleware, asyncHandler(controller.getProjectStats));
 router.post('/', authMiddleware, validateBody(projectCreateSchema), asyncHandler(controller.createProject));
-router.get('/:id', authMiddleware, asyncHandler(controller.getProjectById));
-router.patch('/:id', authMiddleware, validateBody(projectUpdateSchema), asyncHandler(controller.updateProject));
-router.delete('/:id', authMiddleware, asyncHandler(controller.deleteProject));
-router.get('/:id/tasks', authMiddleware, asyncHandler(controller.getProjectTasks));
-router.post('/:id/tasks', authMiddleware, validateBody(taskCreateSchema), asyncHandler(controller.createProjectTask));
-router.patch('/:id/tasks/:taskId', authMiddleware, validateBody(taskUpdateSchema), asyncHandler(controller.updateProjectTask));
-router.post('/:id/sync', authMiddleware, asyncHandler(controller.syncProject));
+router.get('/:id', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getProjectById));
+router.patch('/:id', authMiddleware, validateParams(projectIdParamsSchema), validateBody(projectUpdateSchema), asyncHandler(controller.updateProject));
+router.delete('/:id', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.deleteProject));
+router.get('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getProjectTasks));
+router.post('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), validateBody(taskCreateSchema), asyncHandler(controller.createProjectTask));
+router.patch('/:id/tasks/:taskId', authMiddleware, validateParams(taskParamsSchema), validateBody(taskUpdateSchema), asyncHandler(controller.updateProjectTask));
+router.post('/:id/sync', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.syncProject));
 
 export default router;

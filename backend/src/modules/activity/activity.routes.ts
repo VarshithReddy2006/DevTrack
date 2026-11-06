@@ -1,6 +1,7 @@
 // src/modules/activity/activity.routes.ts
 import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
+import { validateParams, objectIdSchema } from '../../middleware/validation.js';
 import * as controller from './activity.controller.js';
 import { z } from 'zod';
 
@@ -21,6 +22,8 @@ const focusSessionSchema = z.object({
   mode: z.string(),
 });
 
+const activityIdParamsSchema = z.object({ id: objectIdSchema });
+
 // Unified: GET /api/activity → events + heatmap in single response
 router.get('/', authMiddleware, asyncHandler(controller.getAll));
 
@@ -37,6 +40,6 @@ router.get('/heatmap', authMiddleware, asyncHandler(controller.getHeatmap));
 router.get('/feed', authMiddleware, asyncHandler(controller.getFeed));
 router.get('/date/:date', authMiddleware, asyncHandler(controller.getActivitiesByDate));
 router.post('/', authMiddleware, validateBody(activityCreateSchema), asyncHandler(controller.createActivity));
-router.delete('/:id', authMiddleware, asyncHandler(controller.deleteActivity));
+router.delete('/:id', authMiddleware, validateParams(activityIdParamsSchema), asyncHandler(controller.deleteActivity));
 
 export default router;
