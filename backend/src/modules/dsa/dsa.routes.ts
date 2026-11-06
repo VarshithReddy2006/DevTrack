@@ -5,12 +5,13 @@ import { validateQuery, validateParams, objectIdSchema } from '../../middleware/
 import * as controller from './dsa.controller.js';
 import { z } from 'zod';
 import { isReservedPlatformTopic } from './dsa.constants.js';
+import { DSA_PROBLEM_PLATFORMS } from '../../shared/dsa-platforms.js';
 
 const router = Router();
 
 const problemCreateSchema = z.object({
   title: z.string().min(1),
-  platform: z.enum(['leetcode', 'codeforces']),
+  platform: z.enum(DSA_PROBLEM_PLATFORMS),
   difficulty: z.enum(['easy', 'medium', 'hard']),
   url: z.string().url(),
   tags: z.array(z.string()),

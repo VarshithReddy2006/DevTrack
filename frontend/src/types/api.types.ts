@@ -190,7 +190,7 @@ export interface ApiDsaProblem {
   id: string;
   externalId: string;
   title: string;
-  platform: 'leetcode' | 'codeforces' | 'codechef' | 'other';
+  platform: 'leetcode' | 'codeforces' | 'codechef' | 'hackerrank' | 'other';
   difficulty: 'easy' | 'medium' | 'hard';
   url: string;
   tags: string[];
