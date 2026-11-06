@@ -124,7 +124,7 @@ describe('DSA PATCH routes', () => {
     const response = await patch('/problems/invalid-id', { notes: 'Not a valid problem ID' });
 
     expect(response.status).toBe(400);
-    expect(response.body).toMatchObject({ success: false, code: 'BAD_REQUEST', message: 'Invalid ID format' });
+    expect(response.body).toMatchObject({ success: false, code: 'VALIDATION_ERROR', message: 'Validation failed' });
     expect(await DsaProblem.countDocuments({ notes: 'Not a valid problem ID' })).toBe(0);
   });
 
@@ -326,7 +326,7 @@ describe('DSA PATCH routes', () => {
     it('rejects malformed IDs with a valid status without changing any record', async () => {
       const response = await patch('/problems/invalid-id', { status: 'solved' });
       expect(response.status).toBe(400);
-      expect(response.body).toMatchObject({ code: 'BAD_REQUEST', message: 'Invalid ID format' });
+      expect(response.body).toMatchObject({ code: 'VALIDATION_ERROR', message: 'Validation failed' });
       expect(await DsaProblem.countDocuments({ submissionCount: { $ne: 0 } })).toBe(0);
     });
   });

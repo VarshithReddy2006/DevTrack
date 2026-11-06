@@ -1,7 +1,13 @@
 // src/middleware/validation.ts - Request validation & sanitization middleware
 import type { Request, Response, NextFunction } from 'express';
-import { ZodSchema, ZodError } from 'zod';
+import { z, ZodSchema, ZodError } from 'zod';
 import { commonErrors } from '../shared/response.js';
+
+/**
+ * Matches a 24-character hex MongoDB ObjectId string. Route params using this
+ * schema fail with a 400 before handlers construct ObjectId from them.
+ */
+export const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ID format');
 
 /**
  * Mutates an object in-place to prevent NoSQL injection by deleting keys starting with $ or containing .
