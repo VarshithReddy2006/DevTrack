@@ -10,7 +10,7 @@ export function startDsaAnalyticsWorker(): Worker {
     async (job: Job) => {
       const { userId } = job.data;
       logger.info('[Worker] Processing DSA analytics', { userId });
-      await DsaIntelligenceEngine.generateIntelligence({ userId, platform: job.data.platform || 'leetcode' });
+      await DsaIntelligenceEngine.generateIntelligence({ userId, platform: job.data.platform });
     },
     { connection: getRedisClient() }
   );

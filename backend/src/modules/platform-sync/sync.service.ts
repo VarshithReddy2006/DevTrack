@@ -8,6 +8,7 @@ import * as cheerio from 'cheerio';
 import { env } from '../../config/env.js';
 import { circuitBreakers, CircuitOpenError } from '../../shared/circuit-breaker/circuitBreaker.js';
 import { acquireSyncLockWithRetry, releaseSyncLock } from '../../shared/redis/syncLock.service.js';
+import { getReadinessDsaQueue } from '../../shared/jobs/queueFactory.js';
 
 const SYNC_TIMEOUT_MS = 15000;
 
@@ -673,7 +674,19 @@ export async function syncPlatform(userId: string, platformName: string): Promis
 
   try {
     // Execute actual sync with lock held
-    return await syncPlatformWithLock(userId, platformName);
+    const result = await syncPlatformWithLock(userId, platformName);
+    // Both HTTP and worker syncs pass here, after ingestion and sync timestamps
+    // are persisted. Refresh the whole user after any DSA provider succeeds.
+    if (result.success && ['leetcode', 'codeforces', 'codechef'].includes(platformName)) {
+      try {
+        await getReadinessDsaQueue().add('post-sync-readiness', { userId, platform: platformName });
+      } catch (error) {
+        logger.warn('[sync] DSA readiness enqueue failed (non-fatal)', {
+          userId, platform: platformName, error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
   } finally {
     // Always release lock, even if sync fails
     try {
