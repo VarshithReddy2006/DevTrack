@@ -1,7 +1,8 @@
 // src/db/models/dsaProblem.model.ts
 import { Schema, model, type Document } from 'mongoose';
+import { DSA_PROBLEM_PLATFORMS, type DsaProblemPlatform } from '../../shared/dsa-platforms.js';
 
-export type DsaPlatform = 'leetcode' | 'codeforces';
+export type DsaPlatform = DsaProblemPlatform;
 
 export interface IDsaProblem extends Document {
   userId: Schema.Types.ObjectId;
@@ -42,7 +43,7 @@ const dsaProblemSchema = new Schema<IDsaProblem>(
     },
     platform: {
       type: String,
-      enum: ['leetcode', 'codeforces'],
+      enum: DSA_PROBLEM_PLATFORMS,
       required: true,
       index: true,
     },

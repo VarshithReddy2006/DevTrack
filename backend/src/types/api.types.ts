@@ -1,4 +1,5 @@
 // src/types/api.types.ts - API type definitions (mirrors frontend types)
+import type { DsaProblemPlatform } from '../shared/dsa-platforms.js';
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -232,7 +233,7 @@ export interface ApiDsaProblem {
   id: string;
   externalId: string;
   title: string;
-  platform: 'leetcode' | 'codeforces';
+  platform: DsaProblemPlatform;
   difficulty: 'easy' | 'medium' | 'hard';
   url: string;
   tags: string[];

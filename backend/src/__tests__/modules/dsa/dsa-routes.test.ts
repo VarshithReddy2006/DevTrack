@@ -27,7 +27,7 @@ vi.mock('../../../middleware/index.js', async () => {
   };
 });
 
-describe('DSA PATCH routes', () => {
+describe('DSA problem routes', () => {
   const ownerId = new Types.ObjectId('000000000000000000000001');
   const otherUserId = new Types.ObjectId('000000000000000000000002');
   let server: Server | undefined;
@@ -83,6 +83,54 @@ describe('DSA PATCH routes', () => {
     });
     return { status: response.status, body: await response.json() };
   }
+
+  async function postProblem(platform: unknown, authenticated = true) {
+    const response = await fetch(`${baseUrl}/problems`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authenticated ? { Authorization: 'Bearer test-owner' } : {}),
+      },
+      body: JSON.stringify({
+        title: 'Manual practice problem', platform, difficulty: 'medium',
+        url: 'https://example.com/practice', tags: ['arrays'], category: 'arrays',
+      }),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  it.each(['leetcode', 'codeforces', 'codechef', 'hackerrank', 'other'])(
+    'creates and persists a %s problem through the real route and service', async platform => {
+      const response = await postProblem(platform);
+      expect(response.status).toBe(201);
+      expect(response.body).toMatchObject({ success: true, data: { platform, status: 'unsolved' } });
+      const stored = await DsaProblem.findById(response.body.data.id).lean();
+      expect(stored).toMatchObject({ platform, title: 'Manual practice problem', difficulty: 'medium' });
+      expect(stored?.userId.toString()).toBe(ownerId.toString());
+    }
+  );
+
+  it.each(['unsupported', 'CodeChef', '', null, 42, undefined])(
+    'rejects an invalid problem platform (%j) without writing a record', async platform => {
+      const before = await DsaProblem.countDocuments();
+      const response = await postProblem(platform);
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ success: false, code: 'VALIDATION_ERROR' });
+      expect(await DsaProblem.countDocuments()).toBe(before);
+    }
+  );
+
+  it('requires authentication when creating a problem', async () => {
+    const response = await postProblem('codechef', false);
+    expect(response.status).toBe(401);
+    expect(await DsaProblem.countDocuments({ platform: 'codechef' })).toBe(0);
+  });
+
+  it('also rejects unsupported platforms at the persistence boundary', async () => {
+    const invalid = new DsaProblem({ userId: ownerId, title: 'Invalid', platform: 'unsupported',
+      difficulty: 'easy', url: 'https://example.com', category: 'arrays' });
+    await expect(invalid.validate()).rejects.toThrow(/platform/);
+  });
 
   it('routes bulk-status to the bulk handler and updates only owned problems', async () => {
     const response = await patch('/problems/bulk-status', {
