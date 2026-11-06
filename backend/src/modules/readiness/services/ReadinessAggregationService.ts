@@ -58,7 +58,7 @@ class ReadinessAggregationServiceClass {
 
       // Run DSA Intelligence Engine
       try {
-        await DsaIntelligenceEngine.generateIntelligence({ userId, platform: 'leetcode' });
+        await DsaIntelligenceEngine.generateIntelligence({ userId });
         fragments.dsa = true;
         logger.info('[ReadinessAggregationService] DSA intelligence extracted');
       } catch (error) {
@@ -213,7 +213,7 @@ class ReadinessAggregationServiceClass {
       switch (fragmentType) {
         case 'dsa':
           try {
-            await DsaIntelligenceEngine.generateIntelligence({ userId, platform: 'leetcode' });
+            await DsaIntelligenceEngine.generateIntelligence({ userId });
             fragments.dsa = true;
           } catch (error) {
             errors.push(`DSA refresh failed: ${error instanceof Error ? error.message : 'Unknown error'}`);

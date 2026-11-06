@@ -1,12 +1,13 @@
 import { ReadinessDsa } from '../../../db/models/readinessDsa.model.js';
 import { DsaSubmission } from '../../../db/models/dsaSubmission.model.js';
-import { DsaTopicProgress } from '../../../db/models/dsaTopicProgress.model.js';
+import { DsaProblem } from '../../../db/models/dsaProblem.model.js';
+import { ConnectedPlatform } from '../../../db/models/connectedPlatform.model.js';
 import { logger } from '../../../shared/logger.js';
 import { subDays, differenceInDays } from 'date-fns';
 
 export interface DSAIntelligenceInput {
   userId: string;
-  platform: 'leetcode' | 'codeforces' | 'codechef';
+  platform?: 'leetcode' | 'codeforces' | 'codechef';
 }
 
 export const DsaIntelligenceEngine = {
@@ -18,25 +19,39 @@ export const DsaIntelligenceEngine = {
     try {
       const { userId, platform } = input;
       
-      // Fetch actual submission data
-      const submissions = await DsaSubmission.find({ userId, platform }).sort({ submittedAt: -1 });
-      const topicProgress = await DsaTopicProgress.find({ userId, platform });
-      
-      // Calculate total solves (unique problems)
-      const uniqueProblems = new Set(submissions.map(s => s.externalId));
-      const totalSolves = uniqueProblems.size;
+      // Readiness is unique per user, so every trigger must read the whole user.
+      const submissions = await DsaSubmission.find({ userId, status: 'accepted' }).sort({ submittedAt: -1 }).lean();
+      const [problems, providers] = await Promise.all([
+        DsaProblem.find({ userId, _id: { $in: submissions.map(s => s.problemId) } }).select('difficulty tags').lean(),
+        ConnectedPlatform.find({ userId, isConnected: true, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] } })
+          .select('platformName lastSyncedAt').lean(),
+      ]);
+      const problemMap = new Map(problems.map(p => [p._id.toString(), p]));
+      const solves = new Map<string, { problemId: string; difficulty?: string; topics: string[]; submittedAt: Date }>();
+      for (const submission of submissions) {
+        // A shared problemId is the existing canonical identity. Titles and
+        // provider-local externalIds cannot establish cross-platform equality.
+        const key = submission.problemId.toString();
+        const problem = problemMap.get(key);
+        const topics = [...new Set([...(problem?.tags ?? []), ...(submission.topicTags ?? [])])];
+        const existing = solves.get(key);
+        if (existing) existing.topics = [...new Set([...existing.topics, ...topics])];
+        else solves.set(key, { problemId: key, difficulty: problem?.difficulty, topics, submittedAt: submission.submittedAt });
+      }
+      const uniqueSolves = [...solves.values()];
+      const totalSolves = uniqueSolves.length;
       
       // Calculate difficulty distribution
-      const difficultyDistribution = this.calculateDifficultyDistribution(submissions);
+      const difficultyDistribution = this.calculateDifficultyDistribution(uniqueSolves);
       
       // Calculate hard problem progression
-      const hardProblemProgression = this.calculateHardProblemProgression(submissions, totalSolves);
+      const hardProblemProgression = this.calculateHardProblemProgression(uniqueSolves, totalSolves);
       
       // Calculate solve consistency (streak-based)
       const solveConsistency = this.calculateSolveConsistency(submissions);
       
       // Process topic mastery with depth analysis
-      const processedTopics = await this.processTopicMastery(topicProgress, submissions);
+      const processedTopics = this.processTopicMastery([], uniqueSolves);
       
       // Identify weak and neglected topics
       const weakTopics = processedTopics.filter(t => t.masteryLevel < 40).map(t => t.name);
@@ -49,21 +64,32 @@ export const DsaIntelligenceEngine = {
       const contestParticipation = this.calculateContestParticipation(submissions);
       
       // Calculate provider freshness
-      const providerFreshness = this.calculateProviderFreshness(submissions, platform);
+      const providerFreshness: Record<string, { lastSync: Date; freshnessScore: number }> = {};
+      const platformNames = new Set([...submissions.map(s => s.platform), ...providers.map(p => p.platformName)]);
+      for (const name of platformNames) {
+        const provider = providers.find(p => p.platformName === name);
+        providerFreshness[name] = this.calculateProviderFreshness(
+          submissions.filter(s => s.platform === name), name, provider ? provider.lastSyncedAt ?? new Date(0) : undefined,
+        );
+      }
+      // A fresh provider must not mask stale evidence from another provider.
+      const freshnessValues = Object.values(providerFreshness);
+      const compositeFreshness = { freshnessScore: freshnessValues.length
+        ? freshnessValues.reduce((sum, p) => sum + p.freshnessScore, 0) / freshnessValues.length : 0 };
       
       // Calculate overall confidence score
       const confidenceScore = this.calculateOverallConfidence(
         totalSolves,
         solveConsistency,
         processedTopics,
-        providerFreshness
+        compositeFreshness
       );
       
       const confidenceReasoning = this.generateConfidenceReasoning(
         totalSolves,
         solveConsistency,
         processedTopics.length,
-        providerFreshness
+        compositeFreshness
       );
       
       const evidenceCoverage = this.calculateEvidenceCoverage(
@@ -85,7 +111,7 @@ export const DsaIntelligenceEngine = {
           confidenceScore,
           confidenceReasoning,
           evidenceCoverage,
-          providerFreshness: { [platform]: providerFreshness },
+          providerFreshness,
           snapshotVersion: '1.0.0',
           analyticsVersion: '1.0.0',
           computedAt: new Date(),
@@ -108,10 +134,11 @@ export const DsaIntelligenceEngine = {
     const uniqueProblems = new Set();
     
     submissions.forEach(sub => {
-      const key = sub.externalId;
+      const key = sub.problemId.toString();
       if (!uniqueProblems.has(key)) {
         uniqueProblems.add(key);
-        const difficulty = sub.difficulty?.toLowerCase() || 'easy';
+        const difficulty = sub.difficulty?.toLowerCase();
+        if (!difficulty) return;
         if (difficulty.includes('hard')) distribution.hard++;
         else if (difficulty.includes('medium')) distribution.medium++;
         else distribution.easy++;
@@ -319,13 +346,11 @@ export const DsaIntelligenceEngine = {
   /**
    * Calculate provider freshness score
    */
-  calculateProviderFreshness(submissions: any[], platform: string): {
+  calculateProviderFreshness(submissions: any[], platform: string, syncedAt?: Date): {
     lastSync: Date;
     freshnessScore: number;
   } {
-    const lastSync = submissions.length > 0 
-      ? submissions[0].submittedAt 
-      : new Date(0);
+    const lastSync = syncedAt ?? (submissions.length > 0 ? submissions[0].submittedAt : new Date(0));
     
     const daysSinceSync = differenceInDays(new Date(), lastSync);
     const freshnessScore = Math.max(0, 100 - (daysSinceSync * 2));
