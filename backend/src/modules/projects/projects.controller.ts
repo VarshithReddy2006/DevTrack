@@ -80,6 +80,19 @@ export async function updateProjectTask(req: AuthenticatedRequest, res: Response
   successResponse(res, task, 'Task updated successfully');
 }
 
+export async function deleteProjectTask(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const projectId = req.params.id as string;
+  const taskId = req.params.taskId as string;
+  const deleted = await service.deleteProjectTask(req.user!.id, projectId, taskId);
+
+  if (!deleted) {
+    commonErrors.notFound(res, 'Task');
+    return;
+  }
+
+  deleteResponse(res, taskId, 'Task deleted successfully');
+}
+
 export async function syncProject(req: AuthenticatedRequest, res: Response): Promise<void> {
   const synced = await service.syncProject(req.user!.id, req.params.id as string);
   if (!synced) {

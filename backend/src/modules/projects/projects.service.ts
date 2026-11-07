@@ -351,6 +351,26 @@ export async function updateProjectTask(
   };
 }
 
+export async function deleteProjectTask(
+  userId: string,
+  projectId: string,
+  taskId: string
+): Promise<boolean> {
+  const project = await Project.findOne({
+    _id: new Types.ObjectId(projectId),
+    userId: new Types.ObjectId(userId),
+  }).select('_id').lean();
+
+  if (!project) return false;
+
+  const task = await ProjectTask.findOneAndDelete({
+    _id: new Types.ObjectId(taskId),
+    projectId: new Types.ObjectId(projectId),
+  });
+
+  return Boolean(task);
+}
+
 export async function syncProject(userId: string, projectId: string): Promise<boolean> {
   // Verify project exists and belongs to user
   const project = await Project.findOne({

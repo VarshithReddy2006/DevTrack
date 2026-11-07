@@ -5,7 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Icon, type IconName } from '../../../components/shared/Icon';
-import { updateProjectTask } from '../../../services/projectsService';
+import { deleteProjectTask, updateProjectTask } from '../../../services/projectsService';
 import type { ProjectTaskVM } from '../../../types/vm.types';
 import { useDialogFocus } from '../../../components/ui/useDialogFocus';
 
@@ -44,6 +44,9 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
   const [newLabel, setNewLabel] = useState('');
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
   const titleId = React.useId();
 
@@ -77,6 +80,21 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
       // Error handled
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!task || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteProjectTask(projectId, task.id);
+      onUpdated();
+      onClose();
+    } catch {
+      setDeleteError('Unable to delete this task. Please try again.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -260,7 +278,20 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
             </div>
 
             {/* Footer */}
-            <div className="px-5 py-3.5 border-t border-gray-100 flex items-center justify-end gap-2">
+            <div className="px-5 py-3.5 border-t border-gray-100">
+              {deleteError && <p role="alert" className="text-xs text-red-600 mb-3">{deleteError}</p>}
+              {confirmDelete ? (
+                <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3">
+                  <p className="text-xs font-medium text-red-700">Delete this task permanently?</p>
+                  <div className="flex justify-end gap-2 mt-2">
+                    <button type="button" onClick={() => setConfirmDelete(false)} disabled={deleting} className="px-3 py-1.5 rounded-lg text-xs font-semibold text-dt-textSecondary hover:bg-white">Keep Task</button>
+                    <button type="button" onClick={handleDelete} disabled={deleting} className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50">{deleting ? 'Deleting…' : 'Confirm Delete'}</button>
+                  </div>
+                </div>
+              ) : (
+                <button type="button" onClick={() => setConfirmDelete(true)} disabled={saving || deleting} className="mb-3 px-3 py-2 rounded-lg text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-40">Delete Task</button>
+              )}
+              <div className="flex items-center justify-end gap-2">
               <button
                 onClick={onClose}
                 className="px-4 py-2 rounded-lg text-[12px] font-semibold text-dt-textSecondary hover:bg-gray-100 transition-colors"
@@ -274,6 +305,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
               >
                 {saving ? 'Saving…' : 'Save Changes'}
               </button>
+              </div>
             </div>
           </motion.div>
         </>
