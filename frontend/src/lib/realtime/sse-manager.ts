@@ -1,6 +1,17 @@
 // Reconnect-safe SSE store — complements useSse hook for progression events
+//
+// Resilience features:
+// - Exponential backoff with full jitter; the attempt counter is only reset
+//   once a connection has stayed open for STABLE_CONNECTION_MS.
+// - Browser online/offline awareness: retries pause while offline and an
+//   immediate reconnect (with a fresh handshake ticket) fires on `online`.
+// - Monotonic sequence tracking to drop replayed/duplicate events, with an
+//   ID-based fallback for events that carry no sequence number.
+// - Snapshot reset: a `runtime_state_full` envelope replaces local state and
+//   invalidates TanStack Query caches so the UI resynchronises.
 
 import { create } from 'zustand';
+import { queryClient } from '../queryClient';
 
 export type SseEventType =
   | 'xp_updated'
@@ -19,18 +30,25 @@ export type SseEventType =
   | 'sync_started'
   | 'sync_completed'
   | 'sync_failed'
-  | 'new_submission';
+  | 'new_submission'
+  | 'runtime_state_full';
 
 export interface SseEvent {
   type: SseEventType;
   timestamp: string;
   userId?: string;
+  /** Server event ID (SSE `id:` field or envelope `id`). */
+  id?: string;
+  /** Per-user monotonic sequence number, when the server provides one. */
+  sequence?: number;
   data: Record<string, unknown>;
 }
 
 export interface SseConnectionState {
   connected: boolean;
   reconnecting: boolean;
+  /** True while the browser reports no network; retries are paused. */
+  offline: boolean;
   lastEvent: string | null;
   error: string | null;
 }
@@ -39,8 +57,12 @@ interface SseStore {
   connectionState: SseConnectionState;
   eventHistory: SseEvent[];
   lastEventId: string | null;
+  /** Highest sequence number accepted so far (null until one is seen). */
+  lastSequence: number | null;
+  /** Latest full runtime state received via `runtime_state_full`. */
+  snapshot: Record<string, unknown> | null;
   listeners: Map<SseEventType, Set<(event: SseEvent) => void>>;
-  connect: () => void;
+  connect: () => Promise<void>;
   disconnect: () => void;
   handleEvent: (event: SseEvent, id?: string) => void;
   subscribe: (type: SseEventType, callback: (event: SseEvent) => void) => () => void;
@@ -48,12 +70,47 @@ interface SseStore {
 }
 
 const MAX_HISTORY = 50;
-const RECONNECT_DELAY = 3000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_SEEN_IDS = 200;
+
+export const BACKOFF_BASE_MS = 1_000;
+export const BACKOFF_CAP_MS = 30_000;
+/** A connection must stay open this long before the attempt counter resets. */
+export const STABLE_CONNECTION_MS = 5_000;
+export const MAX_RECONNECT_ATTEMPTS = 8;
+
+/**
+ * Full-jitter exponential backoff (AWS "Exponential Backoff and Jitter").
+ * `attempt` is the number of consecutive failures before this retry (0-based).
+ */
+export function computeBackoffDelay(attempt: number, random: () => number = Math.random): number {
+  const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt);
+  return Math.floor(random() * ceiling);
+}
+
+/**
+ * Extract the sequence from a live event ID of the form
+ * `${userId}-${sequence}-${epochMs}`. Fallback (`-fallback-`) and snapshot
+ * (`-full-`) IDs, and Redis stream IDs (`ms-seq`), carry no usable sequence.
+ */
+export function sequenceFromEventId(id: string | undefined): number | undefined {
+  if (!id || id.includes('-fallback-') || id.includes('-full-')) return undefined;
+  const match = /^.+-(\d+)-(\d+)$/.exec(id);
+  if (!match) return undefined;
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : undefined;
+}
 
 let eventSource: EventSource | null = null;
 let reconnectAttempts = 0;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+let stabilityTimeout: ReturnType<typeof setTimeout> | null = null;
+/** Incremented on every connect/disconnect so stale async work is ignored. */
+let connectGeneration = 0;
+/** True between connect() and disconnect(); gates automatic reconnects. */
+let shouldConnect = false;
+let networkListenersAttached = false;
+/** Timestamp (ms) of the event that set `lastSequence`. */
+let lastSequenceTime = Number.NEGATIVE_INFINITY;
 const seenEventIds = new Set<string>();
 
 function eventKey(event: SseEvent, id?: string): string {
@@ -61,137 +118,292 @@ function eventKey(event: SseEvent, id?: string): string {
   return `${event.type}:${event.timestamp}:${JSON.stringify(event.data)}`;
 }
 
+function rememberKey(key: string): void {
+  seenEventIds.add(key);
+  if (seenEventIds.size > MAX_SEEN_IDS) {
+    const first = seenEventIds.values().next().value;
+    if (first !== undefined) seenEventIds.delete(first);
+  }
+}
+
+function isBrowserOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+function clearReconnectTimer(): void {
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
+}
+
+function clearStabilityTimer(): void {
+  if (stabilityTimeout) {
+    clearTimeout(stabilityTimeout);
+    stabilityTimeout = null;
+  }
+}
+
+function closeEventSource(): void {
+  clearStabilityTimer();
+  if (eventSource) {
+    eventSource.onopen = null;
+    eventSource.onmessage = null;
+    eventSource.onerror = null;
+    eventSource.close();
+    eventSource = null;
+  }
+}
+
+function setConnectionState(patch: Partial<SseConnectionState>): void {
+  useSseStore.setState((state) => ({
+    connectionState: { ...state.connectionState, ...patch },
+  }));
+}
+
+function enterOfflineState(): void {
+  clearReconnectTimer();
+  closeEventSource();
+  setConnectionState({ connected: false, reconnecting: false, offline: true, error: null });
+}
+
+function scheduleReconnect(): void {
+  if (!shouldConnect) return;
+  clearReconnectTimer();
+
+  if (isBrowserOffline()) {
+    enterOfflineState();
+    return;
+  }
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    setConnectionState({ connected: false, reconnecting: false, error: 'Connection unavailable' });
+    return;
+  }
+
+  const delay = computeBackoffDelay(reconnectAttempts);
+  reconnectAttempts++;
+  setConnectionState({
+    connected: false,
+    reconnecting: true,
+    error: `Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})…`,
+  });
+
+  reconnectTimeout = setTimeout(() => {
+    reconnectTimeout = null;
+    // connect() acquires a fresh handshake ticket
+    void useSseStore.getState().connect();
+  }, delay);
+}
+
+function handleOffline(): void {
+  if (!shouldConnect) return;
+  enterOfflineState();
+}
+
+function handleOnline(): void {
+  setConnectionState({ offline: false });
+  if (!shouldConnect) return;
+  // The network changed, so earlier failures say nothing about the new one.
+  reconnectAttempts = 0;
+  clearReconnectTimer();
+  void useSseStore.getState().connect();
+}
+
+function attachNetworkListeners(): void {
+  if (networkListenersAttached || typeof window === 'undefined') return;
+  window.addEventListener('online', handleOnline);
+  window.addEventListener('offline', handleOffline);
+  networkListenersAttached = true;
+}
+
+function detachNetworkListeners(): void {
+  if (!networkListenersAttached || typeof window === 'undefined') return;
+  window.removeEventListener('online', handleOnline);
+  window.removeEventListener('offline', handleOffline);
+  networkListenersAttached = false;
+}
+
+/** Normalise a raw SSE `data:` payload (envelope or legacy shape). */
+export function parseSseMessage(raw: string, transportId?: string): SseEvent | null {
+  const parsed = JSON.parse(raw) as Partial<SseEvent> & {
+    payload?: Record<string, unknown>;
+    stats?: Record<string, unknown>;
+  };
+  if (!parsed || typeof parsed.type !== 'string') return null;
+
+  const id = transportId || (typeof parsed.id === 'string' ? parsed.id : undefined);
+  const sequence =
+    typeof parsed.sequence === 'number' && Number.isFinite(parsed.sequence)
+      ? parsed.sequence
+      : sequenceFromEventId(id);
+
+  return {
+    type: parsed.type,
+    timestamp: parsed.timestamp ?? new Date().toISOString(),
+    userId: parsed.userId,
+    id,
+    sequence,
+    data: parsed.data ?? parsed.payload ?? (parsed.stats ? { ...parsed.stats } : {}),
+  };
+}
+
+/**
+ * Decide whether an event was already delivered. Sequenced events are
+ * compared against the highest accepted sequence; everything else falls back
+ * to a bounded set of seen IDs / composite keys.
+ */
+function isDuplicate(event: SseEvent): boolean {
+  const key = eventKey(event, event.id);
+
+  if (event.type === 'runtime_state_full') {
+    if (seenEventIds.has(key)) return true;
+    rememberKey(key);
+    return false;
+  }
+
+  if (typeof event.sequence === 'number' && event.sequence > 0) {
+    const lastSequence = useSseStore.getState().lastSequence;
+    const eventTime = Date.parse(event.timestamp);
+
+    if (lastSequence !== null && event.sequence <= lastSequence) {
+      // A lower sequence with a strictly newer timestamp means the server's
+      // per-user counter was reset (its Redis key expired); accept it.
+      const counterReset = Number.isFinite(eventTime) && eventTime > lastSequenceTime;
+      if (!counterReset) return true;
+    }
+
+    lastSequenceTime = Number.isFinite(eventTime) ? eventTime : lastSequenceTime;
+    useSseStore.setState({ lastSequence: event.sequence });
+    return false;
+  }
+
+  if (seenEventIds.has(key)) return true;
+  rememberKey(key);
+  return false;
+}
+
+function applySnapshot(event: SseEvent): void {
+  const state = event.data.state;
+  // Sequences after a snapshot start from a fresh baseline.
+  lastSequenceTime = Number.NEGATIVE_INFINITY;
+  useSseStore.setState({
+    snapshot: state && typeof state === 'object' ? (state as Record<string, unknown>) : null,
+    lastSequence: null,
+  });
+  void queryClient.invalidateQueries();
+}
+
 export const useSseStore = create<SseStore>((set, get) => ({
   connectionState: {
     connected: false,
     reconnecting: false,
+    offline: false,
     lastEvent: null,
     error: null,
   },
   eventHistory: [],
   lastEventId: null,
+  lastSequence: null,
+  snapshot: null,
   listeners: new Map(),
 
   connect: async () => {
-    if (eventSource) {
-      eventSource.close();
+    shouldConnect = true;
+    attachNetworkListeners();
+    clearReconnectTimer();
+    closeEventSource();
+
+    const generation = ++connectGeneration;
+
+    if (isBrowserOffline()) {
+      enterOfflineState();
+      return;
     }
 
     const baseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
     const token = localStorage.getItem('devtrack_access_token');
-    const lastId = get().lastEventId;
 
     if (!token) {
-      set((state) => ({
-        connectionState: { ...state.connectionState, error: 'No auth token' },
-      }));
+      setConnectionState({ reconnecting: false, error: 'No auth token' });
       return;
     }
 
-    set((state) => ({
-      connectionState: { ...state.connectionState, reconnecting: true },
-    }));
+    setConnectionState({ reconnecting: true, offline: false });
 
     // Acquire secure handshake ticket before connecting
-    let ticket: string | null = null;
+    let ticket: string;
     try {
       const { getSSEHandshakeTicket } = await import('../../services/authService');
       ticket = await getSSEHandshakeTicket();
     } catch (err) {
+      if (generation !== connectGeneration) return;
       console.error('[SSE] Failed to acquire handshake ticket:', err);
-      set((state) => ({
-        connectionState: { ...state.connectionState, error: 'Failed to authenticate SSE', reconnecting: false },
-      }));
+      setConnectionState({ error: 'Failed to authenticate SSE' });
+      scheduleReconnect();
       return;
     }
 
+    // disconnect() or a newer connect() happened while we were waiting
+    if (generation !== connectGeneration || !shouldConnect) return;
+
+    const lastId = get().lastEventId;
     let url = `${baseUrl}/api/events?ticket=${encodeURIComponent(ticket)}`;
     if (lastId) {
       url += `&lastEventId=${encodeURIComponent(lastId)}`;
     }
-    
-    eventSource = new EventSource(url);
 
-    eventSource.onopen = () => {
-      set((state) => ({
-        connectionState: {
-          ...state.connectionState,
-          connected: true,
-          reconnecting: false,
-          error: null,
-        },
-      }));
-      reconnectAttempts = 0;
+    const source = new EventSource(url);
+    eventSource = source;
+
+    source.onopen = () => {
+      if (source !== eventSource) return;
+      setConnectionState({ connected: true, reconnecting: false, offline: false, error: null });
+      // Only forgive earlier failures once the connection proves stable;
+      // a server that accepts and immediately drops keeps backing off.
+      clearStabilityTimer();
+      stabilityTimeout = setTimeout(() => {
+        stabilityTimeout = null;
+        if (source === eventSource) reconnectAttempts = 0;
+      }, STABLE_CONNECTION_MS);
     };
 
-    eventSource.onmessage = (event) => {
-      if (event.data?.startsWith(':')) return;
+    source.onmessage = (event) => {
+      if (source !== eventSource) return;
+      if (typeof event.data !== 'string' || event.data.startsWith(':')) return;
       try {
-        const parsed = JSON.parse(event.data) as SseEvent & { stats?: Record<string, unknown> };
-        const normalized: SseEvent = {
-          type: parsed.type,
-          timestamp: parsed.timestamp ?? new Date().toISOString(),
-          userId: parsed.userId,
-          data: parsed.data ?? (parsed.stats ? { ...parsed.stats } : {}),
-        };
-        
-        const id = event.lastEventId;
-        const key = eventKey(normalized, id);
-        
-        if (seenEventIds.has(key)) return;
-        seenEventIds.add(key);
-        
-        if (seenEventIds.size > 200) {
-          const first = seenEventIds.values().next().value;
-          if (first) seenEventIds.delete(first);
+        const normalized = parseSseMessage(event.data, event.lastEventId || undefined);
+        if (!normalized || isDuplicate(normalized)) return;
+
+        if (normalized.type === 'runtime_state_full') {
+          applySnapshot(normalized);
         }
-        
-        get().handleEvent(normalized, id);
+
+        get().handleEvent(normalized, normalized.id);
       } catch (err) {
         console.error('[SSE] Failed to parse event:', err);
       }
     };
 
-    eventSource.onerror = () => {
-      eventSource?.close();
-      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        reconnectAttempts++;
-        set((state) => ({
-          connectionState: {
-            ...state.connectionState,
-            connected: false,
-            reconnecting: true,
-            error: `Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})…`,
-          },
-        }));
-        reconnectTimeout = setTimeout(() => {
-          // Acquire fresh ticket before reconnecting
-          get().connect();
-        }, RECONNECT_DELAY * reconnectAttempts);
-      } else {
-        set((state) => ({
-          connectionState: {
-            ...state.connectionState,
-            connected: false,
-            reconnecting: false,
-            error: 'Connection unavailable',
-          },
-        }));
-      }
+    source.onerror = () => {
+      if (source !== eventSource) return;
+      closeEventSource();
+      scheduleReconnect();
     };
   },
 
   disconnect: () => {
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-    }
-    eventSource?.close();
-    eventSource = null;
+    shouldConnect = false;
+    connectGeneration++;
+    clearReconnectTimer();
+    closeEventSource();
+    detachNetworkListeners();
+    reconnectAttempts = 0;
     set({
       connectionState: {
         connected: false,
         reconnecting: false,
+        offline: false,
         lastEvent: null,
         error: null,
       },
@@ -234,6 +446,20 @@ export const useSseStore = create<SseStore>((set, get) => ({
 
   clearHistory: () => set({ eventHistory: [] }),
 }));
+
+/** Test-only: reset module-level connection state between test cases. */
+export function __resetSseManagerForTests(): void {
+  useSseStore.getState().disconnect();
+  lastSequenceTime = Number.NEGATIVE_INFINITY;
+  seenEventIds.clear();
+  useSseStore.setState({
+    eventHistory: [],
+    lastEventId: null,
+    lastSequence: null,
+    snapshot: null,
+    listeners: new Map(),
+  });
+}
 
 export const useXpUpdates = () => {
   const latestEvent = useSseStore((s) => s.eventHistory.find((e) => e.type === 'xp_updated'));
