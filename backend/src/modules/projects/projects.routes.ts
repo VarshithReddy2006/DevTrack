@@ -59,6 +59,7 @@ router.delete('/:id', authMiddleware, validateParams(projectIdParamsSchema), asy
 router.get('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getProjectTasks));
 router.post('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), validateBody(taskCreateSchema), asyncHandler(controller.createProjectTask));
 router.patch('/:id/tasks/:taskId', authMiddleware, validateParams(taskParamsSchema), validateBody(taskUpdateSchema), asyncHandler(controller.updateProjectTask));
+router.delete('/:id/tasks/:taskId', authMiddleware, validateParams(taskParamsSchema), asyncHandler(controller.deleteProjectTask));
 router.post('/:id/sync', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.syncProject));
 
 export default router;

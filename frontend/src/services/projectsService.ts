@@ -141,6 +141,19 @@ export async function updateProjectTask(
 }
 
 /**
+ * Delete a task from a project.
+ */
+export async function deleteProjectTask(
+  projectId: string,
+  taskId: string
+): Promise<ApiDeleteResponse> {
+  const { data } = await axiosClient.delete<ApiDeleteResponse>(
+    `${PROJECTS_BASE}/${projectId}/tasks/${taskId}`
+  );
+  return data;
+}
+
+/**
  * Trigger a sync of project data from GitHub.
  */
 export async function syncProject(
