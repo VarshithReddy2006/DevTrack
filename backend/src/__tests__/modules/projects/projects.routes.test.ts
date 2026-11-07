@@ -42,7 +42,7 @@ describe('Project task deletion route', () => {
     app.use('/api/projects', projectsRoutes);
     app.use(errorHandler);
     await new Promise<void>((resolve, reject) => {
-      server = app.listen(0, '127.0.0.1', resolve);
+      server = app.listen(0, '127.0.0.1', () => resolve());
       server.once('error', reject);
     });
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/projects`;
