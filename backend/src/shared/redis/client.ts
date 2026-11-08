@@ -22,7 +22,7 @@ export interface RedisHealth {
  * to tell "set on purpose" apart from "left at the default".
  */
 export function isRedisConfigured(): boolean {
-  return Boolean(process.env.REDIS_URL || env.REDIS_URL || process.env.REDIS_HOST);
+  return Boolean(process.env.REDIS_URL || process.env.REDIS_HOST);
 }
 
 /**
@@ -30,7 +30,7 @@ export function isRedisConfigured(): boolean {
  * REDIS_PASSWORD when no URL is given. Used for the dedicated pub/sub connections.
  */
 export function createRedisConnection(overrides: Record<string, unknown> = {}): Redis {
-  const url = process.env.REDIS_URL || env.REDIS_URL;
+  const url = process.env.REDIS_URL;
   if (url) {
     return new Redis(url, { family: 0, ...overrides });
   }
@@ -70,16 +70,16 @@ export function getRedisClient(): Redis {
 
   _connecting = true;
 
-  const redisUrl = env.REDIS_URL;
+  const redisUrl = process.env.REDIS_URL;
   const redisConfig = redisUrl
     ? {
         lazyConnect: true,
         maxRetriesPerRequest: null,
       }
     : {
-        host: env.REDIS_HOST,
-        port: env.REDIS_PORT,
-        password: env.REDIS_PASSWORD || undefined,
+        host: process.env.REDIS_HOST || env.REDIS_HOST,
+        port: Number(process.env.REDIS_PORT) || env.REDIS_PORT,
+        password: process.env.REDIS_PASSWORD || env.REDIS_PASSWORD || undefined,
         lazyConnect: true,
         // BullMQ requires this to be null for blocking connections.
         maxRetriesPerRequest: null,
@@ -101,7 +101,10 @@ export function getRedisClient(): Redis {
       family: 0, // Use IPv4/IPv6 dual-stack resolution, helpful in Docker
     });
   } else {
-    _client = new Redis(redisConfig as Record<string, unknown>);
+    _client = new Redis({
+      ...(redisConfig as Record<string, unknown>),
+      family: 0,
+    });
   }
 
   _client.on('connect', () => {
