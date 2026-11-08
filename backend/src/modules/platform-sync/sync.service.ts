@@ -1317,7 +1317,6 @@ export async function ingestLeetCodeSubmissions(userId: string, username: string
             tags: [],
             category: 'Data Structures & Algorithms',
             status: 'solved',
-            submissionCount: 1,
             isFavorite: false,
           },
           $inc: { submissionCount: 1 },
