@@ -60,7 +60,7 @@ vi.mock('../../modules/resume/upload/upload.controller.js', () => ({
 vi.mock('../../modules/resume/controllers/ResumeIntelligenceController.js', () => {
   const respond = (_req: unknown, res: Response) => res.json({ success: true });
   return Object.fromEntries(['getProfile', 'updateProfile', 'generateResume', 'generateVariant', 'getVariants',
-    'getVariant', 'analyzeATS', 'getATSAnalyses', 'createEvidenceClaim', 'getEvidenceClaims', 'exportResume',
+    'getVariant', 'analyzeATS', 'getATSAnalyses', 'createEvidenceClaim', 'getEvidenceClaims', 'exportResume', 'exportDossier',
     'getExportHistory', 'getVersionHistory', 'getCredibilityAnalysis', 'generateReport', 'getReport',
     'getProjects', 'getSkills'].map(name => [name, respond]));
 });
