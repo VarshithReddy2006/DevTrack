@@ -16,11 +16,11 @@ export async function validateStartup() {
     }
   }
 
-  // Redis is optional in development
+  // Redis check
   if (process.env.NODE_ENV === 'production') {
-    if (!process.env.REDIS_URL) {
-      logger.error('[StartupValidation] CRITICAL ERROR: Missing REDIS_URL in production');
-      throw new Error('Missing REDIS_URL');
+    if (!process.env.REDIS_URL && !process.env.REDIS_HOST) {
+      logger.error('[StartupValidation] CRITICAL ERROR: Missing REDIS_URL or REDIS_HOST in production');
+      throw new Error('Missing REDIS_URL or REDIS_HOST');
     }
   }
 
@@ -38,7 +38,7 @@ export async function validateStartup() {
   }
 
   // 2. Redis / Queue Bindings (optional in development)
-  if (process.env.REDIS_URL) {
+  if (process.env.REDIS_URL || process.env.REDIS_HOST) {
     try {
       const redis = getRedisClient();
       await redis.ping();
@@ -52,21 +52,22 @@ export async function validateStartup() {
       logger.warn('[StartupValidation] Redis/Queue validation failed - running without Redis', err as Record<string, unknown>);
     }
   } else {
-    logger.warn('[StartupValidation] REDIS_URL not set - running without Redis (queues and SSE will be degraded)');
+    logger.warn('[StartupValidation] Redis not configured - running without Redis (queues and SSE will be degraded)');
   }
 
-  // 3. Gemini Connectivity
-  try {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    // Perform a tiny check or just assume if instantiation works, connectivity might be tested upon first request.
-    // However, to strictly 'validate connectivity', we could fetch model info if the API supported it cleanly,
-    // but typically initializing the SDK is enough validation of the key's format.
-    // Doing an actual call could waste quota or slow startup.
-    logger.info('[StartupValidation] Gemini AI configuration verified.');
-  } catch (err) {
-    logger.error('[StartupValidation] CRITICAL ERROR: Gemini API validation failed', err);
-    throw err;
+  // 3. Gemini Connectivity (non-blocking in local simulation)
+  if (!process.env.GEMINI_API_KEY) {
+    logger.warn('[StartupValidation] GEMINI_API_KEY not set - AI features will operate in degraded mode');
+  } else {
+    try {
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      logger.info('[StartupValidation] Gemini AI configuration verified.');
+    } catch (err) {
+      logger.warn('[StartupValidation] Gemini API validation warning', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   logger.info('[StartupValidation] All startup checks passed successfully.');
