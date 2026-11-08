@@ -4,7 +4,7 @@
 import { EventEmitter } from 'events';
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { getRedisClient, getRedisHealth } from '../redis/client.js';
+import { createRedisConnection, getRedisClient, getRedisHealth, isRedisConfigured } from '../redis/client.js';
 
 // ─── Zod validation schemas for SSE event payloads ─────────────────────────
 const syncStartedPayload = z.object({
@@ -299,14 +299,12 @@ class EventBus extends EventEmitter {
 
   // ─── Redis pub/sub for horizontal scaling ─────────────────────────────────
   private async initRedisPubSub(): Promise<void> {
-    const redisUrl = process.env.REDIS_URL;
-    if (!redisUrl) {
-      logger.info('[sse] REDIS_URL not set — operating in local in-memory SSE mode (Redis Pub/Sub disabled)');
+    if (!isRedisConfigured()) {
+      logger.info('[sse] Neither REDIS_URL nor REDIS_HOST set — operating in local in-memory SSE mode (Redis Pub/Sub disabled)');
       return;
     }
 
     try {
-      const Redis = (await import('ioredis')).default;
       const connectionOptions: any = {
         lazyConnect: true,
         family: 0,
@@ -318,7 +316,7 @@ class EventBus extends EventEmitter {
       };
 
       // Persistent subscriber
-      const subscriber = new (Redis as any)(redisUrl, connectionOptions);
+      const subscriber = createRedisConnection(connectionOptions) as any;
       let isSubscribed = false;
       let subscriptionPromise: Promise<void> | null = null;
 
@@ -361,6 +359,11 @@ class EventBus extends EventEmitter {
         logger.error('[sse-redis] Subscriber error', err);
       });
 
+      (subscriber as any).on('close', () => {
+        // The channel subscription is lost with the connection; subscribe again on the next 'ready'
+        isSubscribed = false;
+      });
+
       (subscriber as any).on('ready', () => {
         logger.info('[sse-redis] Subscriber connection ready');
         // Handle late connect or reconnect if initial setup subscribe was not established
@@ -381,7 +384,7 @@ class EventBus extends EventEmitter {
       this.redisSubscriber = subscriber as any;
 
       // Shared singleton publisher
-      const publisher = new (Redis as any)(redisUrl, connectionOptions);
+      const publisher = createRedisConnection(connectionOptions) as any;
       (publisher as any).on('error', (err: Error) => {
         logger.error('[sse-redis] Publisher error', err);
       });
@@ -407,7 +410,7 @@ class EventBus extends EventEmitter {
   }
 
   private async publishToRedis(event: SseEvent): Promise<void> {
-    if (!process.env.REDIS_URL || getRedisHealth().status !== 'connected') {
+    if (!isRedisConfigured() || getRedisHealth().status !== 'connected') {
       return;
     }
     try {

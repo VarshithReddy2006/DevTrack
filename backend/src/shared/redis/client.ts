@@ -16,10 +16,36 @@ export interface RedisHealth {
   reconnectAttempts: number;
 }
 
+/**
+ * Redis counts as configured when either REDIS_URL or an explicit REDIS_HOST is set.
+ * REDIS_HOST has a localhost default in env.ts, so the raw process env is checked
+ * to tell "set on purpose" apart from "left at the default".
+ */
+export function isRedisConfigured(): boolean {
+  return Boolean(process.env.REDIS_URL || process.env.REDIS_HOST);
+}
+
+/**
+ * Open a new ioredis connection from REDIS_URL, or from REDIS_HOST / REDIS_PORT /
+ * REDIS_PASSWORD when no URL is given. Used for the dedicated pub/sub connections.
+ */
+export function createRedisConnection(overrides: Record<string, unknown> = {}): Redis {
+  const url = process.env.REDIS_URL;
+  if (url) {
+    return new Redis(url, { family: 0, ...overrides });
+  }
+  return new Redis({
+    host: process.env.REDIS_HOST || env.REDIS_HOST,
+    port: Number(process.env.REDIS_PORT) || env.REDIS_PORT,
+    password: process.env.REDIS_PASSWORD || env.REDIS_PASSWORD || undefined,
+    ...overrides,
+  });
+}
+
 export function getRedisClient(): Redis {
-  // If REDIS_URL is not set, return a mock client that doesn't connect
-  if (!env.REDIS_URL) {
-    logger.warn('[redis] REDIS_URL not set - returning null client (Redis features disabled)');
+  // If Redis is not configured at all, return a mock client that doesn't connect
+  if (!isRedisConfigured()) {
+    logger.warn('[redis] Neither REDIS_URL nor REDIS_HOST set - returning null client (Redis features disabled)');
     // Return a mock Redis instance that won't try to connect
     const mockClient = new Redis({
       host: 'localhost',
@@ -29,7 +55,7 @@ export function getRedisClient(): Redis {
       retryStrategy: () => null, // Disable retries
     });
     // Prevent it from ever connecting
-    mockClient.connect = () => Promise.reject(new Error('Redis disabled - REDIS_URL not set'));
+    mockClient.connect = () => Promise.reject(new Error('Redis disabled - REDIS_URL / REDIS_HOST not set'));
     return mockClient;
   }
 
@@ -44,16 +70,16 @@ export function getRedisClient(): Redis {
 
   _connecting = true;
 
-  const redisUrl = env.REDIS_URL;
+  const redisUrl = process.env.REDIS_URL;
   const redisConfig = redisUrl
     ? {
         lazyConnect: true,
         maxRetriesPerRequest: null,
       }
     : {
-        host: env.REDIS_HOST,
-        port: env.REDIS_PORT,
-        password: env.REDIS_PASSWORD || undefined,
+        host: process.env.REDIS_HOST || env.REDIS_HOST,
+        port: Number(process.env.REDIS_PORT) || env.REDIS_PORT,
+        password: process.env.REDIS_PASSWORD || env.REDIS_PASSWORD || undefined,
         lazyConnect: true,
         // BullMQ requires this to be null for blocking connections.
         maxRetriesPerRequest: null,
@@ -75,7 +101,10 @@ export function getRedisClient(): Redis {
       family: 0, // Use IPv4/IPv6 dual-stack resolution, helpful in Docker
     });
   } else {
-    _client = new Redis(redisConfig as Record<string, unknown>);
+    _client = new Redis({
+      ...(redisConfig as Record<string, unknown>),
+      family: 0,
+    });
   }
 
   _client.on('connect', () => {

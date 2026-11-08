@@ -49,9 +49,11 @@ import { EventBus, SseClient, SseEvent } from '../../../shared/sse/eventBus.js';
 
 describe('EventBus Resilience & Degraded Mode (No Redis)', () => {
   const originalRedisUrl = process.env.REDIS_URL;
+  const originalRedisHost = process.env.REDIS_HOST;
 
   beforeEach(() => {
     delete process.env.REDIS_URL;
+    delete process.env.REDIS_HOST;
     mockRedisStatus = 'ready';
     mockRedisConstructor.mockClear();
     mockSubscribeFn.mockClear();
@@ -62,6 +64,11 @@ describe('EventBus Resilience & Degraded Mode (No Redis)', () => {
       process.env.REDIS_URL = originalRedisUrl;
     } else {
       delete process.env.REDIS_URL;
+    }
+    if (originalRedisHost !== undefined) {
+      process.env.REDIS_HOST = originalRedisHost;
+    } else {
+      delete process.env.REDIS_HOST;
     }
   });
 
