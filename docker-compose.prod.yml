@@ -43,9 +43,14 @@ services:
       - ENABLE_WORKERS=false
       - NODE_ENV=production
       - PORT=3001
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
       - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_USER:-devtrack}:${MONGO_PASS:-devtrack}@mongo:27017/devtrack?authSource=admin}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+    networks:
+      devtrack:
+        aliases:
+          - backend
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 30s

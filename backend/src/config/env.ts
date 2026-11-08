@@ -39,9 +39,10 @@ function getCorsOrigin(): string {
   const origin = getEnvVar('CORS_ORIGIN', 'http://localhost:5173');
   const isProd = NODE_ENV === 'production';
 
-  // In production, validate it's an HTTPS origin
+  // In production, validate it's an HTTPS origin or a localhost / 127.0.0.1 simulation
   if (isProd) {
-    if (!origin.startsWith('https://')) {
+    const isLocalhost = origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1');
+    if (!origin.startsWith('https://') && !isLocalhost) {
       throw new Error(`CORS_ORIGIN must use HTTPS in production. Got: ${origin}`);
     }
   }

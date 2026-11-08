@@ -48,6 +48,10 @@ services:
       MONGODB_URI: mongodb://mongo:27017/devtrack
       REDIS_HOST: redis
       REDIS_PORT: 6379
+    networks:
+      default:
+        aliases:
+          - api
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 10s
