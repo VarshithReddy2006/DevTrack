@@ -64,7 +64,9 @@ export async function validateStartup() {
       genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
       logger.info('[StartupValidation] Gemini AI configuration verified.');
     } catch (err) {
-      logger.warn('[StartupValidation] Gemini API validation warning', err);
+      logger.warn('[StartupValidation] Gemini API validation warning', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
