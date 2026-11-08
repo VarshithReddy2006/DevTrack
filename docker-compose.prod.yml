@@ -3,6 +3,7 @@
 #
 # Services:
 #   api            — Express HTTP server + SSE gateway (no workers)
+#   frontend       — Nginx serving the built SPA, proxies /api to the api service
 #   worker-sync    — Platform sync BullMQ worker
 #   worker-xp      — XP processing BullMQ worker
 #   worker-resume  — Resume intelligence consumers
@@ -56,6 +57,28 @@ services:
         limits:
           memory: 512M
           cpus: '1.0'
+
+  # ─── Frontend ───────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:?Set VITE_CLERK_PUBLISHABLE_KEY in the environment or .env.production}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - devtrack
 
   # ─── Sync Worker ────────────────────────────────────────────────────────
   worker-sync:

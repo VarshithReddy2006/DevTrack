@@ -143,6 +143,7 @@ Services: `mongo` (7), `redis` (7-alpine), `backend`, `frontend` (Nginx).
 `docker-compose.prod.yml` defines:
 
 - `api` - Express only, `ENABLE_WORKERS=false`
+- `frontend` - Nginx serving the built app on host port 80 (`FRONTEND_PORT`); `/api` is proxied to the `api` service
 - `worker-sync` (2 replicas), `worker-xp`, `worker-resume`, `worker-dataset`, `worker-maint`
 - `mongo`, `redis` with health checks
 
@@ -151,6 +152,8 @@ when `.env.production` supplies values used in Compose interpolation (for exampl
 `MONGODB_URI`, `MONGO_USER`, `MONGO_PASS`, or `API_PORT`). The file is also loaded
 into backend containers when present; it is optional for configuration parsing.
 
+`VITE_CLERK_PUBLISHABLE_KEY` is required to build the `frontend` image.
+
 ### Shell deploy script
 
 ```bash
@@ -158,7 +161,7 @@ into backend containers when present; it is optional for configuration parsing.
 ```
 
 
-Builds images, starts containers, and checks backend health.
+Builds images from `docker-compose.prod.yml`, starts the containers, and checks the `api` health endpoint. It reads `.env.production` from the repo root.
 
 ---
 
