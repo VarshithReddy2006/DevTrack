@@ -15,6 +15,7 @@ import type {
   ApiProjectCommitDay,
 } from '../../types/api.types.js';
 import { parsePaginationParams, createPagination, getSkipCount, buildSortOptions } from '../../shared/pagination.js';
+import { parseGitHubRepositoryUrl, fetchGitHubProjectMetrics } from './project-github-sync.js';
 
 const ALLOWED_SORT_FIELDS = ['name', 'createdAt', 'updatedAt', 'stars', 'lastCommitAt'];
 
@@ -371,20 +372,32 @@ export async function deleteProjectTask(
   return Boolean(task);
 }
 
-export async function syncProject(userId: string, projectId: string): Promise<boolean> {
-  // Verify project exists and belongs to user
+export type ProjectSyncResult = 'synced' | 'not_found' | 'unsupported_repo' | 'upstream_error' | 'repo_changed';
+
+export async function syncProject(userId: string, projectId: string): Promise<ProjectSyncResult> {
   const project = await Project.findOne({
     _id: new Types.ObjectId(projectId),
     userId: new Types.ObjectId(userId),
   });
 
-  if (!project) return false;
+  if (!project) return 'not_found';
+  const repository = parseGitHubRepositoryUrl(project.repoUrl);
+  if (!repository) return 'unsupported_repo';
 
-  // Implement actual sync with GitHub
-  project.updatedAt = new Date();
-  await project.save();
+  let metrics;
+  try {
+    metrics = await fetchGitHubProjectMetrics(repository);
+  } catch (error) {
+    logger.warn('Project GitHub sync failed', { projectId, error: error instanceof Error ? error.message : String(error) });
+    return 'upstream_error';
+  }
 
-  return true;
+  const updated = await Project.findOneAndUpdate(
+    { _id: project._id, userId: project.userId, repoUrl: project.repoUrl },
+    { $set: metrics },
+    { new: true }
+  );
+  return updated ? 'synced' : 'repo_changed';
 }
 
 function mapProjectToApi(project: Record<string, unknown> & { _id: { toString(): string } }): ApiProject {
