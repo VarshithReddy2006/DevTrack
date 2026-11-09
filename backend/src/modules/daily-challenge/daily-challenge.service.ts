@@ -1,6 +1,7 @@
 // src/modules/daily-challenge/daily-challenge.service.ts
 import { Types } from 'mongoose';
 import { DailyChallenge, DsaProblem, DsaSubmission, XpTransaction, UserAnalytics } from '../../db/models/index.js';
+import type { IDailyChallenge } from '../../db/models/dailyChallenge.model.js';
 import { processXpEvent } from '../xp/processor.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { logger } from '../../shared/logger.js';
@@ -81,12 +82,12 @@ async function selectAdaptiveDifficulty(userId: string): Promise<'easy' | 'mediu
     if (currentStreak >= 14) return 'medium';
     if (currentStreak >= 7) {
       // Mix: 60% medium, 40% easy based on date hash
-      const dateHash = hashDateString(getTodayDateString());
+      const dateHash = hashDateString(getDateString());
       return dateHash % 5 < 3 ? 'medium' : 'easy';
     }
     if (currentStreak >= 3) {
       // Mix: 70% easy, 30% medium
-      const dateHash = hashDateString(getTodayDateString());
+      const dateHash = hashDateString(getDateString());
       return dateHash % 10 < 3 ? 'medium' : 'easy';
     }
     return 'easy'; // New or low-streak users get easy
@@ -114,8 +115,7 @@ function hashDateString(dateStr: string): number {
   return Math.abs(hash);
 }
 
-function getTodayDateString(): string {
-  const d = new Date();
+function getDateString(d = new Date()): string {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -123,7 +123,8 @@ function getTodayDateString(): string {
 }
 
 export async function getTodayChallenge(userId: string) {
-  const dateStr = getTodayDateString();
+  const now = new Date();
+  const dateStr = getDateString(now);
   let challenge = await DailyChallenge.findOne({ date: dateStr });
 
   if (!challenge) {
@@ -163,10 +164,10 @@ export async function getTodayChallenge(userId: string) {
   let userCompleted = !!completedTx;
 
   if (!userCompleted) {
-    const startOfDay = new Date();
+    const startOfDay = new Date(now);
     startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+    const nextDay = new Date(startOfDay);
+    nextDay.setDate(nextDay.getDate() + 1);
 
     const problem = await DsaProblem.findOne({
       userId: new Types.ObjectId(userId),
@@ -180,11 +181,11 @@ export async function getTodayChallenge(userId: string) {
         userId: new Types.ObjectId(userId),
         problemId: problem._id,
         status: 'accepted',
-        submittedAt: { $gte: startOfDay, $lte: endOfDay },
+        submittedAt: { $gte: startOfDay, $lt: nextDay },
       }).lean();
 
       if (submissionToday) {
-        const newlyCompleted = await checkChallengeCompletion(userId, challenge.platform, challenge.titleSlug);
+        const newlyCompleted = await awardChallengeCompletion(userId, challenge);
         if (newlyCompleted) {
           challenge.completionCount += 1;
         }
@@ -199,54 +200,57 @@ export async function getTodayChallenge(userId: string) {
   };
 }
 
-export async function checkChallengeCompletion(userId: string, platform: string, titleSlug: string): Promise<boolean> {
-  const dateStr = getTodayDateString();
+export async function checkChallengeCompletion(
+  userId: string,
+  platform: string,
+  titleSlug: string,
+  submittedAt: Date,
+): Promise<boolean> {
+  const dateStr = getDateString();
+  if (getDateString(submittedAt) !== dateStr) return false;
+
   const challenge = await DailyChallenge.findOne({ date: dateStr });
-
-  if (!challenge) return false;
-
-  // Compare platform and titleSlug case-insensitively
   if (
-    challenge.platform === platform.toLowerCase() &&
-    challenge.titleSlug.toLowerCase() === titleSlug.toLowerCase()
+    !challenge ||
+    challenge.platform !== platform.toLowerCase() ||
+    challenge.titleSlug.toLowerCase() !== titleSlug.toLowerCase()
   ) {
-    const challengeId = challenge._id.toString();
-    const existingTx = await XpTransaction.findOne({
-      userId: new Types.ObjectId(userId),
-      sourceType: 'challenge_completed',
-      sourceId: challengeId,
-    });
-
-    if (!existingTx) {
-      logger.info(`[daily-challenge] Awarding XP for daily challenge completion`, {
-        userId,
-        challengeId,
-        title: challenge.title,
-      });
-
-      // Award XP
-      const result = await processXpEvent({
-        userId,
-        sourceType: 'challenge_completed',
-        sourceId: challengeId,
-        metadata: {
-          xpReward: challenge.xpReward,
-          challengeId,
-          title: challenge.title,
-        },
-      });
-
-      // The XP ledger's unique key decides which concurrent caller is new.
-      if (!result.awarded) return false;
-
-      // Emit SSE event
-      await eventBus.emitChallengeCompleted(userId, challengeId, challenge.title, challenge.xpReward);
-
-      // Increment challenge completion count
-      await DailyChallenge.findByIdAndUpdate(challenge._id, { $inc: { completionCount: 1 } });
-      return true;
-    }
+    return false;
   }
 
-  return false;
+  return awardChallengeCompletion(userId, challenge);
+}
+
+async function awardChallengeCompletion(userId: string, challenge: IDailyChallenge): Promise<boolean> {
+  const challengeId = challenge._id.toString();
+  const existingTx = await XpTransaction.findOne({
+    userId: new Types.ObjectId(userId),
+    sourceType: 'challenge_completed',
+    sourceId: challengeId,
+  });
+  if (existingTx) return false;
+
+  logger.info('[daily-challenge] Awarding XP for daily challenge completion', {
+    userId,
+    challengeId,
+    title: challenge.title,
+  });
+
+  const result = await processXpEvent({
+    userId,
+    sourceType: 'challenge_completed',
+    sourceId: challengeId,
+    metadata: {
+      xpReward: challenge.xpReward,
+      challengeId,
+      title: challenge.title,
+    },
+  });
+
+  // The XP ledger's unique key decides which concurrent caller is new.
+  if (!result.awarded) return false;
+
+  await eventBus.emitChallengeCompleted(userId, challengeId, challenge.title, challenge.xpReward);
+  await DailyChallenge.findByIdAndUpdate(challenge._id, { $inc: { completionCount: 1 } });
+  return true;
 }

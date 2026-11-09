@@ -1128,7 +1128,7 @@ async function ingestCodeforcesSubmissions(userId: string, handle: string): Prom
 
           if (sub.verdict === 'OK') {
             const { checkChallengeCompletion } = await import('../daily-challenge/daily-challenge.service.js');
-            void checkChallengeCompletion(userId, 'codeforces', problemKey);
+            void checkChallengeCompletion(userId, 'codeforces', problemKey, submittedAt);
           }
         } catch (subErr: any) {
           // Duplicate key on unique index (userId + platform + externalId) → skip
@@ -1362,7 +1362,7 @@ export async function ingestLeetCodeSubmissions(userId: string, username: string
         ingested++;
 
         const { checkChallengeCompletion } = await import('../daily-challenge/daily-challenge.service.js');
-        void checkChallengeCompletion(userId, 'leetcode', problemKey);
+        void checkChallengeCompletion(userId, 'leetcode', problemKey, submittedAt);
       } catch (createErr: any) {
         if (createErr?.code === 11000) {
           duplicates++;

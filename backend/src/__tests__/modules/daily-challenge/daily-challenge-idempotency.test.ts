@@ -119,7 +119,7 @@ it.each([2, 3])('admits only one completion from %i overlapping checks', async p
   let results: boolean[];
   try {
     results = await Promise.all(Array.from({ length: participants }, () =>
-      checkChallengeCompletion(ownerId, 'leetcode', 'two-sum').catch(error => { barrier.release(); throw error; })));
+      checkChallengeCompletion(ownerId, 'leetcode', 'two-sum', now).catch(error => { barrier.release(); throw error; })));
   } finally { barrier.release(); }
   expect(barrier.absent).toEqual(Array(participants).fill(true));
   await expectSingleAward(challenge.id);
@@ -152,16 +152,16 @@ it.each([0, 180])('returns a fresh count on the first successful HTTP read start
 
 it('leaves a sequential completion replay inert', async () => {
   const challenge = await seedChallenge();
-  expect(await checkChallengeCompletion(ownerId, 'LEETCODE', 'TWO-SUM')).toBe(true);
-  expect(await checkChallengeCompletion(ownerId, 'leetcode', 'two-sum')).toBe(false);
+  expect(await checkChallengeCompletion(ownerId, 'LEETCODE', 'TWO-SUM', now)).toBe(true);
+  expect(await checkChallengeCompletion(ownerId, 'leetcode', 'two-sum', now)).toBe(false);
   expect((await getTodayChallenge(ownerId)).userCompleted).toBe(true);
   await expectSingleAward(challenge.id);
 });
 
 it('counts two different users independently', async () => {
   const challenge = await seedChallenge(180);
-  expect(await checkChallengeCompletion(ownerId, 'leetcode', 'two-sum')).toBe(true);
-  expect(await checkChallengeCompletion(otherId, 'leetcode', 'two-sum')).toBe(true);
+  expect(await checkChallengeCompletion(ownerId, 'leetcode', 'two-sum', now)).toBe(true);
+  expect(await checkChallengeCompletion(otherId, 'leetcode', 'two-sum', now)).toBe(true);
   expect((await DailyChallenge.findById(challenge._id))!.completionCount).toBe(182);
   expect(await XpTransaction.countDocuments({ sourceType: 'challenge_completed', sourceId: challenge.id })).toBe(2);
   expect((await UserXp.findOne({ userId: ownerId }))!.totalXp).toBe(30);
@@ -180,7 +180,7 @@ it.each(['wrong', 'wrong-slug', 'other-owner'] as const)('does not award for a %
 });
 
 it('preserves missing-challenge and unauthenticated behavior', async () => {
-  expect(await checkChallengeCompletion(ownerId, 'leetcode', 'two-sum')).toBe(false);
+  expect(await checkChallengeCompletion(ownerId, 'leetcode', 'two-sum', now)).toBe(false);
   expect((await fetch(url)).status).toBe(401);
   expect((await readToday('invalid')).status).toBe(401);
   expect(await DailyChallenge.countDocuments({})).toBe(0);
