@@ -288,6 +288,7 @@ export async function createProjectTask(
   const task = await ProjectTask.create({
     projectId: new Types.ObjectId(projectId),
     ...payload,
+    completedAt: payload.status === 'done' ? new Date() : null,
   });
 
   return {
@@ -321,9 +322,26 @@ export async function updateProjectTask(
 
   if (!project) return null;
 
-  const update: Record<string, unknown> = { ...payload };
+  let update: Record<string, unknown> | Record<string, unknown>[] = { ...payload };
   if (payload.status === 'done') {
-    update.completedAt = new Date();
+    // The pipeline reads the current status at write time, so concurrent edits
+    // cannot leave the timestamp out of step with the status.
+    const fields = Object.fromEntries(Object.entries(payload).map(([key, value]) => [
+      key,
+      { $literal: key === 'dueDate' && value !== null ? new Date(value as string) : value },
+    ]));
+    update = [{ $set: {
+      ...fields,
+      completedAt: {
+        $cond: [
+          { $eq: ['$status', 'done'] },
+          { $ifNull: ['$completedAt', new Date()] },
+          new Date(),
+        ],
+      },
+    } }];
+  } else if (payload.status) {
+    update.completedAt = null;
   }
 
   const task = await ProjectTask.findOneAndUpdate(

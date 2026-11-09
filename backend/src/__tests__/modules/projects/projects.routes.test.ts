@@ -26,7 +26,7 @@ vi.mock('../../../middleware/index.js', async () => {
   };
 });
 
-describe('Project task deletion route', () => {
+describe('Project task routes', () => {
   const ownerId = new Types.ObjectId('000000000000000000000001');
   const otherUserId = new Types.ObjectId('000000000000000000000002');
   let server: Server;
@@ -78,6 +78,95 @@ describe('Project task deletion route', () => {
     });
     return { status: response.status, body: await response.json() };
   }
+
+  async function createTask(status: 'todo' | 'done') {
+    const response = await fetch(`${baseUrl}/${projectId}/tasks`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-owner', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'New task', description: '', status, priority: 'medium' }),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  async function updateTask(id: string, payload: Record<string, unknown>) {
+    const response = await fetch(`${baseUrl}/${projectId}/tasks/${id}`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer test-owner', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  it('sets completedAt when a task is created done and leaves it null for todo', async () => {
+    const done = await createTask('done');
+    const todo = await createTask('todo');
+
+    expect(done.status).toBe(201);
+    expect(done.body.data.status).toBe('done');
+    expect(done.body.data.completedAt).not.toBeNull();
+    expect((await ProjectTask.findById(done.body.data.id))?.completedAt).not.toBeNull();
+    expect(todo.status).toBe(201);
+    expect(todo.body.data.completedAt).toBeNull();
+  });
+
+  it('sets the timestamp on first completion and preserves it on repeated done and unrelated edits', async () => {
+    const first = await updateTask(taskId, { status: 'done' });
+    expect(first.status).toBe(200);
+    expect(first.body.data.completedAt).not.toBeNull();
+
+    const repeated = await updateTask(taskId, { status: 'done' });
+    const renamed = await updateTask(taskId, { title: 'Renamed task' });
+    expect(repeated.body.data.completedAt).toBe(first.body.data.completedAt);
+    expect(renamed.body.data.completedAt).toBe(first.body.data.completedAt);
+    expect((await ProjectTask.findById(taskId))?.completedAt?.toISOString()).toBe(first.body.data.completedAt);
+  });
+
+  it('repairs an existing done task whose completion timestamp is missing', async () => {
+    await ProjectTask.updateOne({ _id: taskId }, { status: 'done', completedAt: null });
+
+    const response = await updateTask(taskId, { status: 'done' });
+    expect(response.status).toBe(200);
+    expect(response.body.data.completedAt).not.toBeNull();
+    expect((await ProjectTask.findById(taskId))?.completedAt).not.toBeNull();
+  });
+
+  it('clears the timestamp on reopening and records a new time on re-completion', async () => {
+    const oldCompletion = new Date('2020-01-01T00:00:00.000Z');
+    await ProjectTask.updateOne({ _id: taskId }, { status: 'done', completedAt: oldCompletion });
+
+    const reopened = await updateTask(taskId, { status: 'in_progress' });
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.data.completedAt).toBeNull();
+    expect((await ProjectTask.findById(taskId))?.completedAt).toBeNull();
+
+    const redone = await updateTask(taskId, { status: 'done' });
+    expect(redone.body.data.completedAt).not.toBeNull();
+    expect(new Date(redone.body.data.completedAt).getTime()).toBeGreaterThan(oldCompletion.getTime());
+  });
+
+  it('casts other edited fields safely when completing a task', async () => {
+    const dueDate = '2026-12-10T12:00:00.000Z';
+    const response = await updateTask(taskId, { status: 'done', title: '$literal title', dueDate });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({ status: 'done', title: '$literal title', dueDate });
+    const stored = await ProjectTask.findById(taskId);
+    expect(stored?.title).toBe('$literal title');
+    expect(stored?.dueDate).toBeInstanceOf(Date);
+    expect(stored?.dueDate?.toISOString()).toBe(dueDate);
+  });
+
+  it('keeps status and completion timestamp consistent after concurrent status edits', async () => {
+    for (let i = 0; i < 8; i++) {
+      const responses = await Promise.all([
+        updateTask(taskId, { status: 'done' }),
+        updateTask(taskId, { status: 'review' }),
+      ]);
+      expect(responses.every(response => response.status === 200)).toBe(true);
+      const stored = await ProjectTask.findById(taskId);
+      expect(stored?.completedAt !== null).toBe(stored?.status === 'done');
+    }
+  });
 
   it('deletes an owned task and returns its ID', async () => {
     const response = await removeTask(`/${projectId}/tasks/${taskId}`);
