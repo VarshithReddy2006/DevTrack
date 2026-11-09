@@ -246,6 +246,20 @@ npm run dev:infra
 ```
 *Launches MongoDB on port `27017` and Redis on port `6379` via Docker Compose.*
 
+XP awards commit the aggregate balance and immutable ledger row in one MongoDB
+transaction. MongoDB must support transactions: use a replica set, Atlas, or a
+sharded deployment; standalone MongoDB is unsupported for XP writes. Local
+Compose starts and initializes the single-member development replica set `rs0`
+and waits for its primary before starting the backend. Existing local volumes
+are retained. The Compose backend uses a direct connection because the local
+replica advertises `localhost:27017` for host-based development. This single-node
+configuration is for development, not production high availability.
+
+The unit-test fixture also provisions an owned single-member replica set so
+concurrency and rollback tests execute real MongoDB transactions. SSE events and
+best-effort analytics/cache/runtime projections run after commit; they are not
+a durable transactional outbox.
+
 ### Step 5: Launch DevTrack
 
 Select the development mode suited to your workflow:
