@@ -336,9 +336,13 @@ export async function getProblemById(userId: string, problemId: string): Promise
 }
 
 export async function createProblem(userId: string, payload: ApiDsaProblemCreatePayload): Promise<ApiDsaProblem> {
+  const problemId = new Types.ObjectId();
   const problem = await DsaProblem.create({
     userId: new Types.ObjectId(userId),
     ...payload,
+    _id: problemId,
+    // Manual entries share the index with imported problems but have no provider ID.
+    externalId: 'manual:' + problemId.toHexString(),
     status: 'unsolved',
     submissionCount: 0,
     isFavorite: false,
