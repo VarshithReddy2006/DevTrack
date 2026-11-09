@@ -2,7 +2,7 @@
 import type { Response } from 'express';
 import type { AuthenticatedRequest } from '../../middleware/auth.js';
 import * as service from './projects.service.js';
-import { successResponse, commonErrors, deleteResponse, mutationResponse } from '../../shared/response.js';
+import { successResponse, commonErrors, deleteResponse, mutationResponse, errorResponse } from '../../shared/response.js';
 
 export async function getProjects(req: AuthenticatedRequest, res: Response): Promise<void> {
   const filters = {
@@ -94,10 +94,22 @@ export async function deleteProjectTask(req: AuthenticatedRequest, res: Response
 }
 
 export async function syncProject(req: AuthenticatedRequest, res: Response): Promise<void> {
-  const synced = await service.syncProject(req.user!.id, req.params.id as string);
-  if (!synced) {
+  const result = await service.syncProject(req.user!.id, req.params.id as string);
+  if (result === 'not_found') {
     commonErrors.notFound(res, 'Project');
     return;
   }
-  mutationResponse(res, true, 'Project sync initiated');
+  if (result === 'unsupported_repo') {
+    commonErrors.badRequest(res, 'A supported GitHub repository URL is required');
+    return;
+  }
+  if (result === 'upstream_error') {
+    errorResponse(res, 'GitHub repository sync failed', 'UPSTREAM_ERROR', 502);
+    return;
+  }
+  if (result === 'repo_changed') {
+    commonErrors.conflict(res, 'Project repository changed during sync');
+    return;
+  }
+  mutationResponse(res, true, 'Project synced successfully');
 }
