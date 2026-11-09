@@ -36,6 +36,7 @@ describe('DSA problem routes', () => {
   let foreignId: string;
 
   beforeAll(async () => {
+    await DsaProblem.init();
     const app = express();
     app.use(express.json());
     app.use('/api/v1/dsa', dsaRoutes);
@@ -84,7 +85,7 @@ describe('DSA problem routes', () => {
     return { status: response.status, body: await response.json() };
   }
 
-  async function postProblem(platform: unknown, authenticated = true) {
+  async function postProblem(platform: unknown, authenticated = true, title = 'Manual practice problem') {
     const response = await fetch(`${baseUrl}/problems`, {
       method: 'POST',
       headers: {
@@ -92,8 +93,8 @@ describe('DSA problem routes', () => {
         ...(authenticated ? { Authorization: 'Bearer test-owner' } : {}),
       },
       body: JSON.stringify({
-        title: 'Manual practice problem', platform, difficulty: 'medium',
-        url: 'https://example.com/practice', tags: ['arrays'], category: 'arrays',
+        title, platform, difficulty: 'medium',
+        url: 'https://example.com/practice/' + encodeURIComponent(title), tags: ['arrays'], category: 'arrays',
       }),
     });
     return { status: response.status, body: await response.json() };
@@ -109,6 +110,44 @@ describe('DSA problem routes', () => {
       expect(stored?.userId.toString()).toBe(ownerId.toString());
     }
   );
+
+  it.each(['leetcode', 'codeforces', 'other'])(
+    'creates multiple manual %s problems for the same user',
+    async platform => {
+      const first = await postProblem(platform, true, 'First manual problem');
+      const second = await postProblem(platform, true, 'Second manual problem');
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      const rows = await DsaProblem.find({
+        userId: ownerId,
+        _id: { $in: [first.body.data.id, second.body.data.id] },
+      }).lean();
+      expect(rows.map(row => row.title).sort()).toEqual(['First manual problem', 'Second manual problem']);
+      expect(rows.every(row => row.platform === platform && row.externalId)).toBe(true);
+      expect(new Set(rows.map(row => row.externalId)).size).toBe(2);
+    },
+  );
+
+  it('can create a manual problem beside a legacy blank ID and preserves provider uniqueness', async () => {
+    const legacy = await DsaProblem.create({
+      userId: ownerId, platform: 'leetcode', title: 'Legacy manual problem',
+      difficulty: 'easy', category: 'arrays', url: 'https://example.com/practice/legacy',
+    });
+    expect(legacy.externalId).toBe('');
+
+    const response = await postProblem('leetcode', true, 'New manual problem');
+    expect(response.status).toBe(201);
+    expect((await DsaProblem.findById(legacy._id).lean())?.externalId).toBe('');
+    expect((await DsaProblem.findById(response.body.data.id).lean())?.externalId).toBeTruthy();
+
+    const providerProblem = {
+      userId: ownerId, platform: 'leetcode', externalId: 'two-sum', title: 'Imported Two Sum',
+      difficulty: 'easy', category: 'arrays', url: 'https://leetcode.com/problems/two-sum/',
+    };
+    await DsaProblem.create(providerProblem);
+    await expect(DsaProblem.create(providerProblem)).rejects.toMatchObject({ code: 11000 });
+  });
 
   it.each(['unsupported', 'CodeChef', '', null, 42, undefined])(
     'rejects an invalid problem platform (%j) without writing a record', async platform => {
