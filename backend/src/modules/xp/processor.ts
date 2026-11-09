@@ -67,7 +67,7 @@ export async function processMissionReward(userId: string, missionId: string): P
   }, mission.xpReward);
 }
 
-// Only the validated mission entry point can supply this private override.
+// Only validated internal mission/milestone entry points can supply this override.
 async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Promise<XpProcessingResult> {
   const { userId, sourceType, sourceId, difficulty, metadata, requestId } = payload;
   const userObjId = new Types.ObjectId(userId);
@@ -96,60 +96,15 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
   // ── Step 2: Calculate XP award ───────────────────────────────────────────
   const xpAwarded = missionReward ?? calculateXpAward(sourceType, difficulty, metadata);
 
-  // ── Step 3: Get current UserXp state (or create default) ─────────────────
-  let userXp = await UserXp.findOne({ userId: userObjId });
-  if (!userXp) {
-    userXp = await UserXp.create({ userId: userObjId });
-  }
+  if (!Number.isSafeInteger(xpAwarded) || xpAwarded < 0) throw new Error('XP award must be a nonnegative safe integer');
 
-  const levelBefore = userXp.currentLevel;
-  const previousTotalXp = userXp.totalXp;
-  const newTotalXp = previousTotalXp + xpAwarded;
-  if (missionReward !== undefined && !Number.isSafeInteger(newTotalXp)) {
-    throw new Error('Mission reward would produce an unsafe XP total');
-  }
-  const levelAfter = calculateLevel(newTotalXp);
-  const leveledUp = levelAfter > levelBefore;
-
-  // ── Step 4: Insert immutable transaction (idempotency guard) ────────────
+  // Establish the unique aggregate outside the transaction. Concurrent first
+  // awards may race on this upsert; only the userId duplicate is recoverable.
   try {
-    await XpTransaction.create({
-      userId: userObjId,
-      sourceType,
-      sourceId,
-      xpAwarded,
-      previousTotalXp,
-      newTotalXp,
-      levelBefore,
-      levelAfter,
-      metadata: metadata ?? {},
-    });
-  } catch (err: unknown) {
-    // Duplicate key — another worker already processed this event
-    if ((err as { code?: number })?.code === 11000) {
-      logger.debug('[xp] Transaction deduped on insert', {
-        event: 'xp_insert_dedup',
-        userId,
-        sourceType,
-        sourceId,
-        requestId,
-      });
-      return {
-        awarded: false,
-        xpAwarded: 0,
-        duplicate: true,
-        levelBefore,
-        levelAfter: calculateLevel(previousTotalXp),
-        leveledUp: false,
-        newTotalXp: previousTotalXp,
-      };
-    }
-    throw err;
+    await UserXp.updateOne({ userId: userObjId }, { $setOnInsert: { userId: userObjId } }, { upsert: true });
+  } catch (error) {
+    if ((error as { code?: number }).code !== 11000 || !await UserXp.exists({ userId: userObjId })) throw error;
   }
-
-  // ── Step 5: Atomic aggregate update ─────────────────────────────────────
-  // IMPORTANT: currentLevel MUST NOT be in both $inc and $set — Mongoose will throw.
-  // We use $set exclusively for currentLevel and xpToNextLevel, $inc only for counters.
   const incSet: Record<string, number> = {
     totalXp: xpAwarded,
     'lifetimeStats.totalXpEarned': xpAwarded,
@@ -164,24 +119,47 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
   if (sourceType === 'daily_streak') incSet['lifetimeStats.dailyStreaks'] = 1;
   if (sourceType === 'sync_completed') incSet['lifetimeStats.totalSyncs'] = 1;
 
-  const updateSet: Record<string, unknown> = {
-    currentLevel: levelAfter,
-    xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter),
-    lastXpGainedAt: new Date(),
-  };
-
-  await UserXp.findByIdAndUpdate(userXp._id, {
-    $inc: incSet,
-    $set: updateSet,
-  });
-
-  // ── Step 6: Emit SSE events ────────────────────────────────────────────────
-  eventBus.emitXpUpdated(userId, newTotalXp, xpAwarded, levelAfter, xpToNextLevel(newTotalXp, levelAfter));
-
-  if (leveledUp) {
-    eventBus.emitLevelUp(userId, levelAfter, newTotalXp);
+  let transition: XpProcessingResult;
+  try {
+    // The driver retries transient write conflicts and ambiguous commits.
+    // No external effects run inside a callback that can be retried.
+    transition = await UserXp.db.transaction(async session => {
+      const duplicate = await XpTransaction.findOne({ userId: userObjId, sourceType, sourceId }).session(session);
+      if (duplicate) return duplicateResult(duplicate);
+      const userXp = await UserXp.findOne({ userId: userObjId }).session(session);
+      if (!userXp) throw new Error('XP aggregate missing');
+      const previousTotalXp = userXp.totalXp;
+      const newTotalXp = previousTotalXp + xpAwarded;
+      if (!Number.isSafeInteger(newTotalXp)) throw new Error('XP award would produce an unsafe XP total');
+      const levelBefore = calculateLevel(previousTotalXp);
+      const levelAfter = calculateLevel(newTotalXp);
+      await UserXp.updateOne({ _id: userXp._id }, {
+        $inc: incSet,
+        $set: { currentLevel: levelAfter, xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter), lastXpGainedAt: new Date() },
+      }, { session });
+      await XpTransaction.create([{
+        userId: userObjId, sourceType, sourceId, xpAwarded,
+        previousTotalXp, newTotalXp, levelBefore, levelAfter, metadata: metadata ?? {},
+      }], { session });
+      return { awarded: true, xpAwarded, duplicate: false, levelBefore, levelAfter,
+        leveledUp: levelAfter > levelBefore, newTotalXp };
+    }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+  } catch (error) {
+    if ((error as { code?: number }).code !== 11000) throw error;
+    // A competing idempotency-key insertion aborts this whole transaction,
+    // including its aggregate increment. Return only a committed matching row.
+    const duplicate = await XpTransaction.findOne({ userId: userObjId, sourceType, sourceId });
+    if (!duplicate) throw error;
+    return duplicateResult(duplicate);
   }
+  if (transition.duplicate) return transition;
+  const { levelBefore, levelAfter, leveledUp, newTotalXp } = transition;
 
+  // Publish every crossed threshold, and only after the transaction commits.
+  eventBus.emitXpUpdated(userId, newTotalXp, xpAwarded, levelAfter, xpToNextLevel(newTotalXp, levelAfter));
+  for (let level = levelBefore + 1; level <= levelAfter; level++) {
+    eventBus.emitLevelUp(userId, level, newTotalXp);
+  }
   // ── Step 7: Sync to UserAnalytics ────────────────────────────────────────
   await syncUserAnalytics(userId, newTotalXp, xpAwarded, levelAfter, sourceType);
 
@@ -278,54 +256,16 @@ export async function processMilestoneXp(
   const milestoneXp = calculateMilestoneXp(totalSolved);
   if (milestoneXp === 0) return;
 
-  const sourceId = `milestone_${totalSolved}`;
-  const existing = await XpTransaction.findOne({
-    userId: new Types.ObjectId(userId),
-    sourceType: 'milestone',
-    sourceId,
-  });
-  if (existing) return;
-
-  // Milestones award via separate mechanism — directly insert transaction
-  const userObjId = new Types.ObjectId(userId);
-  let userXp = await UserXp.findOne({ userId: userObjId });
-  if (!userXp) {
-    userXp = await UserXp.create({ userId: userObjId });
-  }
-
-  const levelBefore = userXp.currentLevel;
-  const newTotalXp = userXp.totalXp + milestoneXp;
-  const levelAfter = calculateLevel(newTotalXp);
-
-  try {
-    await XpTransaction.create({
-      userId: userObjId,
-      sourceType: 'milestone',
-      sourceId,
-      xpAwarded: milestoneXp,
-      previousTotalXp: userXp.totalXp,
-      newTotalXp,
-      levelBefore,
-      levelAfter,
-      metadata: { totalSolved, reason: `${totalSolved} problems solved` },
-    });
-
-    await UserXp.findByIdAndUpdate(userXp._id, {
-      $inc: { totalXp: milestoneXp, 'lifetimeStats.totalXpEarned': milestoneXp },
-      $set: {
-        currentLevel: levelAfter,
-        xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter),
-        lastXpGainedAt: new Date(),
-      },
-    });
-
-    eventBus.emitXpUpdated(userId, newTotalXp, milestoneXp, levelAfter, xpToNextLevel(newTotalXp, levelAfter));
-    if (levelAfter > levelBefore) eventBus.emitLevelUp(userId, levelAfter, newTotalXp);
-  } catch (err: unknown) {
-    if ((err as { code?: number })?.code !== 11000) throw err;
-  }
+  await applyXpEvent({
+    userId, sourceType: 'milestone', sourceId: `milestone_${totalSolved}`, requestId,
+    metadata: { totalSolved, reason: `${totalSolved} problems solved` },
+  }, milestoneXp);
 }
 
+function duplicateResult(transaction: { levelAfter: number; newTotalXp: number }): XpProcessingResult {
+  return { awarded: false, xpAwarded: 0, duplicate: true, levelBefore: transaction.levelAfter,
+    levelAfter: transaction.levelAfter, leveledUp: false, newTotalXp: transaction.newTotalXp };
+}
 // ─── Read-only UserXp fetch ─────────────────────────────────────────────────
 
 export async function getUserXp(userId: string): Promise<{
