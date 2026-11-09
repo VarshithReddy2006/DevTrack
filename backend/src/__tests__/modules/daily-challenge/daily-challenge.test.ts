@@ -125,7 +125,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
   });
 
   it('should return false if no challenge exists for today', async () => {
-    const result = await checkChallengeCompletion(userId, 'leetcode', 'nonexistent-slug');
+    const result = await checkChallengeCompletion(userId, 'leetcode', 'nonexistent-slug', new Date());
     expect(result).toBe(false);
   });
 
@@ -135,7 +135,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
     const challenge = await DailyChallenge.findOne({});
 
     // Try completion with wrong platform
-    const result = await checkChallengeCompletion(userId, 'hackerrank', challenge!.titleSlug);
+    const result = await checkChallengeCompletion(userId, 'hackerrank', challenge!.titleSlug, new Date());
     expect(result).toBe(false);
   });
 
@@ -143,7 +143,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
     await getTodayChallenge(userId);
     const challenge = await DailyChallenge.findOne({});
 
-    const result = await checkChallengeCompletion(userId, challenge!.platform, 'wrong-slug');
+    const result = await checkChallengeCompletion(userId, challenge!.platform, 'wrong-slug', new Date());
     expect(result).toBe(false);
   });
 
@@ -152,7 +152,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
     await getTodayChallenge(userId);
     const challenge = await DailyChallenge.findOne({});
 
-    const result = await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug);
+    const result = await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug, new Date());
     expect(result).toBe(true);
     expect(processXpEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -169,7 +169,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
     const challenge = await DailyChallenge.findOne({});
 
     // First completion
-    await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug);
+    await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug, new Date());
 
     // Create the XpTransaction so second completion is blocked
     await XpTransaction.create({
@@ -185,7 +185,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
 
     vi.mocked(processXpEvent).mockClear();
 
-    const result = await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug);
+    const result = await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug, new Date());
     expect(result).toBe(false);
     expect(processXpEvent).not.toHaveBeenCalled();
   });
@@ -200,7 +200,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
       levelBefore: 1, levelAfter: 1, leveledUp: false,
     });
 
-    const result = await checkChallengeCompletion(userId, challenge.platform, challenge.titleSlug);
+    const result = await checkChallengeCompletion(userId, challenge.platform, challenge.titleSlug, new Date());
 
     expect.soft(result).toBe(false);
     expect.soft(eventBus.emitChallengeCompleted).not.toHaveBeenCalled();
@@ -212,7 +212,7 @@ describe('Daily Challenge — checkChallengeCompletion', () => {
     const challenge = await DailyChallenge.findOne({});
     const originalCount = challenge!.completionCount;
 
-    await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug);
+    await checkChallengeCompletion(userId, challenge!.platform, challenge!.titleSlug, new Date());
 
     const updated = await DailyChallenge.findById(challenge!._id);
     expect(updated!.completionCount).toBe(originalCount + 1);
