@@ -29,11 +29,13 @@ export class WorkerFactory {
         
         try {
           // Timeout protection (e.g. max 5 minutes per job to prevent hanging)
+          let timer: ReturnType<typeof setTimeout> | undefined;
           const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Job execution timed out after 5 minutes')), 5 * 60 * 1000);
+            timer = setTimeout(() => reject(new Error('Job execution timed out after 5 minutes')), 5 * 60 * 1000);
           });
           
-          await Promise.race([processor(job), timeoutPromise]);
+          try { await Promise.race([processor(job), timeoutPromise]); }
+          finally { clearTimeout(timer); }
 
           logger.info(`[Worker:${queueName}] Completed Job ${jobId}`);
         } catch (error) {

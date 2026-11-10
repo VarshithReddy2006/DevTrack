@@ -21,6 +21,7 @@ import { getWorkerStatus, getXpWorkerStatus } from './shared/jobs/index.js';
 import { orchestrator } from './shared/runtime/index.js';
 import { getInfrastructureState } from './shared/runtime/infrastructureRegistry.js';
 import routes from './routes/index.js';
+import { getRegisteredWorkerStatuses } from './shared/jobs/workers.js';
 import { mountApiRoutes } from './routes/mount.js';
 
 const require = createRequire(import.meta.url);
@@ -128,20 +129,30 @@ async function bootstrap() {
   });
 
   // Phase 7: Graceful shutdown — drain infrastructure before exiting
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info('Shutting down... stopping infrastructure');
 
-    server.close(async () => {
-      await orchestrator.shutdown();
-      logger.info('Shutdown complete');
-      process.exit(0);
-    });
-
-    // Force exit after 10s
-    setTimeout(() => {
+    // Stop consumers immediately rather than waiting for lingering HTTP clients.
+    const timeout = setTimeout(() => {
       logger.error('Forced shutdown after timeout');
       process.exit(1);
     }, 10_000);
+    try {
+      await Promise.all([
+        new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+        orchestrator.shutdown(),
+      ]);
+      clearTimeout(timeout);
+      logger.info('Shutdown complete');
+      process.exit(0);
+    } catch (error) {
+      clearTimeout(timeout);
+      logger.error('Shutdown failed', error);
+      process.exit(1);
+    }
   };
 
   process.on('SIGTERM', shutdown);
@@ -309,26 +320,7 @@ function setupHealthEndpoints(
   });
 
   app.get('/api/system/queue-status', authMiddleware, adminMiddleware, async (_req: AuthenticatedRequest, res: express.Response) => {
-    const queueNames = [
-      QueueNames.PLATFORM_SYNC,
-      QueueNames.SYSTEM_MAINTENANCE,
-      QueueNames.XP_PROCESSING,
-      QueueNames.STREAK_RECALC,
-      QueueNames.NOTIFICATIONS,
-    ];
-
-    const queueStatuses = await Promise.all(
-      queueNames.map(async (name) => {
-        try {
-          const q = getOrCreateQueue(name);
-          const counts = await q.getJobCounts();
-          return { name, active: counts.active ?? 0, waiting: counts.waiting ?? 0, failed: counts.failed ?? 0, completed: counts.completed ?? 0, delayed: counts.delayed ?? 0 };
-        } catch (err) {
-          logger.warn('[health] Failed to get queue status', { queueName: name, error: err instanceof Error ? err.message : String(err) });
-          return { name, active: 0, waiting: 0, failed: 0, completed: 0, delayed: 0 };
-        }
-      })
-    );
+    const queueStatuses = await getRegisteredWorkerStatuses();
 
     const redisHealth = getRedisHealth();
     const workerStatus = getWorkerStatus();

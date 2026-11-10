@@ -15,8 +15,8 @@ interface IVariantGenerationJob {
 
 let worker: Worker | null = null;
 
-export function startVariantGenerationWorker(): void {
-  if (worker) return;
+export function startVariantGenerationWorker(): Worker {
+  if (worker) return worker;
 
   const service = new ResumeIntelligenceService();
 
@@ -37,6 +37,8 @@ export function startVariantGenerationWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return worker;
 }
 
 export async function stopVariantGenerationWorker(): Promise<void> {

@@ -16,8 +16,8 @@ interface IResumeExportJob {
 
 let worker: Worker | null = null;
 
-export function startResumeExportWorker(): void {
-  if (worker) return;
+export function startResumeExportWorker(): Worker {
+  if (worker) return worker;
 
   const service = new ResumeIntelligenceService();
 
@@ -39,6 +39,8 @@ export function startResumeExportWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return worker;
 }
 
 export async function stopResumeExportWorker(): Promise<void> {
