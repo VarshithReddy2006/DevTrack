@@ -1,4 +1,5 @@
 // src/modules/projects/projects.service.ts
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { Project, ProjectTask, ActivityEvent } from '../../db/models/index.js';
 import { createActivity } from '../activity/activity.service.js';
@@ -76,6 +77,8 @@ export async function createProject(userId: string, payload: ApiProjectCreatePay
     openIssues: 0,
   });
 
+  await cacheManager.invalidateDashboard(userId);
+
   // Activity logging
   createActivity(userId, {
     type: 'project_created',
@@ -108,6 +111,7 @@ export async function updateProject(
   ).lean();
 
   if (project) {
+    await cacheManager.invalidateDashboard(userId);
     // Build a human-readable description of what changed
     const changes: string[] = [];
     if (payload.name) changes.push(`renamed to "${payload.name}"`);
@@ -153,6 +157,7 @@ export async function deleteProject(userId: string, projectId: string): Promise<
   });
 
   if (result.deletedCount > 0) {
+    await cacheManager.invalidateDashboard(userId);
     createActivity(userId, {
       type: 'project_deleted',
       title: `Deleted project ${project.name}`,
@@ -415,6 +420,7 @@ export async function syncProject(userId: string, projectId: string): Promise<Pr
     { $set: metrics },
     { new: true }
   );
+  if (updated) await cacheManager.invalidateDashboard(userId);
   return updated ? 'synced' : 'repo_changed';
 }
 

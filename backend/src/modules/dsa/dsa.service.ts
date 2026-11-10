@@ -1,4 +1,5 @@
 // src/modules/dsa/dsa.service.ts
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { DsaProblem, DsaTopicProgress, DsaSubmission, DsaContest, DailyActivity, PlatformStats } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
@@ -348,6 +349,8 @@ export async function createProblem(userId: string, payload: ApiDsaProblemCreate
     isFavorite: false,
   });
 
+  await cacheManager.invalidateDashboard(userId);
+
   // Update topic progress
   await updateTopicProgress(userId, payload.category, payload.difficulty);
 
@@ -378,6 +381,7 @@ export async function updateProblem(
     { new: true }
   ).lean();
 
+  if (problem) await cacheManager.invalidateDashboard(userId);
   return problem ? mapProblemToApi(problem) : null;
 }
 
@@ -386,6 +390,7 @@ export async function deleteProblem(userId: string, problemId: string): Promise<
     _id: new Types.ObjectId(problemId),
     userId: new Types.ObjectId(userId),
   });
+  if (result.deletedCount > 0) await cacheManager.invalidateDashboard(userId);
   return result.deletedCount > 0;
 }
 
@@ -426,6 +431,8 @@ export async function bulkUpdateStatus(
     },
     update
   );
+
+  if (result.modifiedCount > 0) await cacheManager.invalidateDashboard(userId);
 
   // Legacy reserved-category problems still accept status changes. Their
   // platform summaries are exclusively owned by platform-sync.

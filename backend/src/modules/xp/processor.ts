@@ -155,11 +155,6 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
   if (transition.duplicate) return transition;
   const { levelBefore, levelAfter, leveledUp, newTotalXp } = transition;
 
-  // Publish every crossed threshold, and only after the transaction commits.
-  eventBus.emitXpUpdated(userId, newTotalXp, xpAwarded, levelAfter, xpToNextLevel(newTotalXp, levelAfter));
-  for (let level = levelBefore + 1; level <= levelAfter; level++) {
-    eventBus.emitLevelUp(userId, level, newTotalXp);
-  }
   // ── Step 7: Sync to UserAnalytics ────────────────────────────────────────
   await syncUserAnalytics(userId, newTotalXp, xpAwarded, levelAfter, sourceType);
 
@@ -170,6 +165,11 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
     logger.warn('[xp] Cache invalidation failed (non-fatal)', { error: err });
   }
 
+  // Publish every crossed threshold, and only after the transaction commits.
+  eventBus.emitXpUpdated(userId, newTotalXp, xpAwarded, levelAfter, xpToNextLevel(newTotalXp, levelAfter));
+  for (let level = levelBefore + 1; level <= levelAfter; level++) {
+    eventBus.emitLevelUp(userId, level, newTotalXp);
+  }
   // ── Step 9: Runtime state sync ──────────────────────────────────────────
   try {
     await unifiedRuntimeStateService.updateFromEvent({
