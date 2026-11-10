@@ -64,6 +64,11 @@ export class ResumeProcessingOrchestrator {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
+    if (session.checkpointState?.stage && session.failureState?.failed) {
+      await this.resumeFromCheckpoint(sessionId);
+      return;
+    }
+
     // Update session state
     session.currentStage = 'VALIDATING';
     session.timestamps.startedProcessingAt = new Date();
@@ -79,6 +84,7 @@ export class ResumeProcessingOrchestrator {
       await this.executeValidation(session);
       // Add to processing history only after successful execution
       await this.addProcessingHistory(session, 'VALIDATING', 'success');
+      await this.saveCheckpoint(session, 'VALIDATING');
     } catch (error) {
       logger.error(`[ProcessingOrchestrator] Validation failed for session: ${sessionId}`, error);
       await this.handleStageFailure(sessionId, 'VALIDATING', error);
@@ -165,6 +171,7 @@ export class ResumeProcessingOrchestrator {
           }
         });
         await updatedSession.save();
+        await this.saveCheckpoint(updatedSession, nextStage);
         await this.streamProgress(updatedSession, updatedSession.degradedState.degraded ? 'degraded' : 'completed', undefined, undefined, {
           latencyMs: durationMs,
           attemptCount: attempt + 1,
@@ -177,6 +184,45 @@ export class ResumeProcessingOrchestrator {
       logger.error(`[ProcessingOrchestrator] Stage ${nextStage} failed after all retries:`, error);
       await this.handleStageFailure(sessionId, nextStage, error);
     }
+  }
+
+  /** Restore the last committed stage and continue from the following stage. */
+  async resumeFromCheckpoint(sessionId: string): Promise<void> {
+    const session = await ResumeSession.findOne({ sessionId });
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    const checkpoint = session.checkpointState;
+    if (!checkpoint?.stage) throw new Error(`No checkpoint available for session: ${sessionId}`);
+
+    Object.assign(session, checkpoint.snapshot);
+    session.currentStage = this.getNextStage(checkpoint.stage) || 'COMPLETED';
+    session.failureState = { failed: false, retryCount: session.failureState.retryCount || 0 };
+    session.timestamps.lastUpdated = new Date();
+    await session.save();
+
+    if (session.currentStage === 'COMPLETED') {
+      await this.completeProcessing(sessionId);
+      return;
+    }
+    await this.transitionToNextStage(sessionId);
+  }
+
+  private async saveCheckpoint(session: typeof ResumeSession.prototype, stage: ProcessingStage): Promise<void> {
+    session.checkpointState = {
+      stage,
+      savedAt: new Date(),
+      snapshot: {
+        parsedContent: session.parsedContent,
+        atsState: session.atsState,
+        embeddingState: session.embeddingState,
+        semanticState: session.semanticState,
+        recommendationState: session.recommendationState,
+        replayState: session.replayState,
+        reportState: session.reportState,
+        degradedState: session.degradedState,
+        evolutionSnapshots: session.evolutionSnapshots,
+      },
+    };
+    await session.save();
   }
 
   /**
