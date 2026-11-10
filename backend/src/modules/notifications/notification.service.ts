@@ -1,8 +1,7 @@
 // src/modules/notifications/notification.service.ts — Notification + Engagement Platform
 // Phase-B: In-app notifications, event fanout, digest support
 
-import { Types } from 'mongoose';
-import { User } from '../../db/models/index.js';
+import { NotificationRecord, NotificationPreference } from '../../db/models/notification.model.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { getRedisClient } from '../../shared/redis/client.js';
 import { logger } from '../../shared/logger.js';
@@ -57,63 +56,6 @@ const DEFAULT_PREFERENCES: NotificationPreferences = {
   },
 };
 
-// Redis key helpers
-const NOTIF_KEYS = {
-  userNotifications: (userId: string) => `notifications:${userId}`,
-  unreadCount: (userId: string) => `notifications:unread:${userId}`,
-  userPreferences: (userId: string) => `notifications:prefs:${userId}`,
-};
-
-// Compare exact stored members and publish their read replacements together with
-// the counter change. A stale acknowledgement finds no old member and is inert.
-// Replacements are serialized in JS so nested arrays/nulls retain their shape.
-const ACKNOWLEDGE_NOTIFICATIONS = `
-local updates = {}
-for i = 1, #ARGV, 2 do
-  local score = redis.call('ZSCORE', KEYS[1], ARGV[i])
-  if score then
-    updates[#updates + 1] = { ARGV[i], ARGV[i + 1], score }
-  end
-end
-if #updates == 0 then return 0 end
-
--- Validate counter state before any writes: Lua errors do not roll back writes.
-local storedCount = redis.call('GET', KEYS[2])
-local count = tonumber(storedCount or '0')
-if not count or (storedCount and not string.match(storedCount, '^%-?%d+$'))
-  or math.abs(count) > 9007199254740991 then
-  return redis.error_reply('Invalid notification unread counter')
-end
-
-for _, update in ipairs(updates) do
-  -- Insert first: removing the last old member must not delete the key/its TTL.
-  redis.call('ZADD', KEYS[1], update[3], update[2])
-  redis.call('ZREM', KEYS[1], update[1])
-end
-if storedCount then
-  local remaining = math.max(0, count - #updates)
-  redis.call('SET', KEYS[2], string.format('%.0f', remaining), 'KEEPTTL')
-end
-return #updates
-`;
-
-async function acknowledgeNotifications(userId: string, notificationId?: string): Promise<void> {
-  const redis = getRedisClient();
-  const key = NOTIF_KEYS.userNotifications(userId);
-  const members = await redis.zrange(key, 0, -1);
-  const replacements: string[] = [];
-  for (const member of members) {
-    const notification = JSON.parse(member) as Notification;
-    if (!notification.read && (notificationId === undefined || notification.id === notificationId)) {
-      replacements.push(member, JSON.stringify({ ...notification, read: true }));
-      if (notificationId !== undefined) break;
-    }
-  }
-  if (replacements.length) {
-    await redis.eval(ACKNOWLEDGE_NOTIFICATIONS, 2, key, NOTIF_KEYS.unreadCount(userId), ...replacements);
-  }
-}
-
 export const notificationService = {
   // ─── Create and deliver notification ─────────────────────────────────
   async create(
@@ -122,13 +64,13 @@ export const notificationService = {
     title: string,
     message: string,
     data?: Record<string, unknown>
-  ): Promise<Notification> {
+  ): Promise<Notification | null> {
     const preferences = await this.getPreferences(userId);
 
     // Check if user wants this type
     if (!preferences.types[type]) {
       logger.debug('[notifications] Type disabled by user', { userId, type });
-      return null!;
+      return null;
     }
 
     // Derive tone from user behavioral state
@@ -143,24 +85,22 @@ export const notificationService = {
       data,
       read: false,
       createdAt: new Date(),
-      expiresAt: type === 'inactivity' ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : undefined,
+      expiresAt: new Date(Date.now() + (type === 'inactivity' ? 7 : 30) * 86400000),
       tone,
     };
 
-    // Store in Redis
+    // Persist before attempting cache or realtime delivery.
     await this.storeNotification(userId, notification);
 
-    // Update unread count
-    await this.incrementUnreadCount(userId);
 
     // Send real-time if enabled
     if (preferences.enableInApp) {
-      await this.sendRealtime(userId, notification);
+      await this.sendRealtime(userId, notification).catch(error => logger.warn('[notifications] Realtime delivery failed', { error }));
     }
 
     // Queue for digest if not realtime
-    if (preferences.digestFrequency !== 'realtime') {
-      await this.queueForDigest(userId, notification);
+    if (preferences.digestFrequency !== 'realtime' && preferences.digestFrequency !== 'none') {
+      await this.queueForDigest(userId, notification).catch(error => logger.warn('[notifications] Digest queue unavailable', { error }));
     }
 
     logger.info('[notifications] Created', { userId, type, id: notification.id });
@@ -168,15 +108,16 @@ export const notificationService = {
     return notification;
   },
 
-  // ─── Store notification in Redis ─────────────────────────────────────
+  // ─── Durable storage and best-effort cache ───────────────────────────
   async storeNotification(userId: string, notification: Notification): Promise<void> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.userNotifications(userId);
-
-    await redis.zadd(key, notification.createdAt.getTime(), JSON.stringify(notification));
-
-    // Expire after 30 days
-    await redis.expire(key, 30 * 24 * 60 * 60);
+    await NotificationRecord.create({ ...notification, userId });
+    // Cache delivery is best effort; MongoDB is authoritative.
+    try {
+      const redis = getRedisClient();
+      await redis.set(`notification:${userId}:${notification.id}`, JSON.stringify(notification), 'EX', 300);
+    } catch (error) {
+      logger.warn('[notifications] Cache unavailable', { error });
+    }
   },
 
   // ─── Send real-time via SSE ───────────────────────────────────────────
@@ -209,82 +150,57 @@ export const notificationService = {
     offset = 0,
     unreadOnly = false
   ): Promise<{ notifications: Notification[]; total: number; unread: number }> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.userNotifications(userId);
-
-    const results = await redis.zrevrange(key, offset, offset + limit - 1);
-    const notifications = results.map((r) => JSON.parse(r) as Notification);
-
-    const total = await redis.zcard(key);
-    const unreadCount = await this.getUnreadCount(userId);
-
-    // Filter unread if requested
-    const filtered = unreadOnly
-      ? notifications.filter((n) => !n.read)
-      : notifications;
-
-    return {
-      notifications: filtered,
-      total,
-      unread: unreadCount,
-    };
+    const active = { userId, expiresAt: { $gt: new Date() } };
+    const filter = unreadOnly ? { ...active, read: false } : active;
+    const safeLimit = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.trunc(limit))) : 20;
+    const safeOffset = Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0;
+    const [records, total, unread] = await Promise.all([
+      NotificationRecord.find(filter).sort({ createdAt: -1, id: -1 }).skip(safeOffset).limit(safeLimit).lean(),
+      NotificationRecord.countDocuments(filter),
+      NotificationRecord.countDocuments({ ...active, read: false }),
+    ]);
+    const notifications = records.map(({ _id, __v, ...record }) => record as Notification);
+    return { notifications, total, unread };
   },
 
-  // ─── Mark as read ────────────────────────────────────────────────────
   async markAsRead(userId: string, notificationId: string): Promise<void> {
-    await acknowledgeNotifications(userId, notificationId);
+    await NotificationRecord.updateOne({ userId, id: notificationId, read: false }, { $set: { read: true } });
+    await this.invalidateCachedNotification(userId, notificationId);
   },
 
-  // ─── Mark all as read ───────────────────────────────────────────────
   async markAllAsRead(userId: string): Promise<void> {
-    await acknowledgeNotifications(userId);
+    await NotificationRecord.updateMany({ userId, read: false }, { $set: { read: true } });
+    // Cached records are delivery hints only; reads always use MongoDB.
   },
 
-  // ─── Unread count helpers ───────────────────────────────────────────
-  async incrementUnreadCount(userId: string): Promise<void> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.unreadCount(userId);
-    await redis.incr(key);
-  },
-
-  async decrementUnreadCount(userId: string): Promise<void> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.unreadCount(userId);
-    const current = await redis.get(key);
-    if (current && parseInt(current, 10) > 0) {
-      await redis.decr(key);
+  async invalidateCachedNotification(userId: string, id: string): Promise<void> {
+    try {
+      await getRedisClient().del(`notification:${userId}:${id}`);
+    } catch (error) {
+      logger.warn('[notifications] Cache invalidation failed', { error });
     }
   },
 
   async getUnreadCount(userId: string): Promise<number> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.unreadCount(userId);
-    const count = await redis.get(key);
-    return count ? parseInt(count, 10) : 0;
+    return NotificationRecord.countDocuments({ userId, read: false, expiresAt: { $gt: new Date() } });
   },
 
   // ─── Notification preferences ────────────────────────────────────────
   async getPreferences(userId: string): Promise<NotificationPreferences> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.userPreferences(userId);
-
-    const cached = await redis.get(key);
-    if (cached) {
-      return JSON.parse(cached);
-    }
-
-    // Return defaults if not set
-    return DEFAULT_PREFERENCES;
+    const stored = await NotificationPreference.findOne({ userId }).lean();
+    const preferences = stored?.preferences as Partial<NotificationPreferences> | undefined;
+    return { ...DEFAULT_PREFERENCES, ...preferences, types: { ...DEFAULT_PREFERENCES.types, ...preferences?.types } };
   },
 
   async updatePreferences(userId: string, updates: Partial<NotificationPreferences>): Promise<void> {
-    const redis = getRedisClient();
-    const key = NOTIF_KEYS.userPreferences(userId);
-
-    const current = await this.getPreferences(userId);
-    const updated = { ...current, ...updates };
-
-    await redis.set(key, JSON.stringify(updated), 'EX', 86400 * 30); // 30 days
+    const fields: Record<string, unknown> = {};
+    for (const key of ['enableInApp', 'enablePush', 'digestFrequency'] as const) {
+      if (updates[key] !== undefined) fields[`preferences.${key}`] = updates[key];
+    }
+    for (const [type, enabled] of Object.entries(updates.types || {})) {
+      if (type in DEFAULT_PREFERENCES.types) fields[`preferences.types.${type}`] = enabled;
+    }
+    await NotificationPreference.updateOne({ userId }, { $set: fields }, { upsert: true, runValidators: true });
   },
 
   // ─── Derive tone from user behavioral state ─────────────────────────────
@@ -377,14 +293,8 @@ export const notificationService = {
 
   // ─── Cleanup expired notifications ─────────────────────────────────
   async cleanupExpired(): Promise<number> {
-    const redis = getRedisClient();
-    const now = Date.now();
-
-    // This would need to iterate all user notification keys
-    // For now, just log the need for this
-    logger.info('[notifications] Cleanup scheduled');
-
-    return 0;
+    const result = await NotificationRecord.deleteMany({ expiresAt: { $lte: new Date() } });
+    return result.deletedCount;
   },
 };
 
