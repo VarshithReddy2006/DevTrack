@@ -8,7 +8,6 @@ import { syncState } from '../syncState.js';
 import { syncPlatform } from '../../modules/platform-sync/sync.service.js';
 import { PlatformSyncJobData, QueueNames, JobRetryConfig } from './types.js';
 import { getXpProcessingQueue, getStreakRecalcQueue } from './queueFactory.js';
-import { dlqService } from './dlq.service.js';
 import { injectTraceIntoJob, runJobInTrace } from '../tracing/tracing.js';
 
 let _worker: Worker<PlatformSyncJobData> | null = null;
@@ -166,23 +165,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
       userId: job?.data.userId,
       attempt: job?.attemptsMade,
     });
-
-    if (job && job.attemptsMade >= JobRetryConfig.platformSync.attempts) {
-      dlqService
-        .quarantineJob(
-          QueueNames.PLATFORM_SYNC,
-          job as unknown as import('bullmq').Job,
-          err.message,
-          job.attemptsMade,
-          JobRetryConfig.platformSync.attempts
-        )
-        .catch((dlqErr) => {
-          logger.error('[worker] Failed to quarantine job in DLQ', dlqErr, {
-            event: 'dlq_quarantine_failed',
-            jobId: job?.id,
-          });
-        });
-    }
   });
 
   _worker.on('error', (err: Error) => {

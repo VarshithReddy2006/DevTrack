@@ -1,10 +1,14 @@
 import { it, expect, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({ workers: [] as { name: string; close: ReturnType<typeof vi.fn> }[] }));
-vi.mock('bullmq', () => ({ Worker: class {
-  close = vi.fn().mockResolvedValue(undefined);
-  constructor(public name: string) { state.workers.push(this); }
-} }));
+vi.mock('bullmq', async () => {
+  const actual = await vi.importActual<typeof import('bullmq')>('bullmq');
+  const { EventEmitter } = await import('node:events');
+  return { ...actual, Worker: class extends EventEmitter {
+    close = vi.fn().mockResolvedValue(undefined);
+    constructor(public name: string) { super(); state.workers.push({ name, close: this.close }); }
+  } };
+});
 vi.mock('../../../shared/redis/index.js', () => ({ getRedisConnection: vi.fn() }));
 vi.mock('../evidence/EvidenceGraphEngine.js', () => ({ EvidenceGraphEngine: class {} }));
 vi.mock('../github/RepositoryIntelligenceEngine.js', () => ({ RepositoryIntelligenceEngine: class {} }));

@@ -15,7 +15,9 @@ export function getAllQueues(): Queue[] {
 }
 
 export async function closeAllQueues(): Promise<void> {
-  return QueueRegistry.closeAllQueues();
+  const { dlqService } = await import('./dlq.service.js');
+  await dlqService.close();
+  await QueueRegistry.closeAllQueues();
 }
 
 // Pre-registered queue getters
