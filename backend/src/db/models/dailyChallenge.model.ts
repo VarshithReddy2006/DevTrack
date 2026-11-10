@@ -17,7 +17,7 @@ export interface IDailyChallenge extends Document {
 
 const dailyChallengeSchema = new Schema<IDailyChallenge>(
   {
-    date: { type: String, required: true, unique: true },
+    date: { type: String, required: true },
     title: { type: String, required: true },
     titleSlug: { type: String, required: true },
     description: { type: String, required: true },
@@ -29,6 +29,9 @@ const dailyChallengeSchema = new Schema<IDailyChallenge>(
   },
   { timestamps: true }
 );
+
+// Run migrate:daily-challenge-tiers before deploying against an existing database.
+dailyChallengeSchema.index({ date: 1, difficulty: 1 }, { unique: true });
 
 export const DailyChallenge = mongoose.model<IDailyChallenge>('DailyChallenge', dailyChallengeSchema);
 export default DailyChallenge;
