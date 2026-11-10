@@ -8,12 +8,15 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      ...(process.env.DEVTRACK_E2E_FIXTURE === '1'
+        ? { '@clerk/clerk-react': path.resolve(__dirname, './e2e/support/clerk.tsx') }
+        : {}),
     },
   },
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: process.env.DEVTRACK_E2E_FIXTURE === '1' ? 'http://127.0.0.1:3001' : 'http://localhost:3001',
         changeOrigin: true,
       },
       '/health': {

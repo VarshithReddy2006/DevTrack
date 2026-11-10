@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "e2e/resume-ats-flow.spec.ts",
+    "e2e/support/clerk.tsx",
+    "playwright.resume.config.ts"
+  ]
+}
