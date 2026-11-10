@@ -283,6 +283,29 @@ in a GET response does not imply the current API supports editing or applying it
 
 Optional `GITHUB_TOKEN` raises GitHub API rate limits.
 
+Platform sync delegates provider requests to the registered adapters in
+`backend/src/modules/platform-sync/adapters/`. Their common base applies circuit
+breakers and consistent failure results; shared HTTP requests retain bounded
+timeouts and exponential backoff for network failures, 429s and 5xx responses.
+Provider-owned helpers preserve the existing dashboard stats and calendar fields.
+The coordinator owns the distributed mutex, cooldown, sync job state, readiness
+refresh and lifecycle notifications. The queue worker does not repeat the
+coordinator's start/completion/failure notifications for returned sync results.
+
+Adapters normalize submissions and contests before the shared persistence layer.
+LeetCode keeps provider submission IDs, with a `slug:timestamp` fallback when an
+ID is absent; the problem slug remains a separate problem identifier. Imports
+increment problem counts and daily activity only after admitting a new submission
+ID. Codeforces retains its rolling 365-day attempt history and all verdicts;
+LeetCode retains the public recent-accepted limit of 500. CodeChef remains
+stats-only through profile scraping and produces no fabricated submissions or
+fallback statistics. No existing submission IDs are rewritten.
+
+Run mocked-provider tests and adapter coverage from `backend/` with
+`node node_modules/vitest/vitest.mjs run -c vitest.adapters.config.ts --coverage`.
+The sync integration regressions use the disposable MongoDB test setup and mocked
+provider responses; they do not require live platform credentials.
+
 ---
 
 ## Observability

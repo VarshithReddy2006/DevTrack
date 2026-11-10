@@ -38,7 +38,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
         });
 
         syncState.beginSync();
-        eventBus.emitSyncStarted(userId, platformName);
 
         try {
           const result = await syncPlatform(userId, platformName);
@@ -60,7 +59,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
           syncState.completeSync(result.success ? 'success' : 'failed', durationMs);
 
           if (result.success) {
-            eventBus.emitSyncCompleted(userId, platformName, result.stats, durationMs);
 
             // Enqueue XP award — inject current trace so XP worker logs are correlated
             try {
@@ -117,8 +115,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
                 error: streakErr instanceof Error ? streakErr.message : String(streakErr),
               });
             }
-          } else {
-            eventBus.emitSyncFailed(userId, platformName, result.error ?? 'Unknown error');
           }
 
           return result;
