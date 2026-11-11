@@ -340,35 +340,79 @@ export async function updateProblem(
   problemId: string,
   payload: ApiDsaProblemUpdatePayload
 ): Promise<ApiDsaProblem | null> {
+  const userObjId = new Types.ObjectId(userId);
+  const problemObjId = new Types.ObjectId(problemId);
+
+  // Retrieve current problem state before updating to check category and status transitions
+  const existing = await DsaProblem.findOne({ _id: problemObjId, userId: userObjId }).lean();
+  if (!existing) return null;
+
   const update: Record<string, unknown> = { ...payload };
+  const unset: Record<string, 1> = {};
+
+  const statusChanged = payload.status !== undefined && payload.status !== existing.status;
+  const isAttempt = payload.status === 'attempted' || payload.status === 'solved';
 
   // If status changed to solved, set solvedAt
   if (payload.status === 'solved') {
     update.solvedAt = new Date();
     update.lastSubmittedAt = new Date();
   } else if (payload.status) {
-    update.lastSubmittedAt = new Date();
+    // Reset solvedAt when transitioning to unsolved, attempted, or revisit
+    unset.solvedAt = 1;
+    if (statusChanged) {
+      update.lastSubmittedAt = new Date();
+    }
+  }
+
+  const updateDoc: Record<string, unknown> = { $set: update };
+  if (Object.keys(unset).length > 0) {
+    updateDoc.$unset = unset;
+  }
+  // Only increment submissionCount if the status actually changed or an attempt occurred
+  if (statusChanged && isAttempt) {
+    updateDoc.$inc = { submissionCount: 1 };
   }
 
   const problem = await DsaProblem.findOneAndUpdate(
-    { _id: new Types.ObjectId(problemId), userId: new Types.ObjectId(userId) },
-    {
-      $set: update,
-      ...(payload.status ? { $inc: { submissionCount: 1 } } : {}),
-    },
+    { _id: problemObjId, userId: userObjId },
+    updateDoc,
     { new: true }
   ).lean();
 
-  if (problem) await cacheManager.invalidateDashboard(userId);
+  if (problem) {
+    await cacheManager.invalidateDashboard(userId);
+
+    // Reconcile topic progress if status changed
+    const category = existing.category;
+    if (statusChanged && category && !isReservedPlatformTopic(category)) {
+      await reconcileBulkTopicProgress(userObjId, category);
+    }
+  }
+
   return problem ? mapProblemToApi(problem) : null;
 }
 
 export async function deleteProblem(userId: string, problemId: string): Promise<boolean> {
+  const userObjId = new Types.ObjectId(userId);
+  const problemObjId = new Types.ObjectId(problemId);
+
+  const existing = await DsaProblem.findOne({ _id: problemObjId, userId: userObjId }).lean();
+  if (!existing) return false;
+
   const result = await DsaProblem.deleteOne({
-    _id: new Types.ObjectId(problemId),
-    userId: new Types.ObjectId(userId),
+    _id: problemObjId,
+    userId: userObjId,
   });
-  if (result.deletedCount > 0) await cacheManager.invalidateDashboard(userId);
+
+  if (result.deletedCount > 0) {
+    await cacheManager.invalidateDashboard(userId);
+
+    if (existing.category && !isReservedPlatformTopic(existing.category)) {
+      await reconcileBulkTopicProgress(userObjId, existing.category);
+    }
+  }
+
   return result.deletedCount > 0;
 }
 
