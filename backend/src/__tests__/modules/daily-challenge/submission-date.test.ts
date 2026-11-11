@@ -7,7 +7,7 @@ import { syncPlatform } from '../../../modules/platform-sync/sync.service.js';
 
 const { completionEvent } = vi.hoisted(() => ({ completionEvent: vi.fn() }));
 vi.mock('../../../shared/sse/index.js', () => ({ eventBus: {
-  emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn(), emitXpUpdated: vi.fn(),
+  emitSyncStarted: vi.fn(), emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn(), emitXpUpdated: vi.fn(),
   emitLevelUp: vi.fn(), emitChallengeCompleted: completionEvent,
 } }));
 vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn() } }));
