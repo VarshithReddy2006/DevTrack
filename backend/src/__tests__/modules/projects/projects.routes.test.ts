@@ -229,4 +229,67 @@ describe('Project task routes', () => {
     expect(response.body).toMatchObject({ success: false, code: 'UNAUTHORIZED' });
     expect(await ProjectTask.findById(taskId)).not.toBeNull();
   });
+
+  it('filters project tasks by priority, status, and overdueOnly over HTTP and serves overdue endpoint', async () => {
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    const future = new Date(Date.now() + 60 * 60 * 1000);
+    await ProjectTask.create([
+      { projectId, title: 'Critical Todo Overdue', status: 'todo', priority: 'critical', dueDate: past },
+      { projectId, title: 'Critical Progress Overdue', status: 'in_progress', priority: 'critical', dueDate: past },
+      { projectId, title: 'Critical Todo Upcoming', status: 'todo', priority: 'critical', dueDate: future },
+      { projectId, title: 'High Done Past', status: 'done', priority: 'high', dueDate: past },
+    ]);
+
+    const authHeaders = { Authorization: 'Bearer test-owner' };
+
+    const combinedRes = await fetch(`${baseUrl}/${projectId}/tasks?priority=critical&status=todo`, { headers: authHeaders });
+    expect(combinedRes.status).toBe(200);
+    const combinedJson = await combinedRes.json();
+    expect(combinedJson.data.map((t: { title: string }) => t.title)).toEqual(
+      expect.arrayContaining(['Critical Todo Overdue', 'Critical Todo Upcoming'])
+    );
+    expect(combinedJson.data).toHaveLength(2);
+    expect(combinedJson.data.find((t: { title: string }) => t.title === 'Critical Todo Overdue')?.isOverdue).toBe(true);
+    expect(combinedJson.data.find((t: { title: string }) => t.title === 'Critical Todo Upcoming')?.isOverdue).toBe(false);
+
+    const statusOverdueRes = await fetch(`${baseUrl}/${projectId}/tasks?status=todo&overdueOnly=true`, { headers: authHeaders });
+    expect(statusOverdueRes.status).toBe(200);
+    const statusOverdueJson = await statusOverdueRes.json();
+    expect(statusOverdueJson.data.map((t: { title: string }) => t.title)).toEqual(['Critical Todo Overdue']);
+
+    const doneOverdueRes = await fetch(`${baseUrl}/${projectId}/tasks?status=done&overdueOnly=true`, { headers: authHeaders });
+    expect(doneOverdueRes.status).toBe(200);
+    expect((await doneOverdueRes.json()).data).toEqual([]);
+
+    const overdueRes = await fetch(`${baseUrl}/${projectId}/tasks/overdue`, { headers: authHeaders });
+    expect(overdueRes.status).toBe(200);
+    const overdueJson = await overdueRes.json();
+    expect(overdueJson.data.map((t: { title: string }) => t.title)).toEqual(
+      expect.arrayContaining(['Critical Todo Overdue', 'Critical Progress Overdue'])
+    );
+    expect(overdueJson.data).toHaveLength(2);
+  });
+
+  it('rejects invalid query filter values with 400 and returns 404 for foreign or missing projects', async () => {
+    const authHeaders = { Authorization: 'Bearer test-owner' };
+    const missingProjectId = new Types.ObjectId().toString();
+
+    const invalidPriority = await fetch(`${baseUrl}/${projectId}/tasks?priority=urgent`, { headers: authHeaders });
+    expect(invalidPriority.status).toBe(400);
+    expect((await invalidPriority.json()).code).toBe('VALIDATION_ERROR');
+
+    const arrayStatus = await fetch(`${baseUrl}/${projectId}/tasks?status=todo&status=done`, { headers: authHeaders });
+    expect(arrayStatus.status).toBe(400);
+    expect((await arrayStatus.json()).code).toBe('VALIDATION_ERROR');
+
+    for (const target of [foreignProjectId, missingProjectId]) {
+      const tasksRes = await fetch(`${baseUrl}/${target}/tasks`, { headers: authHeaders });
+      expect(tasksRes.status).toBe(404);
+      expect((await tasksRes.json()).code).toBe('NOT_FOUND');
+
+      const overdueRes = await fetch(`${baseUrl}/${target}/tasks/overdue`, { headers: authHeaders });
+      expect(overdueRes.status).toBe(404);
+      expect((await overdueRes.json()).code).toBe('NOT_FOUND');
+    }
+  });
 });
