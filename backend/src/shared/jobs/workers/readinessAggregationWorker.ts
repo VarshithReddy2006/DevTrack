@@ -1,3 +1,4 @@
+import { createDlqWorker } from '../dlq.service.js';
 import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../../redis/index.js';
 import { QueueNames } from '../types.js';
@@ -6,7 +7,7 @@ import { ReadinessCore } from '../../../db/models/readinessCore.model.js';
 import { TrustVerificationLayer } from '../../../modules/readiness/intelligence/TrustVerificationLayer.js';
 
 export function startReadinessAggregationWorker(): Worker {
-  const worker = new Worker(
+  const worker = createDlqWorker(
     QueueNames.READINESS_AGGREGATION,
     async (job: Job) => {
       const { userId } = job.data;

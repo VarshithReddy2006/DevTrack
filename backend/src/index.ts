@@ -22,6 +22,7 @@ import { orchestrator } from './shared/runtime/index.js';
 import { getInfrastructureState } from './shared/runtime/infrastructureRegistry.js';
 import routes from './routes/index.js';
 import { getRegisteredWorkerStatuses } from './shared/jobs/workers.js';
+import { dlqRoutes } from './routes/dlq.routes.js';
 import { mountApiRoutes } from './routes/mount.js';
 
 const require = createRequire(import.meta.url);
@@ -82,6 +83,7 @@ export async function createApp(): Promise<express.Express> {
   setupHealthEndpoints(app, getRedisHealth, getWorkerStatus, getXpWorkerStatus, getOrCreateQueue, QueueNames, eventBus, syncState, getInfrastructureState);
 
   // Phase 3: API routes
+  app.use('/api/system/dlq', dlqRoutes);
   mountApiRoutes(app, routes);
 
   // Phase 4: Error handlers

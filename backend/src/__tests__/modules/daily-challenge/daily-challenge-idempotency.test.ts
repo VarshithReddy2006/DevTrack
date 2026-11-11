@@ -17,13 +17,14 @@ vi.mock('../../../shared/sse/index.js', () => ({ eventBus: {
   emitXpUpdated: vi.fn(), emitLevelUp: vi.fn(),
   emitChallengeCompleted: vi.fn().mockResolvedValue(undefined),
 } }));
-vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateAllUserCache: vi.fn() } }));
+vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn() } }));
 vi.mock('../../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { updateFromEvent: vi.fn() } }));
 vi.mock('../../../shared/logger.js', () => ({ logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 const ownerId = '000000000000000000000024';
 const otherId = '000000000000000000000025';
-const now = new Date(2026, 9, 28, 12);
+const now = new Date('2026-10-28T12:00:00Z');
+const realNow = Date.now;
 const cleanups: Array<() => void> = [];
 let server: Server;
 let url: string;
@@ -46,6 +47,8 @@ beforeEach(async () => {
   vi.clearAllMocks();
   vi.stubEnv('CLERK_SECRET_KEY', 'sk_test_daily_challenge');
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(now);
+  // Freeze calendar dates, but keep MongoDB heartbeat/session liveness on real time.
+  vi.spyOn(Date, 'now').mockImplementation(realNow);
   auth.verify.mockImplementation(async (token: string) => {
     if (token !== 'owner' && token !== 'other') throw new Error('Invalid synthetic token');
     return { sub: `clerk_${token}` };
@@ -185,4 +188,89 @@ it('preserves missing-challenge and unauthenticated behavior', async () => {
   expect((await readToday('invalid')).status).toBe(401);
   expect(await DailyChallenge.countDocuments({})).toBe(0);
   expect(await XpTransaction.countDocuments({})).toBe(0);
+});
+
+
+it.each(['beginner', 'advanced'])('isolates all three tiers when %s visits first', async first => {
+  await UserAnalytics.create({ userId: otherId, currentStreak: 35 });
+  const mediumId = '000000000000000000000026';
+  await User.create({ _id: mediumId, clerkId: 'clerk_medium', username: 'challengemedium',
+    email: 'medium@example.test', displayName: 'Medium', timezone: 'UTC' });
+  await UserAnalytics.create({ userId: mediumId, currentStreak: 14 });
+  if (first === 'advanced') await getTodayChallenge(otherId);
+  else await getTodayChallenge(ownerId);
+  const [easy, medium, hard] = await Promise.all([
+    getTodayChallenge(ownerId), getTodayChallenge(mediumId), getTodayChallenge(otherId),
+  ]);
+  expect([easy.challenge, medium.challenge, hard.challenge].map(c => [c.date, c.difficulty, c.xpReward]))
+    .toEqual([['2026-10-28', 'easy', 30], ['2026-10-28', 'medium', 50], ['2026-10-28', 'hard', 80]]);
+  expect(await DailyChallenge.countDocuments({ date: '2026-10-28' })).toBe(3);
+  expect(await checkChallengeCompletion(ownerId, hard.challenge.platform, hard.challenge.titleSlug, now)).toBe(false);
+  for (const [id, view] of [[ownerId, easy], [mediumId, medium], [otherId, hard]] as const) {
+    const c = view.challenge;
+    expect(await checkChallengeCompletion(id, c.platform, c.titleSlug, now)).toBe(true);
+    expect(await checkChallengeCompletion(id, c.platform, c.titleSlug, now)).toBe(false);
+    expect((await UserXp.findOne({ userId: id }))!.totalXp).toBe(c.xpReward);
+    expect((await getTodayChallenge(id)).userCompleted).toBe(true);
+    expect((await DailyChallenge.findById(c._id))!.completionCount).toBe(1);
+  }
+  expect(await XpTransaction.countDocuments({ sourceType: 'challenge_completed' })).toBe(3);
+});
+
+it('converges concurrent first reads on one document per tier', async () => {
+  await UserAnalytics.create({ userId: otherId, currentStreak: 35 });
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) => getTodayChallenge(i % 2 ? ownerId : otherId)));
+  expect(new Set(results.map(r => r.challenge.id)).size).toBe(2);
+  expect(await DailyChallenge.countDocuments({ date: '2026-10-28' })).toBe(2);
+  expect(await XpTransaction.countDocuments({})).toBe(0);
+});
+
+it('uses different local dates at the same instant and local weekends for adaptation', async () => {
+  vi.setSystemTime(new Date('2026-11-09T00:30:00Z'));
+  await User.findByIdAndUpdate(ownerId, { timezone: 'America/Los_Angeles' });
+  await User.findByIdAndUpdate(otherId, { timezone: 'Asia/Tokyo' });
+  await UserAnalytics.create([{ userId: ownerId, currentStreak: 35 }, { userId: otherId, currentStreak: 35 }]);
+  const la = await getTodayChallenge(ownerId);
+  const tokyo = await getTodayChallenge(otherId);
+  expect(la.challenge).toMatchObject({ date: '2026-11-08', difficulty: 'medium' });
+  expect(tokyo.challenge).toMatchObject({ date: '2026-11-09', difficulty: 'hard' });
+});
+
+it.each(['', 'not/a-timezone'])('falls back to UTC for invalid or missing timezone %s', async timezone => {
+  vi.setSystemTime(new Date('2026-10-28T00:30:00Z'));
+  await User.findByIdAndUpdate(ownerId, { timezone });
+  expect((await getTodayChallenge(ownerId)).challenge.date).toBe('2026-10-28');
+});
+
+it.each([
+  { timezone: 'Asia/Tokyo', instant: '2026-11-09T16:00:00Z', date: '2026-11-10',
+    start: '2026-11-09T15:00:00Z', end: '2026-11-10T15:00:00Z' },
+  { timezone: 'America/Los_Angeles', instant: '2026-11-10T07:30:00Z', date: '2026-11-09',
+    start: '2026-11-09T08:00:00Z', end: '2026-11-10T08:00:00Z' },
+  { timezone: 'America/Los_Angeles', instant: '2026-03-08T12:00:00Z', date: '2026-03-08',
+    start: '2026-03-08T08:00:00Z', end: '2026-03-09T07:00:00Z' },
+  { timezone: 'America/Los_Angeles', instant: '2026-11-01T12:00:00Z', date: '2026-11-01',
+    start: '2026-11-01T07:00:00Z', end: '2026-11-02T08:00:00Z' },
+])('awards only within the local solve window in $timezone on $date', async spec => {
+  vi.setSystemTime(new Date(spec.instant));
+  await User.findByIdAndUpdate(ownerId, { timezone: spec.timezone });
+  const { challenge } = await getTodayChallenge(ownerId);
+  expect(challenge.date).toBe(spec.date);
+  // The callback must apply the same half-open local day as the database read.
+  expect(await checkChallengeCompletion(ownerId, challenge.platform, challenge.titleSlug,
+    new Date(new Date(spec.start).getTime() - 1))).toBe(false);
+  expect(await checkChallengeCompletion(ownerId, challenge.platform, challenge.titleSlug, new Date(spec.end))).toBe(false);
+  const problem = await DsaProblem.create({ userId: ownerId, externalId: challenge.titleSlug,
+    title: challenge.title, platform: challenge.platform, difficulty: challenge.difficulty,
+    category: 'arrays', url: challenge.problemUrl, status: 'solved' });
+  const submission = await DsaSubmission.create({ userId: ownerId, problemId: problem._id,
+    platform: challenge.platform, externalId: 'boundary-submission', language: 'typescript',
+    status: 'accepted', submittedAt: new Date(new Date(spec.start).getTime() - 1) });
+  expect((await getTodayChallenge(ownerId)).userCompleted).toBe(false);
+  await DsaSubmission.findByIdAndUpdate(submission._id, { submittedAt: new Date(spec.end) });
+  expect((await getTodayChallenge(ownerId)).userCompleted).toBe(false);
+  await DsaSubmission.findByIdAndUpdate(submission._id, { submittedAt: new Date(spec.start) });
+  expect((await getTodayChallenge(ownerId)).userCompleted).toBe(true);
+  expect(await checkChallengeCompletion(ownerId, challenge.platform, challenge.titleSlug, new Date(spec.start))).toBe(false);
+  await expectSingleAward(challenge.id);
 });

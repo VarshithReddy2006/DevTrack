@@ -493,6 +493,7 @@ export interface ApiProjectTask {
   labels: string[];
   dueDate: string | null;
   completedAt: string | null;
+  rank: string | null;
   createdAt: string;
   updatedAt: string;
 }

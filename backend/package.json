@@ -19,6 +19,7 @@
     "build": "tsc -p tsconfig.json && node fix-esm-imports.mjs",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "migrate:daily-challenge-tiers": "tsx src/db/migrations/run-daily-challenge-tiers.ts",
     "test:safety": "vitest run -c vitest.safety.config.ts",
     "test:unit": "npm run test:safety && vitest run --exclude src/__tests__/integration/**",
     "test:integration": "vitest run -c vitest.integration.config.ts"

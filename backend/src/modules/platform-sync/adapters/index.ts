@@ -11,6 +11,8 @@ export type {
   PlatformStats,
   PlatformProfile,
   AdapterSyncResult,
+  PlatformContest,
+  FetchedPlatformStats,
 } from './types.js';
 
 import { leetcodeAdapter } from './leetcode.adapter.js';

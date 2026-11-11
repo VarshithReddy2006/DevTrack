@@ -2,12 +2,12 @@
 // Processes streak-recalc jobs from the queue.
 // Called after platform sync completion to recalculate unified streaks.
 
+import { createDlqWorker } from './dlq.service.js';
 import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../redis/index.js';
 import { logger } from '../logger.js';
 import { recalculateStreak } from '../../modules/streak/streak.service.js';
 import { QueueNames, JobRetryConfig } from './types.js';
-import { dlqService } from './dlq.service.js';
 
 export interface StreakRecalcJobData {
   userId: string;
@@ -30,7 +30,7 @@ export function startStreakRecalcWorker(): Worker<StreakRecalcJobData> {
 
   const redis = getRedisClient();
 
-  _worker = new Worker<StreakRecalcJobData>(
+  _worker = createDlqWorker<StreakRecalcJobData>(
     QueueNames.STREAK_RECALC,
     async (job: Job<StreakRecalcJobData>) => {
       const { userId, streakType, requestId } = job.data;
@@ -107,23 +107,6 @@ export function startStreakRecalcWorker(): Worker<StreakRecalcJobData> {
       jobId: job?.id,
       userId: job?.data.userId,
     });
-
-    if (job && job.attemptsMade >= JobRetryConfig.standard.attempts) {
-      dlqService
-        .quarantineJob(
-          QueueNames.STREAK_RECALC,
-          job as unknown as import('bullmq').Job,
-          err.message,
-          job.attemptsMade,
-          JobRetryConfig.standard.attempts
-        )
-        .catch((dlqErr) => {
-          logger.error('[streak-worker] Failed to quarantine job in DLQ', dlqErr, {
-            event: 'dlq_quarantine_failed',
-            jobId: job?.id,
-          });
-        });
-    }
   });
 
   _worker.on('error', (err: Error) => {

@@ -8,7 +8,6 @@ import { syncState } from '../syncState.js';
 import { syncPlatform } from '../../modules/platform-sync/sync.service.js';
 import { PlatformSyncJobData, QueueNames, JobRetryConfig } from './types.js';
 import { getXpProcessingQueue, getStreakRecalcQueue } from './queueFactory.js';
-import { dlqService } from './dlq.service.js';
 import { injectTraceIntoJob, runJobInTrace } from '../tracing/tracing.js';
 
 let _worker: Worker<PlatformSyncJobData> | null = null;
@@ -38,7 +37,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
         });
 
         syncState.beginSync();
-        eventBus.emitSyncStarted(userId, platformName);
 
         try {
           const result = await syncPlatform(userId, platformName);
@@ -60,7 +58,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
           syncState.completeSync(result.success ? 'success' : 'failed', durationMs);
 
           if (result.success) {
-            eventBus.emitSyncCompleted(userId, platformName, result.stats, durationMs);
 
             // Enqueue XP award — inject current trace so XP worker logs are correlated
             try {
@@ -117,8 +114,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
                 error: streakErr instanceof Error ? streakErr.message : String(streakErr),
               });
             }
-          } else {
-            eventBus.emitSyncFailed(userId, platformName, result.error ?? 'Unknown error');
           }
 
           return result;
@@ -166,23 +161,6 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
       userId: job?.data.userId,
       attempt: job?.attemptsMade,
     });
-
-    if (job && job.attemptsMade >= JobRetryConfig.platformSync.attempts) {
-      dlqService
-        .quarantineJob(
-          QueueNames.PLATFORM_SYNC,
-          job as unknown as import('bullmq').Job,
-          err.message,
-          job.attemptsMade,
-          JobRetryConfig.platformSync.attempts
-        )
-        .catch((dlqErr) => {
-          logger.error('[worker] Failed to quarantine job in DLQ', dlqErr, {
-            event: 'dlq_quarantine_failed',
-            jobId: job?.id,
-          });
-        });
-    }
   });
 
   _worker.on('error', (err: Error) => {

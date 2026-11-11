@@ -5,7 +5,7 @@
 import { Worker, Job, Queue } from 'bullmq';
 import { getRedisClient } from '../redis/index.js';
 import { logger } from '../logger.js';
-import { dlqService } from './dlq.service.js';
+import { createDlqWorker, dlqService, DLQ_QUEUE_NAMES } from './dlq.service.js';
 import { QueueNames, SystemMaintenanceJobData } from './types.js';
 import { generateDailyMissions, generateWeeklyMissions } from '../../modules/missions/missionGenerator.service.js';
 import { cleanupStaleLocks } from '../redis/syncLock.service.js';
@@ -24,12 +24,7 @@ async function runCleanupFailedJobs(): Promise<void> {
   try {
     let totalCleaned = 0;
     // Clean DLQ entries for all known queue types
-    const queues = [
-      QueueNames.PLATFORM_SYNC,
-      QueueNames.XP_PROCESSING,
-      QueueNames.STREAK_RECALC,
-      QueueNames.SYSTEM_MAINTENANCE,
-    ];
+    const queues = DLQ_QUEUE_NAMES;
     for (const q of queues) {
       try {
         const cleaned = await dlqService.cleanupDlq(q);
@@ -231,7 +226,7 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
 
   const redis = getRedisClient();
 
-  _worker = new Worker<SystemMaintenanceJobData>(
+  _worker = createDlqWorker<SystemMaintenanceJobData>(
     QueueNames.SYSTEM_MAINTENANCE,
     async (job: Job<SystemMaintenanceJobData>) => {
       const { task } = job.data;

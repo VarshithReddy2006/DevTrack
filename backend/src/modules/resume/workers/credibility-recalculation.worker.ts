@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/workers/credibility-recalculation.worker.ts
+import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
@@ -18,7 +19,7 @@ export function startCredibilityWorker(): Worker {
 
   const service = new ResumeIntelligenceService();
 
-  worker = new Worker<ICredibilityJob>(
+  worker = createDlqWorker<ICredibilityJob>(
     CREDIBILITY_RECALCULATION_QUEUE,
     async (job: Job<ICredibilityJob>) => {
       logger.info(`[CredibilityWorker] Processing job ${job.id}`);

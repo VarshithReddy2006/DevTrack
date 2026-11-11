@@ -1,6 +1,7 @@
 // src/modules/missions/missionProgress.service.ts
 // Mission progress tracking — updates mission progress and handles completion
 
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { Mission } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
@@ -50,6 +51,8 @@ export async function updateMissionProgress(
           completedAt: isCompleted ? new Date() : null,
         },
       });
+
+      await cacheManager.invalidateDashboard(userId);
 
       // Emit SSE event for progress update
       eventBus.emitMissionProgress(userId, {

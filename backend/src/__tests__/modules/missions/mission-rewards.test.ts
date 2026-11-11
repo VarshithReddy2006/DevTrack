@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { User, UserXp, UserAnalytics, Mission, XpTransaction, type XpSourceType } from '../../../db/models/index.js';
 import { processXpEvent, processMissionReward, getUserXp } from '../../../modules/xp/processor.js';
 import { updateMissionProgress, getUserMissions } from '../../../modules/missions/missionProgress.service.js';
@@ -10,7 +10,7 @@ import { unifiedRuntimeStateService } from '../../../modules/runtime-state/unifi
 vi.mock('../../../shared/sse/index.js', () => ({ eventBus: {
   emitXpUpdated: vi.fn(), emitLevelUp: vi.fn(), emitMissionProgress: vi.fn(), emitNotificationCreated: vi.fn(),
 } }));
-vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateAllUserCache: vi.fn() } }));
+vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn() } }));
 vi.mock('../../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { updateFromEvent: vi.fn() } }));
 vi.mock('../../../shared/logger.js', () => ({ logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
@@ -21,13 +21,17 @@ beforeAll(async () => {
   // The ledger unique index must be ready before any award. Mission's unrelated
   // conflicting expiry indexes are not awaited, matching existing mission tests.
   await Promise.all([User.init(), UserXp.init(), UserAnalytics.init(), XpTransaction.init()]);
+  // Keep one calendar clock for the whole suite so MongoDB heartbeats cannot
+  // jump between real time and the frozen date during per-test DB cleanup.
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(now);
 });
 beforeEach(async () => {
-  vi.clearAllMocks(); vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(now);
+  vi.clearAllMocks();
   await User.create({ _id: userId, clerkId: 'reward_owner', username: 'rewardowner', displayName: 'Synthetic Owner', email: 'owner@example.test' });
   await UserXp.create({ userId });
 });
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); });
+afterAll(() => { vi.useRealTimers(); });
 
 async function createMission(overrides: Record<string, unknown> = {}) {
   return Mission.create({ userId, title: 'Solve a easy problem', description: 'Synthetic mission', type: 'daily', category: 'dsa',

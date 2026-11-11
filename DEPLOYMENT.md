@@ -328,3 +328,27 @@ curl https://your-api.render.com/health/detailed  # requires admin auth
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - Worker topology and queue names
 - [README.md](./README.md) - Local development setup
 - [PROJECT_STATUS.md](./PROJECT_STATUS.md) - Known production gaps
+
+## Daily challenge tiers
+
+Before deploying issue #96 to an existing database:
+
+1. Stop API and sync workers that read or write daily challenges. Keep old
+   versions stopped until the new version is deployed.
+2. From `backend/`, explicitly set `MONGODB_URI` to the intended database and run
+   `npm run migrate:daily-challenge-tiers`.
+3. Deploy the new code and restart writers.
+
+The migration first creates the unique `{ date: 1, difficulty: 1 }` index,
+then removes the old unique date-only index. It is safe to rerun. No challenge
+documents, completion counts, IDs, or XP transactions are rewritten. Existing
+challenges remain the challenge for their date and tier; missing tiers are
+created lazily. Fresh databases get the compound index from the model.
+
+Difficulty is selected per user on each request using the existing streak
+rules and the user's local weekday. A change in streak may select a different
+tier; completion and rewards are tracked independently per tier through the
+existing user/challenge XP ledger key. New tier completion counts start at zero.
+
+Do not roll back to date-only uniqueness after multiple tiers exist without a
+separate data migration. This command does not perform that rollback.

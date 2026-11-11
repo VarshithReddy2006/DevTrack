@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/workers/resume-generation.worker.ts
+import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
@@ -25,7 +26,7 @@ export function startResumeGenerationWorker(): Worker {
 
   const service = new ResumeIntelligenceService();
 
-  worker = new Worker<IResumeGenerationJob>(
+  worker = createDlqWorker<IResumeGenerationJob>(
     RESUME_GENERATION_QUEUE,
     async (job: Job<IResumeGenerationJob>) => {
       logger.info(`[ResumeGenerationWorker] Processing job ${job.id}`);

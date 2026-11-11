@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({ enqueue: vi.fn(), acquire: vi.fn(), release: v
 vi.mock('../../../shared/jobs/queueFactory.js', () => ({ getReadinessDsaQueue: () => ({ add: mocks.enqueue }) }));
 vi.mock('../../../shared/redis/syncLock.service.js', () => ({ acquireSyncLockWithRetry: mocks.acquire, releaseSyncLock: mocks.release }));
 vi.mock('../../../modules/activity/activity.service.js', () => ({ createActivity: vi.fn(), incrementDailyActivity: vi.fn() }));
-vi.mock('../../../shared/sse/index.js', () => ({ eventBus: { emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn() } }));
+vi.mock('../../../shared/sse/index.js', () => ({ eventBus: { emitSyncStarted: vi.fn(), emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn() } }));
 vi.mock('../../../shared/circuit-breaker/circuitBreaker.js', () => ({
   circuitBreakers: Object.fromEntries(['leetcode', 'codeforces', 'codechef', 'github'].map(name => [name, { execute: (run: () => Promise<unknown>) => run() }])),
   CircuitOpenError: class extends Error {},
