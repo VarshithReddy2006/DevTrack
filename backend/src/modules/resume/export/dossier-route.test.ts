@@ -11,7 +11,7 @@ vi.mock('../../../middleware/auth.js', () => ({ authMiddleware: (req: any, res: 
   req.user = { id: req.headers['x-test-user'] }; next();
 } }));
 vi.mock('../../../middleware/rateLimitAdvanced.js', () => ({ rateLimiters: { resume: (_req: any, _res: any, next: any) => next(), resumeRead: (_req: any, _res: any, next: any) => next() } }));
-vi.mock('puppeteer', () => ({ default: { launch: async () => ({ newPage: async () => ({ setRequestInterception: async () => {}, on: () => {}, setContent: async () => {}, pdf: pdf.generate }), close: async () => {} }) } }));
+vi.mock('puppeteer', () => ({ default: { launch: async () => ({ newPage: async () => ({ setJavaScriptEnabled: async () => {}, close: async () => {}, setRequestInterception: async () => {}, on: () => {}, setContent: async () => {}, pdf: pdf.generate }), close: async () => {} }) } }));
 
 const report = { executiveSummary: {}, roleAlignment: {}, credibilityAnalysis: { unsupportedClaims: [], projectRankings: [] }, recommendations: [] };
 const owner = '012345678901234567890123';

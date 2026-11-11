@@ -1,19 +1,20 @@
 // src/modules/resume-intelligence/export/ResumeExportService.ts
 import type { Types } from 'mongoose';
-import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
+import { ResumeProfile, type IResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeExport } from '../../../db/models/resumeExport.model.js';
 import { ResumeSession } from '../../../db/models/resumeSession.model.js';
 import { ATSCompatibilityEngine } from '../ats/ATSCompatibilityEngine.js';
 import { logger } from '../../../shared/logger.js';
 import { randomBytes } from 'crypto';
-import fs from 'fs';
+import fs from 'node:fs/promises';
 import path from 'path';
-import puppeteer from 'puppeteer';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
+import { escapeHtml, renderExportPdf } from './renderExportPdf.js';
+import type { ExportResumeDTO } from '../dto/index.js';
+import { Document, Packer, Paragraph, HeadingLevel } from 'docx';
 
 // Report fields may contain resume text. Escape them before inserting into HTML.
 function escapeReport(value: any): any {
-  if (typeof value === 'string') return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
+  if (typeof value === 'string') return escapeHtml(value);
   if (Array.isArray(value)) return value.map(escapeReport);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeReport(item)]));
   return value;
@@ -23,7 +24,7 @@ export interface IExportOptions {
   userId: Types.ObjectId;
   resumeProfileId: Types.ObjectId;
   variantId?: string;
-  exportType: 'pdf' | 'docx' | 'txt';
+  exportType: ExportResumeDTO['exportType'];
   includeATSAnalysis?: boolean;
   sessionId?: string;
 }
@@ -52,6 +53,15 @@ export class ResumeExportService {
     const exportPath = `/exports/${options.userId}/${randomBytes(8).toString('hex')}.${options.exportType}`;
     const checksum = randomBytes(16).toString('hex');
 
+    const startedAt = Date.now();
+    const fullPath = path.join(process.cwd(), exportPath);
+    const content = await this.generateExport(options);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(fullPath, content, { flag: 'wx' }).catch(async error => {
+      if (error.code !== 'EEXIST') await this.removeFailedExport(fullPath);
+      throw error;
+    });
+
     const exportRecord = await ResumeExport.create({
       userId: options.userId,
       resumeProfileId: options.resumeProfileId,
@@ -59,50 +69,23 @@ export class ResumeExportService {
       exportType: options.exportType,
       exportPath,
       checksum,
-      atsValidationState: 'pending',
+      atsValidationState: 'passed',
       exportVersion: '1.0.0',
       templateVersion: '1.0.0',
       metadata: {
-        fileSize: 1024, // Mock file size in bytes
+        fileSize: Buffer.byteLength(content),
         pageCount: 1,
-        generationDurationMs: 120,
+        generationDurationMs: Date.now() - startedAt,
         atsAnalysisId: null,
       },
+    }).catch(async error => {
+      await this.removeFailedExport(fullPath);
+      throw error;
     });
-
-    // Ensure the folder exists
-    const fullPath = path.join(process.cwd(), exportPath);
-    const dir = path.dirname(fullPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    if (options.exportType === 'pdf') {
-      try {
-        if (options.sessionId) {
-           fs.writeFileSync(fullPath, await this.generateDossierPDF(options.userId, options.sessionId));
-        } else {
-           // Basic profile PDF
-           await this.generateProfilePDF(options.resumeProfileId, fullPath);
-        }
-        exportRecord.atsValidationState = 'passed';
-        await exportRecord.save();
-      } catch (err) {
-        logger.error(`[ResumeExportService] Error compiling PDF: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    } else if (options.exportType === 'docx') {
-      try {
-        await this.generateProfileDOCX(options.resumeProfileId, fullPath);
-        exportRecord.atsValidationState = 'passed';
-        await exportRecord.save();
-      } catch (err) {
-        logger.error(`[ResumeExportService] Error compiling DOCX: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
 
     // Run traditional ATS analysis if requested
     if (options.includeATSAnalysis) {
-      const profile = await ResumeProfile.findById(options.resumeProfileId);
+      const profile = await ResumeProfile.findOne({ _id: options.resumeProfileId, userId: options.userId });
       if (profile) {
         const analysis = await this.atsEngine.analyze({
           userId: options.userId,
@@ -121,6 +104,40 @@ export class ResumeExportService {
     return exportRecord;
   }
 
+  private async removeFailedExport(fullPath: string): Promise<void> {
+    await fs.rm(fullPath, { force: true }).catch(error => {
+      logger.error('[ResumeExportService] Could not remove failed export', error);
+    });
+  }
+
+  private async generateExport(options: IExportOptions): Promise<Buffer | string> {
+    if (options.exportType === 'pdf' && options.sessionId) {
+      return this.generateDossierPDF(options.userId, options.sessionId);
+    }
+
+    const profile = await ResumeProfile.findOne({ _id: options.resumeProfileId, userId: options.userId });
+    if (!profile) throw Object.assign(new Error('Resume profile not found'), { statusCode: 404 });
+
+    const summary = profile.summary || 'No summary provided.';
+    const skills = profile.selectedSkills || [];
+    const skillList = skills.join(', ') || 'None';
+    switch (options.exportType) {
+      case 'pdf':
+        return this.generateProfilePDF(summary, skillList);
+      case 'docx':
+        return this.generateProfileDOCX(profile);
+      case 'txt':
+        return `Resume\n\nSummary\n${summary}\n\nSkills\n${skillList}\n`;
+      case 'json':
+        return JSON.stringify({ summary, skills }, null, 2) + '\n';
+      case 'md': {
+        // Indentation keeps user-entered Markdown and HTML literal.
+        const literal = (value: string) => value.split(/\r\n|[\r\n]/).map(line => `    ${line}`).join('\n');
+        return `# Resume\n\n## Summary\n\n${literal(summary)}\n\n## Skills\n\n${literal(skillList)}\n`;
+      }
+    }
+  }
+
   /**
    * Generates a high-fidelity recruiter-grade HTML representation of the 14-section dossier
    */
@@ -137,7 +154,6 @@ export class ResumeExportService {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
   <title>DevTrack Resume Intelligence Dossier</title>
   <style>
     body {
@@ -399,24 +415,10 @@ export class ResumeExportService {
 </html>
 `;
 
-    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
-    try {
-      const page = await browser.newPage();
-      await page.setRequestInterception(true);
-      page.on('request', request => { void request.abort(); });
-      await page.setContent(htmlContent, { waitUntil: 'networkidle0' as any });
-      const pdf = Buffer.from(await page.pdf({ format: 'A4', printBackground: true }));
-      if (!pdf.subarray(0, 5).equals(Buffer.from('%PDF-'))) throw new Error('Invalid dossier PDF');
-      return pdf;
-    } finally {
-      await browser.close();
-    }
+    return renderExportPdf(htmlContent);
   }
 
-  private async generateProfilePDF(profileId: Types.ObjectId, exportPath: string): Promise<string> {
-    const profile = await ResumeProfile.findById(profileId);
-    if (!profile) throw new Error('Profile not found');
-    
+  private async generateProfilePDF(summary: string, skills: string): Promise<Buffer> {
     const htmlContent = `
     <!DOCTYPE html>
     <html>
@@ -431,26 +433,17 @@ export class ResumeExportService {
     <body>
       <h1>Resume</h1>
       <h2>Summary</h2>
-      <p>${profile.summary || 'No summary provided.'}</p>
+      <p>${escapeHtml(summary)}</p>
       <h2>Skills</h2>
-      <p>${profile.selectedSkills?.join(', ') || 'None'}</p>
+      <p>${escapeHtml(skills)}</p>
     </body>
     </html>
     `;
 
-    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
-    const page = await browser.newPage();
-    await page.setContent(htmlContent, { waitUntil: 'networkidle0' as any });
-    await page.pdf({ path: exportPath, format: 'A4', printBackground: true });
-    await browser.close();
-
-    return exportPath;
+    return renderExportPdf(htmlContent);
   }
 
-  private async generateProfileDOCX(profileId: Types.ObjectId, exportPath: string): Promise<string> {
-    const profile = await ResumeProfile.findById(profileId);
-    if (!profile) throw new Error('Profile not found');
-
+  private async generateProfileDOCX(profile: IResumeProfile): Promise<Buffer> {
     const doc = new Document({
       sections: [{
         properties: {},
@@ -478,10 +471,7 @@ export class ResumeExportService {
       }],
     });
 
-    const buffer = await Packer.toBuffer(doc);
-    fs.writeFileSync(exportPath, buffer);
-    logger.info(`[ResumeExportService] DOCX written to ${exportPath}`);
-    return exportPath;
+    return Packer.toBuffer(doc);
   }
 
   /**
