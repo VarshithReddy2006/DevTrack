@@ -1,6 +1,8 @@
 // src/modules/projects/projects.service.ts
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { Project, ProjectTask, ActivityEvent } from '../../db/models/index.js';
+import { rankBetween } from '../../db/models/projectTask.model.js';
 import { createActivity } from '../activity/activity.service.js';
 import { logger } from '../../shared/logger.js';
 import type {
@@ -76,6 +78,8 @@ export async function createProject(userId: string, payload: ApiProjectCreatePay
     openIssues: 0,
   });
 
+  await cacheManager.invalidateDashboard(userId);
+
   // Activity logging
   createActivity(userId, {
     type: 'project_created',
@@ -108,6 +112,7 @@ export async function updateProject(
   ).lean();
 
   if (project) {
+    await cacheManager.invalidateDashboard(userId);
     // Build a human-readable description of what changed
     const changes: string[] = [];
     if (payload.name) changes.push(`renamed to "${payload.name}"`);
@@ -153,6 +158,7 @@ export async function deleteProject(userId: string, projectId: string): Promise<
   });
 
   if (result.deletedCount > 0) {
+    await cacheManager.invalidateDashboard(userId);
     createActivity(userId, {
       type: 'project_deleted',
       title: `Deleted project ${project.name}`,
@@ -254,7 +260,7 @@ export async function getProjectTasks(userId: string, projectId: string): Promis
 
   if (!project) return [];
 
-  const tasks = await ProjectTask.find({ projectId: new Types.ObjectId(projectId) }).sort({ createdAt: -1 });
+  const tasks = await ProjectTask.find({ projectId: new Types.ObjectId(projectId) }).sort({ rank: 1, createdAt: -1, _id: 1 });
 
   return tasks.map((task) => ({
     id: task._id.toString(),
@@ -268,6 +274,7 @@ export async function getProjectTasks(userId: string, projectId: string): Promis
     labels: task.labels,
     dueDate: task.dueDate?.toISOString() || null,
     completedAt: task.completedAt?.toISOString() || null,
+    rank: task.rank ?? null,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
   }));
@@ -276,7 +283,7 @@ export async function getProjectTasks(userId: string, projectId: string): Promis
 export async function createProjectTask(
   userId: string,
   projectId: string,
-  payload: Omit<ApiProjectTask, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'completedAt'>
+  payload: Omit<ApiProjectTask, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'completedAt' | 'rank'>
 ): Promise<ApiProjectTask | null> {
   // Verify project exists and belongs to user
   const project = await Project.findOne({
@@ -286,9 +293,17 @@ export async function createProjectTask(
 
   if (!project) return null;
 
+  // New tasks go to the bottom of their column
+  const last = await ProjectTask.findOne({
+    projectId: new Types.ObjectId(projectId),
+    status: payload.status,
+    rank: { $ne: null },
+  }).sort({ rank: -1 });
+
   const task = await ProjectTask.create({
     projectId: new Types.ObjectId(projectId),
     ...payload,
+    rank: rankBetween(last?.rank ?? null, null),
     completedAt: payload.status === 'done' ? new Date() : null,
   });
 
@@ -304,6 +319,7 @@ export async function createProjectTask(
     labels: task.labels,
     dueDate: task.dueDate?.toISOString() || null,
     completedAt: task.completedAt?.toISOString() || null,
+    rank: task.rank ?? null,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
   };
@@ -313,8 +329,20 @@ export async function updateProjectTask(
   userId: string,
   projectId: string,
   taskId: string,
-  payload: Partial<Pick<ApiProjectTask, 'status' | 'title' | 'description' | 'priority' | 'labels' | 'dueDate'>>
+  input: Partial<Pick<ApiProjectTask, 'status' | 'title' | 'description' | 'priority' | 'labels' | 'dueDate'>> & {
+    /** Rank of the card that will sit above the moved task (null = top of the column) */
+    prevRank?: string | null;
+    /** Rank of the card that will sit below the moved task (null = bottom of the column) */
+    nextRank?: string | null;
+  }
 ): Promise<ApiProjectTask | null> {
+  const { prevRank, nextRank, ...fields } = input;
+  // Moving a card is one $set on that card: the new column plus a rank between its new neighbours.
+  const payload: typeof fields & { rank?: string } = { ...fields };
+  if (prevRank !== undefined || nextRank !== undefined) {
+    payload.rank = rankBetween(prevRank ?? null, nextRank ?? null);
+  }
+
   // Verify project exists and belongs to user
   const project = await Project.findOne({
     _id: new Types.ObjectId(projectId),
@@ -365,6 +393,7 @@ export async function updateProjectTask(
     labels: task.labels,
     dueDate: task.dueDate?.toISOString() || null,
     completedAt: task.completedAt?.toISOString() || null,
+    rank: task.rank ?? null,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
   };
@@ -415,6 +444,7 @@ export async function syncProject(userId: string, projectId: string): Promise<Pr
     { $set: metrics },
     { new: true }
   );
+  if (updated) await cacheManager.invalidateDashboard(userId);
   return updated ? 'synced' : 'repo_changed';
 }
 

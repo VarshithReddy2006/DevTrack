@@ -11,7 +11,7 @@ import { XP_LEVEL_THRESHOLDS } from '../../../modules/xp/rules.js';
 vi.mock('../../../shared/sse/index.js', () => ({ eventBus: {
   emitXpUpdated: vi.fn(), emitLevelUp: vi.fn(), emitMissionProgress: vi.fn(), emitNotificationCreated: vi.fn(),
 } }));
-vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateAllUserCache: vi.fn() } }));
+vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn() } }));
 vi.mock('../../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { updateFromEvent: vi.fn() } }));
 
 const userId = new Types.ObjectId().toHexString();

@@ -45,7 +45,13 @@ const taskUpdateSchema = z.object({
   priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
   labels: z.array(z.string()).optional(),
   dueDate: z.string().nullable().optional(),
-});
+  // Ranks of the cards the task is dropped between (null = open end of the column)
+  prevRank: z.string().regex(/^[0-9A-Za-z]*[1-9A-Za-z]$/).nullable().optional(),
+  nextRank: z.string().regex(/^[0-9A-Za-z]*[1-9A-Za-z]$/).nullable().optional(),
+}).refine(
+  (value) => !value.prevRank || !value.nextRank || value.prevRank < value.nextRank,
+  { message: 'prevRank must sort before nextRank', path: ['prevRank'] }
+);
 
 const projectIdParamsSchema = z.object({ id: objectIdSchema });
 const taskParamsSchema = z.object({ id: objectIdSchema, taskId: objectIdSchema });

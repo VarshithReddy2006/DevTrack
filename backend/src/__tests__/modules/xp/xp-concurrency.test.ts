@@ -6,7 +6,7 @@ import { calculateLevel, xpToNextLevel } from '../../../modules/xp/rules.js';
 import { eventBus } from '../../../shared/sse/index.js';
 vi.mock('../../../shared/sse/index.js', () => ({ eventBus: { emitXpUpdated: vi.fn(), emitLevelUp: vi.fn() } }));
 vi.mock('../../../modules/missions/missionProgress.service.js', () => ({ updateMissionProgress: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateAllUserCache: vi.fn().mockResolvedValue(undefined) } }));
+vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn().mockResolvedValue(undefined) } }));
 vi.mock('../../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { updateFromEvent: vi.fn().mockResolvedValue(undefined) } }));
 
 beforeAll(async () => { await UserXp.init(); await XpTransaction.init(); });

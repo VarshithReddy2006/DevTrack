@@ -10,7 +10,7 @@ vi.mock('../../../shared/sse/index.js', () => ({ eventBus: {
   emitSyncStarted: vi.fn(), emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn(), emitXpUpdated: vi.fn(),
   emitLevelUp: vi.fn(), emitChallengeCompleted: completionEvent,
 } }));
-vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateAllUserCache: vi.fn() } }));
+vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn() } }));
 vi.mock('../../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { updateFromEvent: vi.fn() } }));
 vi.mock('../../../shared/redis/syncLock.service.js', () => ({
   acquireSyncLockWithRetry: vi.fn().mockResolvedValue(true), releaseSyncLock: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('../../../shared/logger.js', () => ({ logger: { debug: vi.fn(), info: vi
 
 const userId = '000000000000000000000091';
 const username = 'synthetic-challenge';
-const now = new Date(2026, 10, 9, 12);
+const now = new Date(Date.UTC(2026, 10, 9, 12));
 type Platform = 'leetcode' | 'codeforces';
 
 beforeAll(async () => {
@@ -116,22 +116,22 @@ async function expectCompletion(challengeId: string, completed: boolean) {
 }
 
 it.each(['leetcode', 'codeforces'] as const)('imports a historical %s attempt without rewarding today', async platform => {
-  const { sync, challenge } = await prepareSync(platform, new Date(2026, 10, 2, 12));
+  const { sync, challenge } = await prepareSync(platform, new Date(Date.UTC(2026, 10, 2, 12)));
   await sync();
   await expectCompletion(challenge.id, false);
 });
 
 it.each(['leetcode', 'codeforces'] as const)('rewards a matching %s attempt at the start of today only once', async platform => {
-  const { sync, challenge } = await prepareSync(platform, new Date(2026, 10, 9, 0));
+  const { sync, challenge } = await prepareSync(platform, new Date(Date.UTC(2026, 10, 9, 0)));
   await sync();
-  vi.setSystemTime(new Date(2026, 10, 9, 12, 10));
+  vi.setSystemTime(new Date(Date.UTC(2026, 10, 9, 12, 10)));
   await sync();
   await expectCompletion(challenge.id, true);
 });
 
 it.each([
-  new Date(2026, 10, 8, 23, 59, 59),
-  new Date(2026, 10, 10, 0),
+  new Date(Date.UTC(2026, 10, 8, 23, 59, 59)),
+  new Date(Date.UTC(2026, 10, 10, 0)),
 ])('does not reward a matching attempt on the other side of a day boundary (%s)', async submittedAt => {
   const { sync, challenge } = await prepareSync('leetcode', submittedAt);
   await sync();

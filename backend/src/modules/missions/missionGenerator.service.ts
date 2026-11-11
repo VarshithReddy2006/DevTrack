@@ -1,6 +1,7 @@
 // src/modules/missions/missionGenerator.service.ts
 // Mission auto-generation service — generates daily and weekly missions for active users
 
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { Mission, UserXp, User, type IMission } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
@@ -46,6 +47,8 @@ export async function generateDailyMissions(): Promise<void> {
         },
         { $set: { status: 'expired' } }
       );
+
+      await cacheManager.invalidateDashboard(userId);
 
       // Check if user already has active daily missions
       const existingDailyMissions = await Mission.countDocuments({
@@ -111,6 +114,8 @@ export async function generateWeeklyMissions(): Promise<void> {
         },
         { $set: { status: 'expired' } }
       );
+
+      await cacheManager.invalidateDashboard(userId);
 
       // Check if user already has active weekly missions
       const existingWeeklyMissions = await Mission.countDocuments({
@@ -263,6 +268,8 @@ async function createMission(userId: Types.ObjectId, template: MissionTemplate):
     status: 'pending',
     expiresAt,
   });
+
+  await cacheManager.invalidateDashboard(userId.toString());
 
   // Emit SSE notification for new mission
   eventBus.emitNotificationCreated(

@@ -206,6 +206,14 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
     { upsert: true, new: true }
   );
 
+  // Invalidate before events can trigger dashboard reloads.
+  try {
+    await cacheManager.invalidateUserStreak(userId);
+    await cacheManager.invalidateDashboard(userId);
+  } catch (err) {
+    logger.warn('[streak] Cache invalidation failed (non-fatal)', { error: err });
+  }
+
   // ── Step 6: Emit streak milestone events and trigger XP ───────────────
   const STREAK_MILESTONES = [3, 7, 14, 30, 60, 100, 365];
   const previousStreak = analytics?.currentStreak ?? 0;
@@ -248,14 +256,6 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
     const hoursRemaining = Math.max(0, 24 - localHour);
 
     eventBus.emitStreakAtRisk(userId, currentStreak, hoursRemaining);
-  }
-
-  // ── Step 8: Cache invalidation ─────────────────────────────────────────
-  try {
-    await cacheManager.invalidateUserStreak(userId);
-    await cacheManager.invalidateDashboard(userId);
-  } catch (err) {
-    logger.warn('[streak] Cache invalidation failed (non-fatal)', { error: err });
   }
 
   // ── Step 9: Runtime state sync ──────────────────────────────────────────

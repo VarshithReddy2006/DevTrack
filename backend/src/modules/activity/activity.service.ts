@@ -1,4 +1,5 @@
 // src/modules/activity/activity.service.ts
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { ActivityEvent, DailyActivity } from '../../db/models/index.js';
 import type { ApiActivityHeatmapResponse, ApiActivityFeedResponse, ApiActivityFilters, ApiActivityEntry, ApiActivitySummary } from '../../types/api.types.js';
@@ -174,14 +175,19 @@ export async function createActivity(
 
   // Update daily activity
   const dateKey = getStartOfDay(occurredAt);
-  await DailyActivity.findOneAndUpdate(
-    { userId: new Types.ObjectId(userId), date: dateKey },
-    {
-      $inc: { count: 1 },
-      $push: { activities: { type: payload.type, count: 1 } },
-    },
-    { upsert: true, new: true }
-  );
+  try {
+    await DailyActivity.findOneAndUpdate(
+      { userId: new Types.ObjectId(userId), date: dateKey },
+      {
+        $inc: { count: 1 },
+        $push: { activities: { type: payload.type, count: 1 } },
+      },
+      { upsert: true, new: true }
+    );
+  } finally {
+    // The activity event already exists even if updating the daily count fails.
+    await cacheManager.invalidateDashboard(userId);
+  }
 
   // Removed retention hook
 
@@ -216,6 +222,7 @@ export async function incrementDailyActivity(
     },
     { upsert: true, new: true }
   );
+  await cacheManager.invalidateDashboard(userId);
 }
 
 export async function deleteActivity(userId: string, activityId: string): Promise<boolean> {
@@ -223,5 +230,6 @@ export async function deleteActivity(userId: string, activityId: string): Promis
     _id: new Types.ObjectId(activityId),
     userId: new Types.ObjectId(userId),
   });
+  if (result.deletedCount > 0) await cacheManager.invalidateDashboard(userId);
   return result.deletedCount > 0;
 }

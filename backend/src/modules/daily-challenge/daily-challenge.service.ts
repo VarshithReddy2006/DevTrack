@@ -1,10 +1,11 @@
 // src/modules/daily-challenge/daily-challenge.service.ts
 import { Types } from 'mongoose';
-import { DailyChallenge, DsaProblem, DsaSubmission, XpTransaction, UserAnalytics } from '../../db/models/index.js';
+import { DailyChallenge, DsaProblem, DsaSubmission, XpTransaction, UserAnalytics, User } from '../../db/models/index.js';
 import type { IDailyChallenge } from '../../db/models/dailyChallenge.model.js';
 import { processXpEvent } from '../xp/processor.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { logger } from '../../shared/logger.js';
+import { localDateString, localDayBounds, resolveTimezone } from './daily-challenge.time.js';
 
 // ---------------------------------------------------------------------------
 // Expanded Challenge Pool — organized by difficulty
@@ -54,23 +55,17 @@ const CHALLENGE_POOL: Record<'easy' | 'medium' | 'hard', ChallengeTemplate[]> = 
   ],
 };
 
-// Legacy flat list for backward compatibility
-const DEFAULT_CHALLENGES = [
-  ...CHALLENGE_POOL.easy.slice(0, 3),
-  ...CHALLENGE_POOL.medium.slice(0, 2),
-];
-
 // ---------------------------------------------------------------------------
 // Adaptive Difficulty Selection
 // ---------------------------------------------------------------------------
 
-async function selectAdaptiveDifficulty(userId: string): Promise<'easy' | 'medium' | 'hard'> {
+async function selectAdaptiveDifficulty(userId: string, dateStr: string): Promise<'easy' | 'medium' | 'hard'> {
   try {
     const analytics = await UserAnalytics.findOne({ userId: new Types.ObjectId(userId) }).lean();
     const currentStreak = analytics?.currentStreak ?? 0;
 
     // Weekend/weekday balancing — easier on weekends
-    const dayOfWeek = new Date().getDay();
+    const dayOfWeek = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
 
     if (isWeekend) {
@@ -82,12 +77,12 @@ async function selectAdaptiveDifficulty(userId: string): Promise<'easy' | 'mediu
     if (currentStreak >= 14) return 'medium';
     if (currentStreak >= 7) {
       // Mix: 60% medium, 40% easy based on date hash
-      const dateHash = hashDateString(getDateString());
+      const dateHash = hashDateString(dateStr);
       return dateHash % 5 < 3 ? 'medium' : 'easy';
     }
     if (currentStreak >= 3) {
       // Mix: 70% easy, 30% medium
-      const dateHash = hashDateString(getDateString());
+      const dateHash = hashDateString(dateStr);
       return dateHash % 10 < 3 ? 'medium' : 'easy';
     }
     return 'easy'; // New or low-streak users get easy
@@ -97,13 +92,12 @@ async function selectAdaptiveDifficulty(userId: string): Promise<'easy' | 'mediu
   }
 }
 
-function getChallengeForDate(dateStr: string, difficulty?: 'easy' | 'medium' | 'hard') {
-  const pool = difficulty ? CHALLENGE_POOL[difficulty] : DEFAULT_CHALLENGES;
+function getChallengeForDate(dateStr: string, difficulty: 'easy' | 'medium' | 'hard') {
+  const pool = CHALLENGE_POOL[difficulty];
   const hash = hashDateString(dateStr);
   const index = hash % pool.length;
   const selected = pool[index];
   
-  // Apply streak-based XP multiplier
   return { ...selected };
 }
 
@@ -115,26 +109,27 @@ function hashDateString(dateStr: string): number {
   return Math.abs(hash);
 }
 
-function getDateString(d = new Date()): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+async function getUserTimezone(userId: string): Promise<string> {
+  const user = await User.findById(userId).select('timezone').lean();
+  return resolveTimezone(user?.timezone);
 }
 
 export async function getTodayChallenge(userId: string) {
   const now = new Date();
-  const dateStr = getDateString(now);
-  let challenge = await DailyChallenge.findOne({ date: dateStr });
+  const timezone = await getUserTimezone(userId);
+  const dateStr = localDateString(now, timezone);
+  const adaptiveDifficulty = await selectAdaptiveDifficulty(userId, dateStr);
+  const challengeKey = { date: dateStr, difficulty: adaptiveDifficulty };
+  let challenge = await DailyChallenge.findOne(challengeKey);
 
   if (!challenge) {
     // Use adaptive difficulty for new challenges
-    const adaptiveDifficulty = await selectAdaptiveDifficulty(userId);
     const seededData = getChallengeForDate(dateStr, adaptiveDifficulty);
     try {
       challenge = await DailyChallenge.create({
         date: dateStr,
         ...seededData,
+        completionCount: 0,
       });
       logger.info('[daily-challenge] Seeded adaptive challenge', {
         date: dateStr,
@@ -143,7 +138,7 @@ export async function getTodayChallenge(userId: string) {
       });
     } catch (err: any) {
       if (err?.code === 11000) {
-        challenge = await DailyChallenge.findOne({ date: dateStr });
+        challenge = await DailyChallenge.findOne(challengeKey);
       } else {
         throw err;
       }
@@ -164,11 +159,6 @@ export async function getTodayChallenge(userId: string) {
   let userCompleted = !!completedTx;
 
   if (!userCompleted) {
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const nextDay = new Date(startOfDay);
-    nextDay.setDate(nextDay.getDate() + 1);
-
     const problem = await DsaProblem.findOne({
       userId: new Types.ObjectId(userId),
       platform: challenge.platform,
@@ -177,6 +167,7 @@ export async function getTodayChallenge(userId: string) {
     }).lean();
 
     if (problem) {
+      const { start: startOfDay, end: nextDay } = localDayBounds(dateStr, timezone);
       const submissionToday = await DsaSubmission.findOne({
         userId: new Types.ObjectId(userId),
         problemId: problem._id,
@@ -206,10 +197,14 @@ export async function checkChallengeCompletion(
   titleSlug: string,
   submittedAt: Date,
 ): Promise<boolean> {
-  const dateStr = getDateString();
-  if (getDateString(submittedAt) !== dateStr) return false;
+  if (!Number.isFinite(submittedAt.getTime())) return false;
+  const now = new Date();
+  const timezone = await getUserTimezone(userId);
+  const dateStr = localDateString(now, timezone);
+  if (localDateString(submittedAt, timezone) !== dateStr) return false;
 
-  const challenge = await DailyChallenge.findOne({ date: dateStr });
+  const difficulty = await selectAdaptiveDifficulty(userId, dateStr);
+  const challenge = await DailyChallenge.findOne({ date: dateStr, difficulty });
   if (
     !challenge ||
     challenge.platform !== platform.toLowerCase() ||
