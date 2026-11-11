@@ -166,3 +166,56 @@ jobs:
       - name: Verify Frontend Docker Build
         working-directory: ./frontend
         run: docker build -t devtrack-frontend:test .
+
+  resume-e2e:
+    name: Resume browser flow
+    runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7.0-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: ./frontend
+
+      - name: Typecheck E2E harness
+        run: |
+          node backend/node_modules/typescript/bin/tsc -p backend/tsconfig.e2e.json
+          node frontend/node_modules/typescript/bin/tsc -p frontend/tsconfig.e2e.json
+
+      - name: Run resume browser flow
+        run: npm run test:e2e:resume --prefix frontend
+
+      - name: Upload browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resume-e2e-diagnostics
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          if-no-files-found: ignore
