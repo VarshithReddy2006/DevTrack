@@ -20,10 +20,8 @@ export interface DsaIntelligenceResponse {
   lastUpdated: string;
 }
 
-export const fetchDsaIntelligence = async (userId: string): Promise<DsaIntelligenceResponse> => {
-  const response = await axiosClient.get<{ success: boolean; data: DsaIntelligenceResponse }>('/readiness/dsa', {
-    params: { userId },
-  });
+export const fetchDsaIntelligence = async (): Promise<DsaIntelligenceResponse> => {
+  const response = await axiosClient.get<{ success: boolean; data: DsaIntelligenceResponse }>('/readiness/dsa');
   return response.data.data;
 };
 
