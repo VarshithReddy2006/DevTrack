@@ -71,6 +71,15 @@ class DlqManager {
     await getOrCreateQueue(this.parentQueue).add(data.originalJobName || 'replay', data.jobData, {
       ...data.originalOptions, jobId: `dlq-replay-${id}`,
     });
+    try {
+      const { DeadLetterJob } = await import('../../db/models/deadLetterJob.model.js');
+      await DeadLetterJob.updateMany(
+        { $or: [{ jobId: data.originalJobId }, { jobId: id }] },
+        { $set: { recovered: true } }
+      );
+    } catch (dbErr) {
+      logger.warn('[dlq] Failed to update DeadLetterJob audit status', { error: String(dbErr) });
+    }
     await job.remove(); // Failed enqueue leaves the dead letter available.
   }
 

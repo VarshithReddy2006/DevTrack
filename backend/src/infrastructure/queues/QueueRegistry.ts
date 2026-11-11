@@ -3,6 +3,7 @@ import { Queue } from 'bullmq';
 import { getRedisClient } from '../../shared/redis/index.js';
 import { logger } from '../../shared/logger.js';
 import { RetryPolicy } from './RetryPolicy.js';
+import { QueueNames } from '../../shared/jobs/types.js';
 
 interface QueueEntry {
   queue: Queue;
@@ -37,15 +38,26 @@ export class QueueRegistry {
   }
 
   static getQueue(name: string): Queue | undefined {
-    return this.registry.get(name)?.queue;
+    const existing = this.registry.get(name);
+    if (existing) return existing.queue;
+
+    const isKnown = Object.values(QueueNames).includes(name as any);
+    if (isKnown) {
+      return this.getOrCreateQueue(name);
+    }
+    return undefined;
   }
 
   static getAllQueues(): Queue[] {
+    for (const name of Object.values(QueueNames)) {
+      this.getOrCreateQueue(name);
+    }
     return Array.from(this.registry.values()).map((e) => e.queue);
   }
 
   static async closeAllQueues(): Promise<void> {
-    await Promise.all(this.getAllQueues().map((q) => q.close()));
+    const queues = Array.from(this.registry.values()).map((e) => e.queue);
+    await Promise.all(queues.map((q) => q.close()));
     this.registry.clear();
     logger.info('[QueueRegistry] All queues closed');
   }
