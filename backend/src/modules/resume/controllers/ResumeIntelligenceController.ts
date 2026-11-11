@@ -294,13 +294,8 @@ export async function generateReport(req: Request, res: Response, next: NextFunc
       return errorResponse(res, 'sessionId is required', 'VALIDATION_ERROR', 400);
     }
     
-    const session = await ResumeSession.findOne({ sessionId });
+    const session = await ResumeSession.findOne({ sessionId, userId });
     if (!session) {
-      return errorResponse(res, 'Resume session not found', 'NOT_FOUND', 404);
-    }
-
-    // Verify ownership via string comparison to handle ObjectId vs string
-    if (session.userId && session.userId.toString() !== userId.toString()) {
       return errorResponse(res, 'Resume session not found', 'NOT_FOUND', 404);
     }
     
@@ -325,13 +320,8 @@ export async function getReport(req: Request, res: Response, next: NextFunction)
     const userId = getUserId(req);
     const { sessionId } = req.params;
 
-    const session = await ResumeSession.findOne({ sessionId });
+    const session = await ResumeSession.findOne({ sessionId, userId });
     if (!session) {
-      return errorResponse(res, 'Resume session not found', 'NOT_FOUND', 404);
-    }
-
-    // Verify ownership via string comparison to handle ObjectId vs string
-    if (session.userId && session.userId.toString() !== userId.toString()) {
       return errorResponse(res, 'Resume session not found', 'NOT_FOUND', 404);
     }
 
