@@ -1,7 +1,7 @@
 // src/modules/activity/activity.routes.ts
 import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
-import { validateParams, objectIdSchema } from '../../middleware/validation.js';
+import { validateParams, validateQuery, objectIdSchema } from '../../middleware/validation.js';
 import * as controller from './activity.controller.js';
 import { z } from 'zod';
 
@@ -22,14 +22,25 @@ const focusSessionSchema = z.object({
   mode: z.string(),
 });
 
+const focusHistoryQuerySchema = z.object({
+  status: z.enum(['running', 'paused', 'completed', 'abandoned', 'all']).optional(),
+  mode: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+const focusSummaryQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(3650).optional(),
+});
+
 const activityIdParamsSchema = z.object({ id: objectIdSchema });
 
 // Unified: GET /api/activity → events + heatmap in single response
 router.get('/', authMiddleware, asyncHandler(controller.getAll));
 
 // Focus Sessions
-router.get('/focus/history', authMiddleware, asyncHandler(controller.getFocusHistory));
-router.get('/focus/summary', authMiddleware, asyncHandler(controller.getFocusSummary));
+router.get('/focus/history', authMiddleware, validateQuery(focusHistoryQuerySchema), asyncHandler(controller.getFocusHistory));
+router.get('/focus/summary', authMiddleware, validateQuery(focusSummaryQuerySchema), asyncHandler(controller.getFocusSummary));
 router.post('/focus/start', authMiddleware, validateBody(focusSessionSchema), asyncHandler(controller.startFocusSession));
 router.post('/focus/heartbeat', authMiddleware, asyncHandler(controller.heartbeatFocusSession));
 router.post('/focus/pause', authMiddleware, asyncHandler(controller.pauseFocusSession));

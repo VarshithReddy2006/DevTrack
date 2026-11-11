@@ -73,19 +73,25 @@ export async function deleteActivity(req: AuthenticatedRequest, res: Response): 
 
 // ─── Focus Session Endpoints ────────────────────────────────────────────────
 
+function parseOptionalInt(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return parseInt(value, 10);
+  return undefined;
+}
+
 export async function getFocusHistory(req: AuthenticatedRequest, res: Response): Promise<void> {
   const options: FocusHistoryOptions = {
-    status: req.query.status as FocusHistoryOptions['status'],
-    mode: req.query.mode as string,
-    limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 20,
-    offset: req.query.offset ? parseInt(req.query.offset as string, 10) : 0,
+    status: typeof req.query.status === 'string' ? req.query.status as FocusHistoryOptions['status'] : undefined,
+    mode: typeof req.query.mode === 'string' ? req.query.mode : undefined,
+    limit: parseOptionalInt(req.query.limit),
+    offset: parseOptionalInt(req.query.offset),
   };
   const data = await focusEngine.getUserFocusHistory(req.user!.id, options);
   successResponse(res, data, 'Focus session history retrieved successfully');
 }
 
 export async function getFocusSummary(req: AuthenticatedRequest, res: Response): Promise<void> {
-  const days = req.query.days ? parseInt(req.query.days as string, 10) : 30;
+  const days = parseOptionalInt(req.query.days) ?? 30;
   const data = await focusEngine.getUserFocusSummary(req.user!.id, days);
   successResponse(res, data, 'Focus session summary retrieved successfully');
 }

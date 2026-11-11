@@ -192,8 +192,12 @@ export class FocusEngine {
     options: FocusHistoryOptions = {}
   ): Promise<FocusHistoryResult> {
     const userObjId = new Types.ObjectId(userId);
-    const limit = Math.min(100, Math.max(1, options.limit ?? 20));
-    const offset = Math.max(0, options.offset ?? 0);
+    const limit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+      ? Math.min(100, Math.max(1, Math.trunc(options.limit)))
+      : 20;
+    const offset = typeof options.offset === 'number' && Number.isFinite(options.offset)
+      ? Math.max(0, Math.trunc(options.offset))
+      : 0;
 
     const query: Record<string, unknown> = {
       userId: userObjId,
@@ -240,12 +244,15 @@ export class FocusEngine {
    */
   async getUserFocusSummary(userId: string, days = 30): Promise<FocusSummaryResult> {
     const userObjId = new Types.ObjectId(userId);
+    const safeDays = typeof days === 'number' && Number.isFinite(days) && days >= 0
+      ? Math.trunc(days)
+      : 30;
     const query: Record<string, unknown> = {
       userId: userObjId,
     };
 
-    if (days > 0) {
-      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    if (safeDays > 0) {
+      const since = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000);
       query.startedAt = { $gte: since };
     }
 
