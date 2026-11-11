@@ -11,6 +11,9 @@ import { recommendationOutputZodSchema } from '../modules/resume/ai/recommendati
 import { ReadinessCore } from '../db/models/readinessCore.model.js';
 import { ReadinessDsa } from '../db/models/readinessDsa.model.js';
 
+import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
+
+const orchestrator = new ResumeProcessingOrchestrator(true);
 let worker: Worker | null = null;
 
 export async function startResumeRecommendationWorker(): Promise<Worker> {
@@ -24,6 +27,13 @@ export async function startResumeRecommendationWorker(): Promise<Worker> {
   worker = WorkerFactory.createWorker<ResumeRecommendationJobData>(
     QueueNames.RESUME_RECOMMENDATION,
     async (job: Job<ResumeRecommendationJobData>) => {
+      if (job.name === 'resume-stage') {
+        if (job.data.generation === undefined) throw new Error('Missing resume stage generation');
+        await orchestrator.processQueuedStage(job.data.sessionId, 'RECOMMENDING', job.data.generation,
+          job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
+        return;
+      }
+
       const { sessionId } = job.data;
 
       logger.info(`[ResumeRecommendationWorker] Processing recommendation job: ${sessionId}`);
@@ -170,7 +180,7 @@ ${JSON.stringify(contextPayload, null, 2)}`;
         throw error;
       }
     },
-    { concurrency: 3 }
+    { concurrency: 3, jobTimeoutMs: null }
   );
 
   worker.on('completed', (job) => {
