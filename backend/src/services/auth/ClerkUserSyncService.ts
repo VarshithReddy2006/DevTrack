@@ -224,10 +224,14 @@ async function ensureSupportingDoc(
 }
 
 async function ensureSupportingRecords(userId: IUser['_id']): Promise<void> {
-  await Promise.all([
+  const results = await Promise.allSettled([
     ensureSupportingDoc(UserSettings, userId),
     ensureSupportingDoc(UserProfile, userId),
   ]);
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failed) throw failed.reason;
 }
 
 function toApiUser(user: IUser): ApiUser {
