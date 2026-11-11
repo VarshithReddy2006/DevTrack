@@ -4,73 +4,50 @@ import { ResumeSession } from '../models/resumeSession.model.js';
 import { DatasetIngestionState } from '../models/datasetIngestion.model.js';
 import { ActivityEvent } from '../models/activityEvent.model.js';
 
-/**
- * Setup production optimized database indexes.
- * Enforces compound indexes for rapid query processing.
- */
 export async function setupProductionIndexes(): Promise<void> {
-  logger.info('[DatabaseMigration] Setting up optimized production indexes...');
+  const indexes: Array<{ collection: mongoose.Collection; key: IndexKey; name: string }> = [
+    { collection: ResumeSession.collection, key: { userId: 1, sessionId: 1 }, name: 'idx_userId_sessionId' },
+    { collection: DatasetIngestionState.collection, key: { status: 1 }, name: 'idx_ingestion_status' },
+    { collection: ActivityEvent.collection, key: { userId: 1, createdAt: -1 }, name: 'idx_userId_createdAt' },
+  ];
 
-  try {
-    // 1. Optimized queries for resume session retrievals (userId + sessionId)
-    const resumeColl = ResumeSession.collection;
-    logger.info(`[DatabaseMigration] Registering compound index on ${resumeColl.collectionName} (userId, sessionId)`);
-    await safelyCreateIndex(
-      resumeColl,
-      { userId: 1, sessionId: 1 },
-      { name: 'idx_userId_sessionId', background: true }
-    );
-
-    // 2. High-speed lookup for ingestion monitoring
-    const datasetColl = DatasetIngestionState.collection;
-    logger.info(`[DatabaseMigration] Registering index on ${datasetColl.collectionName} (status)`);
-    await safelyCreateIndex(
-      datasetColl,
-      { status: 1 },
-      { name: 'idx_ingestion_status', background: true }
-    );
-
-    // 3. Fast indexing of activity telemetry
-    const activityColl = ActivityEvent.collection;
-    logger.info(`[DatabaseMigration] Registering compound index on ${activityColl.collectionName} (userId, createdAt)`);
-    await safelyCreateIndex(
-      activityColl,
-      { userId: 1, createdAt: -1 },
-      { name: 'idx_userId_createdAt', background: true }
-    );
-
-    logger.info('[DatabaseMigration] Production optimized indexes successfully registered.');
-  } catch (error) {
-    logger.error('[DatabaseMigration] Failed to setup production indexes', error);
-    // Do not crash the gateway if indexing encountered a network timeout
+  for (const { collection, key, name } of indexes) {
+    try {
+      await ensureIndex(collection, key, name);
+    } catch (error) {
+      // An indexing failure must not prevent startup or the other index checks.
+      logger.error('[DatabaseMigration] Failed to register production index', { collection: collection.collectionName, key, error });
+    }
   }
 }
 
-async function safelyCreateIndex(
-  collection: mongoose.Collection,
-  spec: Record<string, 1 | -1>,
-  options: mongoose.mongo.CreateIndexesOptions
-): Promise<void> {
-  try {
-    const existing = await collection.indexes().catch(() => []);
-    const specKeys = Object.keys(spec);
-    const isExisting = existing.some((idx) => {
-      if (options.name && idx.name === options.name) return true;
-      const idxKeys = Object.keys(idx.key || {});
-      if (idxKeys.length === specKeys.length && specKeys.every((k) => (idx.key as any)?.[k] === spec[k])) {
-        return true;
-      }
-      return false;
-    });
+type IndexKey = Record<string, 1 | -1>;
+type ExistingIndex = Awaited<ReturnType<mongoose.Collection['indexes']>>[number];
 
-    if (!isExisting) {
-      await collection.createIndex(spec, options);
-    }
-  } catch (err: any) {
-    if (err?.code === 85 || err?.codeName === 'IndexOptionsConflict') {
-      logger.warn(`[DatabaseMigration] Index already exists with conflicting options on ${collection.collectionName}`, { spec, options });
-    } else {
-      throw err;
-    }
+function matchesIndex(index: ExistingIndex, key: IndexKey): boolean {
+  const actual = Object.entries(index.key ?? {});
+  const expected = Object.entries(key);
+  return actual.length === expected.length
+    && expected.every(([field, direction], position) => actual[position][0] === field && actual[position][1] === direction)
+    && !index.hidden && !index.sparse && !index.unique
+    && index.partialFilterExpression == null && index.expireAfterSeconds == null
+    && (index.collation == null || index.collation.locale === 'simple');
+}
+
+async function ensureIndex(collection: mongoose.Collection, key: IndexKey, name: string): Promise<void> {
+  const existing = await collection.indexes().catch((error: { code?: number }) => {
+    if (error.code === 26) return []; // Collection does not exist yet.
+    throw error;
+  });
+  if (existing.some(index => matchesIndex(index, key))) return;
+
+  // Preserve an existing index with the preferred name if it serves another query.
+  const availableName = existing.some(index => index.name === name) ? `${name}_v2` : name;
+  try {
+    await collection.createIndex(key, { name: availableName, background: true });
+  } catch (error) {
+    const code = (error as { code?: number }).code;
+    if ((code === 85 || code === 86) && (await collection.indexes()).some(index => matchesIndex(index, key))) return;
+    throw error;
   }
 }

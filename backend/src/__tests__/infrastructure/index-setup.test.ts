@@ -38,4 +38,30 @@ describe('Production Index Setup Migration', () => {
     await expect(setupProductionIndexes()).resolves.not.toThrow();
     await expect(setupProductionIndexes()).resolves.not.toThrow();
   });
+
+  it.each(['reversed', 'partial'])('adds the expected index when the preferred name has a %s index', async conflict => {
+    const collection = ActivityEvent.collection;
+    const name = 'idx_userId_createdAt';
+    await setupProductionIndexes();
+    await collection.dropIndex(name);
+    const expected = { userId: 1, createdAt: -1 };
+    const conflicting = conflict === 'reversed' ? { createdAt: -1, userId: 1 } : expected;
+    try {
+      const options = conflict === 'partial' ? { name, partialFilterExpression: { type: 'fixture' } } : { name };
+      await collection.createIndex(conflicting, options);
+      await setupProductionIndexes();
+      await setupProductionIndexes();
+      const indexes = await collection.indexes();
+      expect(Object.entries(indexes.find(index => index.name === name)!.key))
+        .toEqual(Object.entries(conflicting));
+      const corrected = indexes.find(index => index.name === `${name}_v2`)!;
+      expect(Object.entries(corrected.key)).toEqual(Object.entries(expected));
+      expect(corrected.partialFilterExpression).toBeUndefined();
+    } finally {
+      for (const index of await collection.indexes()) {
+        if (index.name === name || index.name === `${name}_v2`) await collection.dropIndex(index.name);
+      }
+      await setupProductionIndexes();
+    }
+  });
 });

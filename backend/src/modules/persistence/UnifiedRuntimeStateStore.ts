@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import mongoose, { Schema } from 'mongoose';
 import { logger } from '../../shared/logger.js';
 import { getRedisClient } from '../../shared/redis/index.js';
@@ -5,6 +6,7 @@ import { getRedisClient } from '../../shared/redis/index.js';
 export interface IRuntimeSnapshot {
   _id: string;
   state: any;
+  revision?: string;
   userId?: string;
   stateType?: string;
   timestamp?: Date;
@@ -16,6 +18,7 @@ const runtimeSnapshotSchema = new Schema<IRuntimeSnapshot>(
   {
     _id: { type: String, required: true },
     state: { type: Schema.Types.Mixed, required: true },
+    revision: String,
     userId: { type: String, index: true },
     stateType: { type: String, index: true },
     timestamp: { type: Date, index: true },
@@ -40,11 +43,26 @@ export interface ISnapshotQueryFilter {
   toDate?: Date;
 }
 
-export class UnifiedRuntimeStateStore {
-  private memoryCache = new Map<string, any>();
+const redisTimeoutMs = 500;
+const redisTtlSeconds = 7 * 86400;
 
-  private getRedisKey(id: string): string {
-    return `runtime_snapshot:${id}`;
+async function cacheCommand<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Replay cache command timed out')), redisTimeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export class UnifiedRuntimeStateStore {
+  private getRedisKey(revision: string): string {
+    return `runtime_snapshot:v2:${revision}`;
   }
 
   private parseKeyMetadata(id: string, state: any): { userId?: string; stateType?: string; timestamp?: Date } {
@@ -66,126 +84,76 @@ export class UnifiedRuntimeStateStore {
   }
 
   async saveState(id: string, state: any): Promise<void> {
+    this.requireDatabase();
     const deepCopied = JSON.parse(JSON.stringify(state));
-    this.memoryCache.set(id, deepCopied);
-
-    // 1. Try Redis cache (TTL 7 days)
-    try {
-      const redis = getRedisClient();
-      if (redis.status === 'ready') {
-        await redis.set(this.getRedisKey(id), JSON.stringify(deepCopied), 'EX', 7 * 86400);
-      }
-    } catch (err) {
-      logger.warn(`[UnifiedRuntimeStateStore] Failed to write state to Redis for key ${id}`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    // 2. Try MongoDB durable persistence
-    try {
-      if (mongoose.connection.readyState === 1) {
-        const metadata = this.parseKeyMetadata(id, deepCopied);
-        await RuntimeSnapshot.updateOne(
-          { _id: id },
-          {
-            $set: {
-              _id: id,
-              state: deepCopied,
-              userId: metadata.userId,
-              stateType: metadata.stateType,
-              timestamp: metadata.timestamp,
-              updatedAt: new Date(),
-            },
-          },
-          { upsert: true }
-        );
-      }
-    } catch (err) {
-      logger.warn(`[UnifiedRuntimeStateStore] Failed to write state to MongoDB for key ${id}`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    const { userId, stateType, timestamp } = this.parseKeyMetadata(id, deepCopied);
+    const result = await RuntimeSnapshot.updateOne(
+      { _id: id },
+      { $set: { state: deepCopied, revision: randomUUID(), userId: userId ?? null, stateType: stateType ?? null, timestamp } },
+      { upsert: true, writeConcern: { w: 'majority', j: true } }
+    );
+    if (!result.acknowledged) throw new Error('Snapshot write was not acknowledged');
   }
 
   async getState(id: string): Promise<any> {
-    // 1. Try Redis
-    try {
-      const redis = getRedisClient();
-      if (redis.status === 'ready') {
-        const cached = await redis.get(this.getRedisKey(id));
-        if (cached !== null && cached !== undefined) {
-          const parsed = JSON.parse(cached);
-          this.memoryCache.set(id, parsed);
-          return parsed;
-        }
+    this.requireDatabase();
+    const redis = this.getReadyCache();
+    if (!redis) {
+      const doc = await RuntimeSnapshot.findById(id).read('primary').lean();
+      return doc ? doc.state : null;
+    }
+    const metadata = await RuntimeSnapshot.findById(id).select('revision').read('primary').lean();
+    if (!metadata) return null;
+
+    // MongoDB chooses the revision. A delayed cache fill for a previous revision
+    // cannot overwrite or be read as the newly committed snapshot.
+    if (metadata.revision && redis.status === 'ready') {
+      try {
+        const cached = await cacheCommand(redis.get(this.getRedisKey(metadata.revision)));
+        if (cached != null) return JSON.parse(cached);
+      } catch (error) {
+        logger.warn('[UnifiedRuntimeStateStore] Redis snapshot read failed', { error });
       }
-    } catch (err) {
-      logger.warn(`[UnifiedRuntimeStateStore] Failed to read state from Redis for key ${id}`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
 
-    // 2. Try MongoDB
-    try {
-      if (mongoose.connection.readyState === 1) {
-        const doc = (await RuntimeSnapshot.findOne({ _id: id }).lean()) as IRuntimeSnapshot | null;
-        if (doc && doc.state !== undefined) {
-          this.memoryCache.set(id, doc.state);
-          try {
-            const redis = getRedisClient();
-            if (redis.status === 'ready') {
-              await redis.set(this.getRedisKey(id), JSON.stringify(doc.state), 'EX', 7 * 86400);
-            }
-          } catch {
-            // Ignore Redis backfill failures
-          }
-          return JSON.parse(JSON.stringify(doc.state));
-        }
+    const doc = await RuntimeSnapshot.findById(id).read('primary').lean();
+    if (!doc) return null;
+    if (doc.revision && redis.status === 'ready') {
+      try {
+        await cacheCommand(redis.set(this.getRedisKey(doc.revision), JSON.stringify(doc.state), 'EX', redisTtlSeconds));
+      } catch (error) {
+        logger.warn('[UnifiedRuntimeStateStore] Redis snapshot fill failed', { error });
       }
-    } catch (err) {
-      logger.warn(`[UnifiedRuntimeStateStore] Failed to read state from MongoDB for key ${id}`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
-
-    // 3. Fallback to process-local memory cache
-    const memoryState = this.memoryCache.get(id);
-    return memoryState ? JSON.parse(JSON.stringify(memoryState)) : null;
+    return doc.state;
   }
 
   async querySnapshots(filter: ISnapshotQueryFilter): Promise<any[]> {
-    // 1. Query MongoDB if connected
-    if (mongoose.connection.readyState === 1) {
-      try {
-        const query: any = {};
-        if (filter.userId) query.userId = filter.userId;
-        if (filter.stateType) query.stateType = filter.stateType;
-        if (filter.fromDate || filter.toDate) {
-          query.timestamp = {};
-          if (filter.fromDate) query.timestamp.$gte = filter.fromDate;
-          if (filter.toDate) query.timestamp.$lte = filter.toDate;
-        }
-        const docs = (await RuntimeSnapshot.find(query).sort({ timestamp: 1 }).lean()) as IRuntimeSnapshot[];
-        if (docs.length > 0) {
-          return docs.map((d) => d.state);
-        }
-      } catch (err) {
-        logger.warn('[UnifiedRuntimeStateStore] Failed to query snapshots from MongoDB', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    this.requireDatabase();
+    const query: mongoose.FilterQuery<IRuntimeSnapshot> = {};
+    if (filter.userId) query.userId = filter.userId;
+    if (filter.stateType) query.stateType = filter.stateType;
+    if (filter.fromDate || filter.toDate) {
+      query.timestamp = {
+        ...(filter.fromDate && { $gte: filter.fromDate }),
+        ...(filter.toDate && { $lte: filter.toDate }),
+      };
     }
+    const docs = await RuntimeSnapshot.find(query).sort({ timestamp: 1, _id: 1 }).read('primary').lean();
+    return docs.map(doc => doc.state);
+  }
 
-    // 2. Fallback to memory cache
-    const results: any[] = [];
-    for (const [key, state] of this.memoryCache.entries()) {
-      const meta = this.parseKeyMetadata(key, state);
-      if (filter.userId && meta.userId !== filter.userId) continue;
-      if (filter.stateType && meta.stateType !== filter.stateType) continue;
-      if (filter.fromDate && meta.timestamp && meta.timestamp < filter.fromDate) continue;
-      if (filter.toDate && meta.timestamp && meta.timestamp > filter.toDate) continue;
-      results.push(JSON.parse(JSON.stringify(state)));
+  private requireDatabase(): void {
+    if (mongoose.connection.readyState !== 1) throw new Error('Snapshot storage requires a connected MongoDB');
+  }
+
+  private getReadyCache(): ReturnType<typeof getRedisClient> | undefined {
+    try {
+      const redis = getRedisClient();
+      return redis.status === 'ready' ? redis : undefined;
+    } catch (error) {
+      logger.warn('[UnifiedRuntimeStateStore] Redis snapshot cache unavailable', { error });
+      return undefined;
     }
-    return results;
   }
 }
