@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { notificationService as service } from './notification.service.js';
 import { NotificationRecord } from '../../db/models/notification.model.js';
+import { UserSettings } from '../../db/models/userSettings.model.js';
 
 vi.mock('../../shared/redis/client.js', () => ({
   getRedisClient: () => { throw new Error('Redis offline'); },
@@ -35,6 +36,18 @@ describe('durable notifications with Redis offline', () => {
     expect(await service.create('owner', 'system', 'Disabled', 'Body')).toBeNull();
     expect(await NotificationRecord.countDocuments()).toBe(0);
     expect((await service.getPreferences('owner')).types.achievement).toBe(true);
+  });
+
+  it('delivers a one-day streak reminder unless disabled in settings', async () => {
+    const userId = '000000000000000000000024';
+    await service.triggerStreakReminder(userId, 0);
+    expect(await NotificationRecord.countDocuments({ userId })).toBe(0);
+    await service.triggerStreakReminder(userId, 1);
+    expect(await NotificationRecord.countDocuments({ userId, type: 'streak_reminder' })).toBe(1);
+
+    await UserSettings.create({ userId, notifications: { streakReminder: false } });
+    await service.triggerStreakReminder(userId, 4);
+    expect(await NotificationRecord.countDocuments({ userId, type: 'streak_reminder' })).toBe(1);
   });
 
   it('excludes expired records before TTL cleanup and removes them on cleanup', async () => {

@@ -55,6 +55,8 @@ const CHALLENGE_POOL: Record<'easy' | 'medium' | 'hard', ChallengeTemplate[]> = 
   ],
 };
 
+const CHALLENGE_DIFFICULTIES = ['easy', 'medium', 'hard'] as const;
+
 // ---------------------------------------------------------------------------
 // Adaptive Difficulty Selection
 // ---------------------------------------------------------------------------
@@ -114,40 +116,41 @@ async function getUserTimezone(userId: string): Promise<string> {
   return resolveTimezone(user?.timezone);
 }
 
+async function seedChallenge(date: string, difficulty: IDailyChallenge['difficulty']) {
+  const key = { date, difficulty };
+  const { difficulty: _difficulty, ...template } = getChallengeForDate(date, difficulty);
+  const now = new Date();
+  // Use the compound unique index for both scheduled and on-demand writes.
+  // Existing challenges keep their IDs, counters, and timestamps.
+  return DailyChallenge.findOneAndUpdate(
+    key,
+    { $setOnInsert: {
+      ...template,
+      completionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    } },
+    { upsert: true, new: true, timestamps: false },
+  ).orFail();
+}
+
+export async function seedDailyChallengeWindow(now = new Date()): Promise<void> {
+  const utcDate = new Date(now);
+  utcDate.setUTCHours(0, 0, 0, 0);
+  for (const offset of [-1, 0, 1]) {
+    const date = new Date(utcDate);
+    date.setUTCDate(date.getUTCDate() + offset);
+    const dateKey = date.toISOString().slice(0, 10);
+    await Promise.all(CHALLENGE_DIFFICULTIES.map(difficulty => seedChallenge(dateKey, difficulty)));
+  }
+}
+
 export async function getTodayChallenge(userId: string) {
   const now = new Date();
   const timezone = await getUserTimezone(userId);
   const dateStr = localDateString(now, timezone);
   const adaptiveDifficulty = await selectAdaptiveDifficulty(userId, dateStr);
-  const challengeKey = { date: dateStr, difficulty: adaptiveDifficulty };
-  let challenge = await DailyChallenge.findOne(challengeKey);
-
-  if (!challenge) {
-    // Use adaptive difficulty for new challenges
-    const seededData = getChallengeForDate(dateStr, adaptiveDifficulty);
-    try {
-      challenge = await DailyChallenge.create({
-        date: dateStr,
-        ...seededData,
-        completionCount: 0,
-      });
-      logger.info('[daily-challenge] Seeded adaptive challenge', {
-        date: dateStr,
-        difficulty: adaptiveDifficulty,
-        title: seededData.title,
-      });
-    } catch (err: any) {
-      if (err?.code === 11000) {
-        challenge = await DailyChallenge.findOne(challengeKey);
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  if (!challenge) {
-    throw new Error('Failed to seed or retrieve daily challenge');
-  }
+  const challenge = await seedChallenge(dateStr, adaptiveDifficulty);
 
   // Check completion
   const completedTx = await XpTransaction.findOne({

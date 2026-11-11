@@ -4,6 +4,7 @@ import { scheduleMaintenanceTasks, startMaintenanceWorker, stopMaintenanceWorker
 
 const queue = vi.hoisted(() => ({
   add: vi.fn().mockResolvedValue(undefined),
+  removeRepeatable: vi.fn().mockResolvedValue(true),
   on: vi.fn(),
   close: vi.fn().mockResolvedValue(undefined),
   process: vi.fn(),
@@ -12,6 +13,7 @@ const queue = vi.hoisted(() => ({
 vi.mock('bullmq', () => ({
   Queue: class {
     add = queue.add;
+    removeRepeatable = queue.removeRepeatable;
     close = queue.close;
   },
   Worker: class {
@@ -29,6 +31,14 @@ it('registers and dispatches a daily UTC audit using the original scheduled time
   try {
     startMaintenanceWorker();
     await scheduleMaintenanceTasks();
+    expect(queue.removeRepeatable).toHaveBeenCalledWith(
+      'streak-at-risk-check', { pattern: '0 18 * * *' }, 'maintenance-streak-at-risk',
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      'streak-at-risk-check',
+      { task: 'streak_at_risk_check' },
+      expect.objectContaining({ repeat: { every: 3_600_000 } }),
+    );
     expect(queue.add).toHaveBeenCalledWith(
       'audit-public-profiles',
       { task: 'audit_public_profiles' },

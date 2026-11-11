@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { User, UserXp, UserAnalytics, XpTransaction, DailyChallenge, DsaProblem, DsaSubmission } from '../../../db/models/index.js';
-import { checkChallengeCompletion, getTodayChallenge } from '../../../modules/daily-challenge/daily-challenge.service.js';
+import { checkChallengeCompletion, getTodayChallenge, seedDailyChallengeWindow } from '../../../modules/daily-challenge/daily-challenge.service.js';
 import challengeRoutes from '../../../modules/daily-challenge/daily-challenge.routes.js';
 import { errorHandler } from '../../../middleware/error.js';
 import { eventBus } from '../../../shared/sse/index.js';
@@ -223,6 +223,32 @@ it('converges concurrent first reads on one document per tier', async () => {
   expect(new Set(results.map(r => r.challenge.id)).size).toBe(2);
   expect(await DailyChallenge.countDocuments({ date: '2026-10-28' })).toBe(2);
   expect(await XpTransaction.countDocuments({})).toBe(0);
+});
+
+it('seeds all tiers across UTC rollover while preserving existing challenges', async () => {
+  await User.findByIdAndUpdate(ownerId, { timezone: 'America/Los_Angeles' });
+  await User.findByIdAndUpdate(otherId, { timezone: 'Asia/Kolkata' });
+  await UserAnalytics.create({ userId: otherId, currentStreak: 30 });
+  const existing = await seedChallenge(12);
+  vi.setSystemTime(new Date('2026-10-28T00:30:00Z'));
+
+  const [, , west, east] = await Promise.all([
+    seedDailyChallengeWindow(),
+    seedDailyChallengeWindow(),
+    getTodayChallenge(ownerId),
+    getTodayChallenge(otherId),
+  ]);
+  expect(west.challenge).toMatchObject({ date: '2026-10-27', difficulty: 'easy' });
+  expect(east.challenge).toMatchObject({ date: '2026-10-28', difficulty: 'hard' });
+  const seeded = await DailyChallenge.find().lean();
+  expect(seeded.map(({ date, difficulty }) => `${date}/${difficulty}`).sort()).toEqual(
+    ['27', '28', '29'].flatMap(day => ['easy', 'hard', 'medium'].map(tier => `2026-10-${day}/${tier}`)),
+  );
+  expect(await DailyChallenge.findById(existing._id).lean()).toMatchObject({
+    completionCount: 12,
+    title: existing.title,
+    updatedAt: existing.updatedAt,
+  });
 });
 
 it('uses different local dates at the same instant and local weekends for adaptation', async () => {
