@@ -217,6 +217,8 @@ export interface ApiDsaCategory {
   mediumSolved: number;
   hardCount: number;
   hardSolved: number;
+  unknownCount?: number;
+  unknownSolved?: number;
 }
 
 export interface ApiDsaStats {
@@ -231,6 +233,9 @@ export interface ApiDsaStats {
   mediumTotal: number;
   hardSolved: number;
   hardTotal: number;
+  unknownSolved?: number;
+  unknownTotal?: number;
+  provenance?: ApiDsaSolveProvenance;
   averageTime: number;       // seconds
   fastestSolve: number;      // seconds
   categories: ApiDsaCategory[];
@@ -252,7 +257,15 @@ export interface ApiDsaListResponse {
   stats: ApiDsaStats;
 }
 
+export interface ApiDsaSolveProvenance {
+  manualSolved: number;
+  syncedSolved: number;
+  dedupedTotalSolved: number;
+}
+
 export interface ApiDsaDashboardResponse {
+  solvedByDifficulty?: import('./dsa').DsaDifficultyCounts;
+  provenance?: ApiDsaSolveProvenance;
   stats: Array<{ label: string; value: string; icon: string }>;
   heatmap: number[];
   submissions: Array<{
@@ -357,6 +370,8 @@ export interface ApiDsaTopicAnalytics {
   mediumSolved: number;
   hardCount: number;
   hardSolved: number;
+  unknownCount?: number;
+  unknownSolved?: number;
   solveRate: number;
 }
 

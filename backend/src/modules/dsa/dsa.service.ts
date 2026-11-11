@@ -4,6 +4,8 @@ import { Types } from 'mongoose';
 import { DsaProblem, DsaTopicProgress, DsaSubmission, DsaContest, DailyActivity, PlatformStats } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 import { escapeRegExp } from '../../shared/regex.js';
+import { dsaProblemIdentity } from './dsa-problem-identity.js';
+import { reconcileUserDsaSummary } from './dsa-reconciliation.js';
 import { isReservedPlatformTopic } from './dsa.constants.js';
 import type {
   ApiDsaListResponse,
@@ -17,14 +19,11 @@ import type {
   ApiDsaDashboardResponse,
   ApiDsaSummaryItem,
   ApiDsaDashboardSubmission,
-  ApiDsaTopic,
-  ApiDsaPlatformOverviewItem,
   ApiDsaSubmissionsListResponse,
   ApiDsaSubmissionEntry,
   ApiDsaContestsListResponse,
   ApiDsaContest,
   ApiDsaTopicsListResponse,
-  ApiDsaTopicAnalytics,
   ApiDsaHeatmapResponse,
 } from '../../types/api.types.js';
 import { parsePaginationParams, createPagination, getSkipCount, buildSortOptions } from '../../shared/pagination.js';
@@ -202,24 +201,12 @@ export async function getDashboard(userId: string): Promise<ApiDsaDashboardRespo
 
   // Rolling 365-day DSA-only heatmap (LeetCode + Codeforces)
   const t0 = Date.now();
-  const [problemStats, topicProgress, recentSubmissions, platformStatsArr, heatmapData] = await Promise.all([
-    DsaProblem.aggregate([
-      { $match: { userId: userObjId } },
-      {
-        $group: {
-          _id: null,
-          totalSolved: { $sum: { $cond: [{ $eq: ['$status', 'solved'] }, 1, 0] } },
-        },
-      },
-    ]),
-    DsaTopicProgress.find({ userId: userObjId }).lean(),
+  const [summary, recentSubmissions, heatmapData] = await Promise.all([
+    reconcileUserDsaSummary(userId),
     DsaSubmission.find({ userId: userObjId })
       .sort({ submittedAt: -1 })
       .limit(20)
       .populate('problemId', 'title category difficulty')
-      .lean(),
-    PlatformStats.find({ userId: userObjId })
-      .select({ platformName: 1, totalSolved: 1, rating: 1 })
       .lean(),
     generateRollingHeatmap(userId),
   ]);
@@ -234,13 +221,8 @@ export async function getDashboard(userId: string): Promise<ApiDsaDashboardRespo
   const currentStreak = streaks.current;
   const maxStreak = streaks.longest;
 
-  const localSolved = (problemStats[0]?.totalSolved as number) ?? 0;
-  // Use sum of DSA platform solved counts (exclude GitHub)
-  const dsaPlatforms = platformStatsArr.filter((p: any) => p.platformName !== 'github');
-  const platformTotalSolved = dsaPlatforms.reduce((sum: number, p: any) => sum + (p.totalSolved ?? 0), 0);
-  const totalSolved = localSolved > 0 ? localSolved : platformTotalSolved;
-
-  const bestRating = dsaPlatforms.reduce((max: number, p: any) => Math.max(max, p.rating ?? 0), 0);
+  const totalSolved = summary.totals.solved;
+  const bestRating = summary.platformOverview.reduce((max, platform) => Math.max(max, platform.rating ?? 0), 0);
 
   const stats: ApiDsaSummaryItem[] = [
     { label: 'Problems Solved', value: String(totalSolved), icon: 'check-circle' },
@@ -249,17 +231,7 @@ export async function getDashboard(userId: string): Promise<ApiDsaDashboardRespo
     { label: 'Max Streak', value: `${maxStreak} days`, icon: 'trophy' },
   ];
 
-  const topics: ApiDsaTopic[] = topicProgress.map((t: any) => ({
-    name: t.topicName,
-    progress: t.totalProblems > 0 ? Math.round((t.solvedCount / t.totalProblems) * 100) : 0,
-  }));
-
-  const platformOverview: ApiDsaPlatformOverviewItem[] = platformStatsArr
-    .filter((p: any) => p.platformName !== 'github')
-    .map((p: any) => ({
-      platform: p.platformName,
-      stat: p.rating ? `Rating ${p.rating}` : `Solved ${p.totalSolved}`,
-    }));
+  const topics = summary.topics.map(topic => ({ name: topic.topicName, progress: topic.solveRate }));
 
   type PopulatedProblem = { title?: string; category?: string; difficulty?: string } | null;
 
@@ -281,7 +253,12 @@ export async function getDashboard(userId: string): Promise<ApiDsaDashboardRespo
     };
   });
 
-  return { stats, heatmap, submissions, contests: [], topics, platformOverview };
+  return {
+    stats, heatmap, submissions, contests: [], topics,
+    platformOverview: summary.platformOverview,
+    solvedByDifficulty: summary.solvedByDifficulty,
+    provenance: summary.provenance,
+  };
 }
 
 export async function getProblems(userId: string, filters: ApiDsaFilters): Promise<ApiDsaListResponse> {
@@ -344,6 +321,7 @@ export async function createProblem(userId: string, payload: ApiDsaProblemCreate
     _id: problemId,
     // Manual entries share the index with imported problems but have no provider ID.
     externalId: 'manual:' + problemId.toHexString(),
+    problemKey: dsaProblemIdentity(payload).key,
     status: 'unsolved',
     submissionCount: 0,
     isFavorite: false,
@@ -490,64 +468,28 @@ async function reconcileBulkTopicProgress(userId: Types.ObjectId, topicName: str
 }
 
 export async function getStats(userId: string): Promise<ApiDsaStats> {
-  const [problemStats, topics] = await Promise.all([
-    DsaProblem.aggregate([
-      { $match: { userId: new Types.ObjectId(userId) } },
-      {
-        $group: {
-          _id: null,
-          totalProblems: { $sum: 1 },
-          totalSolved: { $sum: { $cond: [{ $eq: ['$status', 'solved'] }, 1, 0] } },
-          totalAttempted: { $sum: { $cond: [{ $eq: ['$status', 'attempted'] }, 1, 0] } },
-          totalUnsolved: { $sum: { $cond: [{ $eq: ['$status', 'unsolved'] }, 1, 0] } },
-          totalRevisit: { $sum: { $cond: [{ $eq: ['$status', 'revisit'] }, 1, 0] } },
-          easySolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'easy'] }] }, 1, 0] } },
-          easyTotal: { $sum: { $cond: [{ $eq: ['$difficulty', 'easy'] }, 1, 0] } },
-          mediumSolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'medium'] }] }, 1, 0] } },
-          mediumTotal: { $sum: { $cond: [{ $eq: ['$difficulty', 'medium'] }, 1, 0] } },
-          hardSolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'hard'] }] }, 1, 0] } },
-          hardTotal: { $sum: { $cond: [{ $eq: ['$difficulty', 'hard'] }, 1, 0] } },
-          avgTime: { $avg: '$timeTaken' },
-          fastestSolve: { $min: '$timeTaken' },
-        },
-      },
-    ]),
-    DsaTopicProgress.find({ userId: new Types.ObjectId(userId) }).lean(),
-  ]);
-
-  const stats = problemStats[0] || {
-    totalProblems: 0, totalSolved: 0, totalAttempted: 0, totalUnsolved: 0, totalRevisit: 0,
-    easySolved: 0, easyTotal: 0, mediumSolved: 0, mediumTotal: 0, hardSolved: 0, hardTotal: 0,
-    avgTime: 0, fastestSolve: 0,
-  };
-
+  const [summary, weeklyProgress] = await Promise.all([reconcileUserDsaSummary(userId), getWeeklyProgress(userId)]);
   return {
-    totalProblems: stats.totalProblems,
-    totalSolved: stats.totalSolved,
-    totalAttempted: stats.totalAttempted,
-    totalUnsolved: stats.totalUnsolved,
-    totalRevisit: stats.totalRevisit,
-    easySolved: stats.easySolved,
-    easyTotal: stats.easyTotal,
-    mediumSolved: stats.mediumSolved,
-    mediumTotal: stats.mediumTotal,
-    hardSolved: stats.hardSolved,
-    hardTotal: stats.hardTotal,
-    averageTime: Math.round(stats.avgTime) || 0,
-    fastestSolve: stats.fastestSolve || 0,
-    categories: topics.map((t) => ({
-      name: t.topicName,
-      slug: t.topicName.toLowerCase().replace(/\s+/g, '-'),
-      totalProblems: t.totalProblems,
-      solvedCount: t.solvedCount,
-      easyCount: t.easyCount,
-      easySolved: t.easySolved,
-      mediumCount: t.mediumCount,
-      mediumSolved: t.mediumSolved,
-      hardCount: t.hardCount,
-      hardSolved: t.hardSolved,
+    totalProblems: summary.totalProblems,
+    totalSolved: summary.totals.solved,
+    totalAttempted: summary.totals.attempted,
+    totalUnsolved: summary.totals.unsolved,
+    totalRevisit: summary.totals.revisit,
+    easySolved: summary.solvedByDifficulty.easy,
+    easyTotal: summary.totalByDifficulty.easy,
+    mediumSolved: summary.solvedByDifficulty.medium,
+    mediumTotal: summary.totalByDifficulty.medium,
+    hardSolved: summary.solvedByDifficulty.hard,
+    hardTotal: summary.totalByDifficulty.hard,
+    unknownSolved: summary.solvedByDifficulty.unknown,
+    unknownTotal: summary.totalByDifficulty.unknown,
+    provenance: summary.provenance,
+    averageTime: summary.averageTime,
+    fastestSolve: summary.fastestSolve,
+    categories: summary.topics.map(({ topicName, solveRate: _solveRate, ...counts }) => ({
+      ...counts, name: topicName, slug: topicName.toLowerCase().replace(/\s+/g, '-'),
     })),
-    weeklyProgress: await getWeeklyProgress(userId),
+    weeklyProgress,
   };
 }
 
@@ -725,76 +667,8 @@ export async function getContests(
 // ---------------------------------------------------------------------------
 
 export async function getTopicAnalytics(userId: string): Promise<ApiDsaTopicsListResponse> {
-  // First try DsaTopicProgress (pre-aggregated)
-  const topicProgress = await DsaTopicProgress.find({ userId: new Types.ObjectId(userId) }).lean();
-
-  let topics: ApiDsaTopicAnalytics[];
-  let totalSolved = 0;
-  let totalProblems = 0;
-
-  if (topicProgress.length > 0) {
-    topics = topicProgress.map((t) => {
-      totalSolved += t.solvedCount;
-      totalProblems += t.totalProblems;
-      return {
-        topicName: t.topicName,
-        totalProblems: t.totalProblems,
-        solvedCount: t.solvedCount,
-        easyCount: t.easyCount,
-        easySolved: t.easySolved,
-        mediumCount: t.mediumCount,
-        mediumSolved: t.mediumSolved,
-        hardCount: t.hardCount,
-        hardSolved: t.hardSolved,
-        solveRate: t.totalProblems > 0 ? Math.round((t.solvedCount / t.totalProblems) * 100) : 0,
-      };
-    });
-  } else {
-    // Fallback: aggregate from DsaProblem.category + tags
-    const aggregated = await DsaProblem.aggregate([
-      { $match: { userId: new Types.ObjectId(userId) } },
-      {
-        $group: {
-          _id: '$category',
-          totalProblems: { $sum: 1 },
-          solvedCount: { $sum: { $cond: [{ $eq: ['$status', 'solved'] }, 1, 0] } },
-          easyCount: { $sum: { $cond: [{ $eq: ['$difficulty', 'easy'] }, 1, 0] } },
-          easySolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'easy'] }] }, 1, 0] } },
-          mediumCount: { $sum: { $cond: [{ $eq: ['$difficulty', 'medium'] }, 1, 0] } },
-          mediumSolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'medium'] }] }, 1, 0] } },
-          hardCount: { $sum: { $cond: [{ $eq: ['$difficulty', 'hard'] }, 1, 0] } },
-          hardSolved: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'solved'] }, { $eq: ['$difficulty', 'hard'] }] }, 1, 0] } },
-        },
-      },
-      { $sort: { solvedCount: -1 } },
-    ]);
-
-    topics = aggregated.map((t) => {
-      totalSolved += t.solvedCount;
-      totalProblems += t.totalProblems;
-      return {
-        topicName: t._id || 'Uncategorized',
-        totalProblems: t.totalProblems,
-        solvedCount: t.solvedCount,
-        easyCount: t.easyCount,
-        easySolved: t.easySolved,
-        mediumCount: t.mediumCount,
-        mediumSolved: t.mediumSolved,
-        hardCount: t.hardCount,
-        hardSolved: t.hardSolved,
-        solveRate: t.totalProblems > 0 ? Math.round((t.solvedCount / t.totalProblems) * 100) : 0,
-      };
-    });
-  }
-
-  return {
-    topics,
-    summary: {
-      totalTopics: topics.length,
-      totalSolved,
-      totalProblems,
-    },
-  };
+  const { topics, totals, totalProblems } = await reconcileUserDsaSummary(userId);
+  return { topics, summary: { totalTopics: topics.length, totalSolved: totals.solved, totalProblems } };
 }
 
 async function updateTopicProgress(userId: string, topicName: string, difficulty: string): Promise<void> {
