@@ -63,6 +63,7 @@ router.get('/:id', authMiddleware, validateParams(projectIdParamsSchema), asyncH
 router.patch('/:id', authMiddleware, validateParams(projectIdParamsSchema), validateBody(projectUpdateSchema), asyncHandler(controller.updateProject));
 router.delete('/:id', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.deleteProject));
 router.get('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getProjectTasks));
+router.get('/:id/tasks/overdue', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getOverdueTasks));
 router.post('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), validateBody(taskCreateSchema), asyncHandler(controller.createProjectTask));
 router.patch('/:id/tasks/:taskId', authMiddleware, validateParams(taskParamsSchema), validateBody(taskUpdateSchema), asyncHandler(controller.updateProjectTask));
 router.delete('/:id/tasks/:taskId', authMiddleware, validateParams(taskParamsSchema), asyncHandler(controller.deleteProjectTask));

@@ -58,8 +58,19 @@ export async function getProjectStats(req: AuthenticatedRequest, res: Response):
 }
 
 export async function getProjectTasks(req: AuthenticatedRequest, res: Response): Promise<void> {
-  const tasks = await service.getProjectTasks(req.user!.id, req.params.id as string);
+  const filters: service.ProjectTaskFilters = {
+    priority: req.query.priority as service.ProjectTaskFilters['priority'],
+    status: req.query.status as service.ProjectTaskFilters['status'],
+    milestoneId: req.query.milestoneId as string,
+    overdueOnly: req.query.overdueOnly === 'true',
+  };
+  const tasks = await service.getProjectTasks(req.user!.id, req.params.id as string, filters);
   successResponse(res, tasks, 'Project tasks retrieved successfully');
+}
+
+export async function getOverdueTasks(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const tasks = await service.getOverdueTasks(req.user!.id, req.params.id as string);
+  successResponse(res, tasks, 'Overdue project tasks retrieved successfully');
 }
 
 export async function createProjectTask(req: AuthenticatedRequest, res: Response): Promise<void> {

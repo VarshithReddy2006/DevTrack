@@ -514,6 +514,7 @@ export interface ApiProjectTask {
   rank: string | null;
   createdAt: string;
   updatedAt: string;
+  isOverdue?: boolean;
 }
 
 export interface ApiProjectStats {

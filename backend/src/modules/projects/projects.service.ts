@@ -251,7 +251,18 @@ export async function getProjectStats(userId: string): Promise<ApiProjectStats> 
   };
 }
 
-export async function getProjectTasks(userId: string, projectId: string): Promise<ApiProjectTask[]> {
+export interface ProjectTaskFilters {
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  status?: 'todo' | 'in_progress' | 'review' | 'done';
+  milestoneId?: string;
+  overdueOnly?: boolean;
+}
+
+export async function getProjectTasks(
+  userId: string,
+  projectId: string,
+  filters?: ProjectTaskFilters
+): Promise<ApiProjectTask[]> {
   // Verify project exists and belongs to user
   const project = await Project.findOne({
     _id: new Types.ObjectId(projectId),
@@ -260,24 +271,51 @@ export async function getProjectTasks(userId: string, projectId: string): Promis
 
   if (!project) return [];
 
-  const tasks = await ProjectTask.find({ projectId: new Types.ObjectId(projectId) }).sort({ rank: 1, createdAt: -1, _id: 1 });
+  const query: Record<string, unknown> = {
+    projectId: new Types.ObjectId(projectId),
+  };
 
-  return tasks.map((task) => ({
-    id: task._id.toString(),
-    projectId: task.projectId.toString(),
-    milestoneId: task.milestoneId,
-    title: task.title,
-    description: task.description,
-    status: task.status,
-    priority: task.priority,
-    assigneeId: task.assigneeId,
-    labels: task.labels,
-    dueDate: task.dueDate?.toISOString() || null,
-    completedAt: task.completedAt?.toISOString() || null,
-    rank: task.rank ?? null,
-    createdAt: task.createdAt.toISOString(),
-    updatedAt: task.updatedAt.toISOString(),
-  }));
+  if (filters?.priority) {
+    query.priority = filters.priority;
+  }
+  if (filters?.status) {
+    query.status = filters.status;
+  }
+  if (filters?.milestoneId) {
+    query.milestoneId = filters.milestoneId;
+  }
+  if (filters?.overdueOnly) {
+    query.dueDate = { $lt: new Date() };
+    query.status = { $ne: 'done' };
+  }
+
+  const tasks = await ProjectTask.find(query).sort({ rank: 1, createdAt: -1, _id: 1 });
+  const now = new Date();
+
+  return tasks.map((task) => {
+    const isOverdue = Boolean(task.dueDate && task.dueDate < now && task.status !== 'done');
+    return {
+      id: task._id.toString(),
+      projectId: task.projectId.toString(),
+      milestoneId: task.milestoneId,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority,
+      assigneeId: task.assigneeId,
+      labels: task.labels,
+      dueDate: task.dueDate?.toISOString() || null,
+      completedAt: task.completedAt?.toISOString() || null,
+      rank: task.rank ?? null,
+      createdAt: task.createdAt.toISOString(),
+      updatedAt: task.updatedAt.toISOString(),
+      isOverdue,
+    };
+  });
+}
+
+export async function getOverdueTasks(userId: string, projectId: string): Promise<ApiProjectTask[]> {
+  return getProjectTasks(userId, projectId, { overdueOnly: true });
 }
 
 export async function createProjectTask(
