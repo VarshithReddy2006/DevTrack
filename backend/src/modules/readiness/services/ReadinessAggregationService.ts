@@ -3,7 +3,7 @@ import { SkillIntelligenceEngine } from '../intelligence/SkillIntelligenceEngine
 import { ProjectIntelligenceEngine } from '../intelligence/ProjectIntelligenceEngine.js';
 import { SkillNodeVerificationEngine } from '../engine/SkillNodeVerificationEngine.js';
 import { BenchmarkEngine } from '../benchmark/BenchmarkEngine.js';
-import { TrustAwareReadinessScoringEngine } from '../scoring/TrustAwareReadinessScoringEngine.js';
+import { TrustAwareReadinessScoringEngine, type ReadinessScore } from '../scoring/TrustAwareReadinessScoringEngine.js';
 import { ProviderHealthRegistry } from '../provider/ProviderHealthRegistry.js';
 import { logger } from '../../../shared/logger.js';
 
@@ -29,6 +29,9 @@ export interface AggregationResult {
   readinessTier?: string;
   isDegraded: boolean;
   staleProviders: string[];
+  completeness?: number;
+  missingPillars?: string[];
+  confidenceLevel?: number;
   errors: string[];
 }
 
@@ -48,11 +51,13 @@ class ReadinessAggregationServiceClass {
       scoring: false,
     };
 
+    let score: ReadinessScore | undefined;
+
     try {
       logger.info('[ReadinessAggregationService] Starting aggregation', { userId, targetRole });
 
       // Check provider health before aggregation
-      const isDegraded = ProviderHealthRegistry.isAnyProviderDegraded();
+      let isDegraded = ProviderHealthRegistry.isAnyProviderDegraded();
       const degradedProviders = ProviderHealthRegistry.getDegradedProviders();
       const staleProviders = degradedProviders.map(p => p.providerId);
 
@@ -113,11 +118,20 @@ class ReadinessAggregationServiceClass {
 
       // Run Trust-Aware Readiness Scoring Engine
       try {
-        const scoringResult = await TrustAwareReadinessScoringEngine.calculateReadinessScore({ userId });
+        const unavailablePillars = [
+          ['DSA', fragments.dsa],
+          ['Skills', fragments.skills],
+          ['Projects', fragments.projects],
+          ['Roadmap', fragments.roadmap],
+          ['Benchmarks', fragments.benchmarks],
+        ].filter(([, succeeded]) => !succeeded).map(([name]) => String(name));
+        score = await TrustAwareReadinessScoringEngine.calculateReadinessScore({ userId, unavailablePillars });
+        isDegraded ||= score.isDegraded;
+        staleProviders.push(...score.staleProviders);
         fragments.scoring = true;
-        logger.info('[ReadinessAggregationService] Readiness score calculated', { 
-          overallScore: scoringResult.overallScore,
-          readinessTier: scoringResult.readinessTier 
+        logger.info('[ReadinessAggregationService] Readiness score calculated', {
+          overallScore: score.overallScore,
+          readinessTier: score.readinessTier,
         });
       } catch (error) {
         const errorMsg = `Readiness scoring failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
@@ -125,9 +139,7 @@ class ReadinessAggregationServiceClass {
         logger.error('[ReadinessAggregationService] Readiness scoring failed', { userId, error });
       }
 
-      // Determine success based on critical fragments
-      const criticalFragments = ['dsa', 'skills', 'projects', 'scoring'];
-      const success = criticalFragments.every(f => fragments[f as keyof typeof fragments]);
+      const success = fragments.scoring;
 
       const result: AggregationResult = {
         success,
@@ -135,7 +147,12 @@ class ReadinessAggregationServiceClass {
         timestamp: new Date(),
         fragments,
         isDegraded,
-        staleProviders,
+        staleProviders: [...new Set(staleProviders)],
+        overallScore: score?.overallScore,
+        readinessTier: score?.readinessTier,
+        completeness: score?.completeness,
+        missingPillars: score?.missingPillars,
+        confidenceLevel: score?.confidenceLevel,
         errors,
       };
 

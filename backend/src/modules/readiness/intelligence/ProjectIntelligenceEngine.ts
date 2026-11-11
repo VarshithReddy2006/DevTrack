@@ -1,4 +1,6 @@
 import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js';
+import { VerifiedProjectIngestionService } from '../services/VerifiedProjectIngestionService.js';
+import { Project } from '../../../db/models/project.model.js';
 import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
 import { SystemDesignSignalExtractor } from './SystemDesignSignalExtractor.js';
 import { logger } from '../../../shared/logger.js';
@@ -17,8 +19,33 @@ export const ProjectIntelligenceEngine = {
     try {
       const { userId } = input;
       
-      // Fetch verified projects
-      const verifiedProjects = await VerifiedProject.find({ userId });
+      const contributorId = await VerifiedProjectIngestionService.ingest(userId);
+      const records = await VerifiedProject.find({ userId, 'verification.status': 'verified' }).lean();
+      const linkedIds = records.flatMap(record =>
+        record.provenance?.linkedRepoUrl && record.projectId ? [record.projectId] : []
+      );
+      const links = linkedIds.length
+        ? await Project.find({ userId, _id: { $in: linkedIds } }).select('repoUrl').lean()
+        : [];
+      const repoByProjectId = new Map(links.map(link => [String(link._id), link.repoUrl]));
+      const activeRecords = records.filter(record => {
+        const source = record.provenance;
+        if (!source) return true;
+        return Boolean(contributorId && source.contributorId === contributorId
+          && (source.discoveredBySync || (source.linkedRepoUrl
+            && repoByProjectId.get(String(record.projectId)) === source.linkedRepoUrl)));
+      });
+      const verifiedProjects = activeRecords.map(project => ({
+        ...project,
+        commitCount: project.metrics?.userCommitCount ?? 0,
+        lastCommitAt: project.metrics?.lastCommitAt,
+        isFork: project.provenance?.isFork ?? project.verification.checks?.notFork === false,
+        fileCount: project.provenance?.fileCount ?? 0,
+        files: project.provenance?.files ?? [],
+        fileStructure: project.provenance?.files ?? [],
+        hasDocumentation: project.provenance?.files.some(file => /(^|\/)readme/i.test(file)) ?? false,
+        hasTests: project.provenance?.hasTests ?? false,
+      }));
       
       // Detect tutorial projects and cloned repositories
       const projectQualityAnalysis = this.analyzeProjectQuality(verifiedProjects);
@@ -386,7 +413,7 @@ export const ProjectIntelligenceEngine = {
     
     const averageReadmeLength = projects.length > 0 ? totalReadmeLength / projects.length : 0;
     const documentationQuality = Math.min(100, averageReadmeLength / 10);
-    const technicalExplanationClarity = Math.min(100, hasDocumentationCount / projects.length * 100);
+    const technicalExplanationClarity = projects.length ? hasDocumentationCount / projects.length * 100 : 0;
     const communicationMaturity = (documentationQuality + technicalExplanationClarity) / 2;
     
     return {
@@ -480,7 +507,7 @@ export const ProjectIntelligenceEngine = {
   } {
     const lastSync = projects.length > 0
       ? projects.reduce((latest, p) => {
-          const updatedAt = p.updatedAt ? new Date(p.updatedAt) : new Date(0);
+          const updatedAt = p.provenance?.checkedAt ?? p.updatedAt ?? new Date(0);
           return updatedAt > latest ? updatedAt : latest;
         }, new Date(0))
       : new Date(0);

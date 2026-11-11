@@ -3,12 +3,16 @@ import { ReadinessDsa } from '../../../db/models/readinessDsa.model.js';
 import { ReadinessSkills } from '../../../db/models/readinessSkills.model.js';
 import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js';
 import { ReadinessRoadmap } from '../../../db/models/readinessRoadmap.model.js';
-import { ReadinessBenchmarks } from '../../../db/models/readinessBenchmarks.model.js';
+import { ReadinessBenchmarks, type IReadinessBenchmarks } from '../../../db/models/readinessBenchmarks.model.js';
 import { CareerIntent } from '../../../db/models/careerIntent.model.js';
 import { logger } from '../../../shared/logger.js';
 
+export const READINESS_FRESHNESS_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface ScoringInput {
   userId: string;
+  unavailablePillars?: string[];
+  persist?: boolean;
 }
 
 export interface ReadinessScore {
@@ -21,6 +25,8 @@ export interface ReadinessScore {
   confidenceLevel: number; // 0-100
   isDegraded: boolean;
   staleProviders: string[];
+  missingPillars: string[];
+  completeness: number;
   scoringExplanation: string[];
   evidenceChain: string[];
   roleAlignmentScore: number;
@@ -37,55 +43,76 @@ export const TrustAwareReadinessScoringEngine = {
     try {
       const { userId } = input;
       
-      // Fetch all readiness intelligence fragments
-      const [core, dsa, skills, projects, roadmap, benchmarks, careerIntent] = await Promise.all([
-        ReadinessCore.findOne({ userId }),
-        ReadinessDsa.findOne({ userId }),
-        ReadinessSkills.findOne({ userId }),
-        ReadinessProjects.findOne({ userId }),
-        ReadinessRoadmap.findOne({ userId }),
-        ReadinessBenchmarks.findOne({ userId }),
-        CareerIntent.findOne({ userId }),
+      const readInput = async <T>(query: PromiseLike<T>): Promise<T | null> => {
+        try {
+          return await query;
+        } catch (error) {
+          logger.warn('[TrustAwareReadinessScoringEngine] Readiness input unavailable', { userId, error });
+          return null;
+        }
+      };
+      const [dsa, skills, projects, roadmap, benchmarks, careerIntent] = await Promise.all([
+        readInput(ReadinessDsa.findOne({ userId })),
+        readInput(ReadinessSkills.findOne({ userId })),
+        readInput(ReadinessProjects.findOne({ userId })),
+        readInput(ReadinessRoadmap.findOne({ userId })),
+        readInput(ReadinessBenchmarks.findOne({ userId })),
+        readInput(CareerIntent.findOne({ userId })),
       ]);
-      
-      // Check for degraded mode conditions
-      const degradationCheck = this.checkDegradation(core, dsa, skills, projects, roadmap, benchmarks);
-      const isDegraded = degradationCheck.isDegraded;
-      const staleProviders = degradationCheck.staleProviders;
-      
-      // Calculate component scores with confidence weighting
-      const dsaScore = this.calculateDSAScore(dsa, isDegraded);
-      const skillsScore = this.calculateSkillsScore(skills, isDegraded);
-      const projectsScore = this.calculateProjectsScore(projects, isDegraded);
-      const roadmapScore = this.calculateRoadmapScore(roadmap, isDegraded);
-      
-      // Calculate benchmark percentile
-      const benchmarkPercentile = this.calculateBenchmarkPercentile(benchmarks);
-      
-      // Calculate role alignment
-      const roleAlignmentScore = this.calculateRoleAlignment(careerIntent, skills, projects);
-      
-      // Calculate overall score with weighted aggregation
-      const overallScore = this.calculateOverallScore(
-        dsaScore,
-        skillsScore,
-        projectsScore,
-        roadmapScore,
-        benchmarkPercentile,
-        roleAlignmentScore,
-        isDegraded
+
+      const missingPillars: string[] = [];
+      const staleProviders: string[] = [];
+      const freshnessThreshold = Date.now() - READINESS_FRESHNESS_MS;
+      const available = (name: string, model: { computedAt?: Date } | null) => {
+        if (!model || input.unavailablePillars?.includes(name)) {
+          missingPillars.push(name);
+          return false;
+        }
+        if (!model.computedAt || model.computedAt.getTime() < freshnessThreshold) {
+          staleProviders.push(name);
+          return false;
+        }
+        return true;
+      };
+
+      const hasDsa = available('DSA', dsa);
+      const hasSkills = available('Skills', skills);
+      const hasProjects = available('Projects', projects?.evidenceCoverage ? projects : null);
+      const hasRoadmap = available('Roadmap', roadmap);
+      const hasBenchmarks = available('Benchmarks', benchmarks);
+      const hasRoleAlignment = Boolean(careerIntent && (hasSkills || hasProjects));
+      const isDegraded = missingPillars.length > 0 || staleProviders.length > 0;
+
+      const dsaScore = this.calculateDSAScore(dsa, !hasDsa);
+      const skillsScore = this.calculateSkillsScore(skills, !hasSkills);
+      const projectsScore = this.calculateProjectsScore(projects, !hasProjects);
+      const roadmapScore = this.calculateRoadmapScore(roadmap, !hasRoadmap);
+      const benchmarkPercentile = hasBenchmarks ? this.calculateBenchmarkPercentile(benchmarks) : 0;
+      const roleAlignmentScore = hasRoleAlignment
+        ? this.calculateRoleAlignment(careerIntent, hasSkills ? skills : null, hasProjects ? projects : null)
+        : 0;
+
+      const pillars = [
+        { available: hasDsa, score: dsaScore, weight: 20, confidence: dsa?.confidenceScore },
+        { available: hasSkills, score: skillsScore, weight: 30, confidence: skills?.confidenceScore },
+        { available: hasProjects, score: projectsScore, weight: 25, confidence: projects?.confidenceScore },
+        { available: hasRoadmap, score: roadmapScore, weight: 15, confidence: roadmap?.confidenceScore },
+      ].filter(pillar => pillar.available);
+      const evidenceWeight = pillars.reduce((sum, pillar) => sum + pillar.weight, 0);
+      const completeness = Math.round(evidenceWeight / 90 * 100);
+      const confidenceLevel = Math.round(
+        pillars.reduce((sum, pillar) => sum + (pillar.confidence ?? 0) * pillar.weight, 0) / 90
       );
-      
-      // Calculate confidence level
-      const confidenceLevel = this.calculateConfidenceLevel(
-        dsa,
-        skills,
-        projects,
-        roadmap,
-        benchmarks,
-        isDegraded
-      );
-      
+      const weight = evidenceWeight + (hasRoleAlignment ? 10 : 0);
+      const weightedScore = pillars.reduce((sum, pillar) => sum + pillar.score * pillar.weight, 0)
+        + roleAlignmentScore * 10;
+      const benchmarkAdjustment = hasBenchmarks && benchmarks?.cohortSegments?.length
+        ? this.benchmarkAdjustment(benchmarkPercentile)
+        : 0;
+      const overallScore = weight
+        ? Math.min(100, Math.max(0, Math.round(weightedScore / weight + benchmarkAdjustment)))
+        : 0;
+
       // Generate scoring explanation
       const scoringExplanation = this.generateScoringExplanation(
         overallScore,
@@ -100,39 +127,43 @@ export const TrustAwareReadinessScoringEngine = {
       
       // Generate evidence chain
       const evidenceChain = this.generateEvidenceChain(
-        dsa,
-        skills,
-        projects,
-        roadmap
+        hasDsa ? dsa : null,
+        hasSkills ? skills : null,
+        hasProjects ? projects : null,
+        hasRoadmap ? roadmap : null
       );
       
       // Determine readiness tier
       const readinessTier = this.determineReadinessTier(overallScore, confidenceLevel);
       
-      // Update core readiness model
-      await ReadinessCore.findOneAndUpdate(
-        { userId },
-        {
-          overallScore,
-          dsaScore,
-          skillsScore,
-          projectsScore,
-          roadmapScore,
-          benchmarkPercentile,
-          roleAlignmentScore,
-          confidenceLevel,
-          isDegraded,
-          staleProviders,
-          scoringExplanation,
-          evidenceChain,
-          readinessTier,
-          snapshotVersion: '1.0.0',
-          analyticsVersion: '1.0.0',
-          scoringVersion: '1.0.0',
-          computedAt: new Date(),
-        },
-        { upsert: true, new: true }
-      );
+      if (input.persist !== false) {
+        await ReadinessCore.findOneAndUpdate(
+          { userId },
+          {
+            overallScore,
+            dsaScore,
+            skillsScore,
+            projectsScore,
+            roadmapScore,
+            benchmarkPercentile,
+            targetRoleAlignment: roleAlignmentScore,
+            confidence: confidenceLevel,
+            confidenceScore: confidenceLevel,
+            isDegraded,
+            staleProviders,
+            missingPillars,
+            completeness,
+            scoringExplanation,
+            evidenceChain,
+            readinessTier,
+            snapshotVersion: '1.0.0',
+            analyticsVersion: '1.0.0',
+            scoringVersion: '1.1.0',
+            computedAt: new Date(),
+          },
+          { upsert: true, new: true }
+        );
+      }
 
       logger.info('[TrustAwareReadinessScoringEngine] Successfully calculated readiness score', { 
         userId, 
@@ -150,6 +181,8 @@ export const TrustAwareReadinessScoringEngine = {
         confidenceLevel,
         isDegraded,
         staleProviders,
+        missingPillars,
+        completeness,
         scoringExplanation,
         evidenceChain,
         roleAlignmentScore,
@@ -162,44 +195,10 @@ export const TrustAwareReadinessScoringEngine = {
   },
 
   /**
-   * Check for degradation conditions
-   */
-  checkDegradation(
-    core: any,
-    dsa: any,
-    skills: any,
-    projects: any,
-    roadmap: any,
-    benchmarks: any
-  ): { isDegraded: boolean; staleProviders: string[] } {
-    const staleProviders: string[] = [];
-    const now = new Date();
-    const staleThreshold = 7 * 24 * 60 * 60 * 1000; // 7 days in ms
-    
-    const checkFreshness = (model: any, providerName: string) => {
-      if (!model) return true;
-      const computedAt = model.computedAt ? new Date(model.computedAt) : new Date(0);
-      const isStale = (now.getTime() - computedAt.getTime()) > staleThreshold;
-      if (isStale) staleProviders.push(providerName);
-      return isStale;
-    };
-    
-    const dsaStale = checkFreshness(dsa, 'DSA');
-    const skillsStale = checkFreshness(skills, 'Skills');
-    const projectsStale = checkFreshness(projects, 'Projects');
-    const roadmapStale = checkFreshness(roadmap, 'Roadmap');
-    const benchmarksStale = checkFreshness(benchmarks, 'Benchmarks');
-    
-    const isDegraded = dsaStale || skillsStale || projectsStale || roadmapStale || benchmarksStale;
-    
-    return { isDegraded, staleProviders };
-  },
-
-  /**
    * Calculate DSA score with confidence weighting
    */
-  calculateDSAScore(dsa: any, isDegraded: boolean): number {
-    if (!dsa || isDegraded) return 0;
+  calculateDSAScore(dsa: any, unavailable: boolean): number {
+    if (!dsa || unavailable) return 0;
     
     let score = 0;
     
@@ -207,10 +206,10 @@ export const TrustAwareReadinessScoringEngine = {
     score += Math.min(30, (dsa.totalSolves || 0) * 0.3);
     
     // Hard problem progression contributes (max 25 points)
-    score += Math.min(25, dsa.hardProblemProgression * 0.25);
+    score += Math.min(25, (dsa.hardProblemProgression || 0) * 0.25);
     
     // Solve consistency contributes (max 20 points)
-    score += Math.min(20, dsa.solveConsistency * 0.2);
+    score += Math.min(20, (dsa.solveConsistency || 0) * 0.2);
     
     // Confidence score contributes (max 15 points)
     score += Math.min(15, (dsa.confidenceScore || 0) * 0.15);
@@ -224,8 +223,8 @@ export const TrustAwareReadinessScoringEngine = {
   /**
    * Calculate Skills score with confidence weighting
    */
-  calculateSkillsScore(skills: any, isDegraded: boolean): number {
-    if (!skills || isDegraded) return 0;
+  calculateSkillsScore(skills: any, unavailable: boolean): number {
+    if (!skills || unavailable) return 0;
     
     let score = 0;
     
@@ -248,8 +247,8 @@ export const TrustAwareReadinessScoringEngine = {
   /**
    * Calculate Projects score with confidence weighting
    */
-  calculateProjectsScore(projects: any, isDegraded: boolean): number {
-    if (!projects || isDegraded) return 0;
+  calculateProjectsScore(projects: any, unavailable: boolean): number {
+    if (!projects || unavailable) return 0;
     
     let score = 0;
     
@@ -274,8 +273,8 @@ export const TrustAwareReadinessScoringEngine = {
   /**
    * Calculate Roadmap score with confidence weighting
    */
-  calculateRoadmapScore(roadmap: any, isDegraded: boolean): number {
-    if (!roadmap || isDegraded) return 0;
+  calculateRoadmapScore(roadmap: any, unavailable: boolean): number {
+    if (!roadmap || unavailable) return 0;
     
     let score = 0;
     
@@ -299,14 +298,14 @@ export const TrustAwareReadinessScoringEngine = {
   /**
    * Calculate benchmark percentile
    */
-  calculateBenchmarkPercentile(benchmarks: any): number {
+  calculateBenchmarkPercentile(benchmarks: IReadinessBenchmarks | null): number {
     if (!benchmarks) return 0;
     
     // Use the average percentile across all metrics
-    const rankings = benchmarks.percentileRankings || [];
+    const rankings = benchmarks.cohortSegments || [];
     if (rankings.length === 0) return 0;
     
-    const totalPercentile = rankings.reduce((sum: number, r: any) => sum + r.percentile, 0);
+    const totalPercentile = rankings.reduce((sum, cohort) => sum + cohort.percentileRanking, 0);
     return Math.round(totalPercentile / rankings.length);
   },
 
@@ -349,72 +348,11 @@ export const TrustAwareReadinessScoringEngine = {
     return Math.min(100, Math.round(score));
   },
 
-  /**
-   * Calculate overall score with weighted aggregation
-   */
-  calculateOverallScore(
-    dsaScore: number,
-    skillsScore: number,
-    projectsScore: number,
-    roadmapScore: number,
-    benchmarkPercentile: number,
-    roleAlignmentScore: number,
-    isDegraded: boolean
-  ): number {
-    if (isDegraded) {
-      // In degraded mode, reduce score by 20%
-      const baseScore = (dsaScore * 0.25) + (skillsScore * 0.3) + (projectsScore * 0.25) + (roadmapScore * 0.2);
-      return Math.round(baseScore * 0.8);
-    }
-    
-    // Weighted aggregation
-    let score = 0;
-    score += dsaScore * 0.2; // 20% weight
-    score += skillsScore * 0.3; // 30% weight
-    score += projectsScore * 0.25; // 25% weight
-    score += roadmapScore * 0.15; // 15% weight
-    score += roleAlignmentScore * 0.1; // 10% weight
-    
-    // Adjust based on benchmark percentile (bonus for high performers)
-    if (benchmarkPercentile >= 80) score += 5;
-    else if (benchmarkPercentile >= 60) score += 2;
-    else if (benchmarkPercentile < 20) score -= 5;
-    
-    return Math.min(100, Math.max(0, Math.round(score)));
-  },
-
-  /**
-   * Calculate confidence level
-   */
-  calculateConfidenceLevel(
-    dsa: any,
-    skills: any,
-    projects: any,
-    roadmap: any,
-    benchmarks: any,
-    isDegraded: boolean
-  ): number {
-    if (isDegraded) return 50; // Reduced confidence in degraded mode
-    
-    let confidence = 0;
-    let componentCount = 0;
-    
-    const addComponentConfidence = (model: any) => {
-      if (model && model.confidenceScore) {
-        confidence += model.confidenceScore;
-        componentCount++;
-      }
-    };
-    
-    addComponentConfidence(dsa);
-    addComponentConfidence(skills);
-    addComponentConfidence(projects);
-    addComponentConfidence(roadmap);
-    addComponentConfidence(benchmarks);
-    
-    if (componentCount === 0) return 0;
-    
-    return Math.round(confidence / componentCount);
+  benchmarkAdjustment(percentile: number): number {
+    if (percentile >= 80) return 5;
+    if (percentile >= 60) return 2;
+    if (percentile < 20) return -5;
+    return 0;
   },
 
   /**
@@ -433,7 +371,7 @@ export const TrustAwareReadinessScoringEngine = {
     const explanation: string[] = [];
     
     if (isDegraded) {
-      explanation.push('Score calculated in degraded mode due to stale data');
+      explanation.push('Score calculated in degraded mode with missing or stale inputs');
     }
     
     explanation.push(`Overall readiness score: ${overallScore}/100`);
@@ -446,13 +384,6 @@ export const TrustAwareReadinessScoringEngine = {
     if (benchmarkPercentile > 0) {
       explanation.push(`Cohort percentile: ${benchmarkPercentile}%`);
     }
-    
-    // Add tier explanation
-    if (overallScore >= 80) explanation.push('Strong readiness for target role');
-    else if (overallScore >= 60) explanation.push('Ready for target role with minor gaps');
-    else if (overallScore >= 40) explanation.push('Developing readiness - continue building');
-    else if (overallScore >= 20) explanation.push('Early stage - foundational work needed');
-    else explanation.push('Not ready - significant gaps identified');
     
     return explanation;
   },

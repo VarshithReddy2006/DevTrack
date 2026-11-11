@@ -126,3 +126,73 @@ export async function fetchGitHubProjectMetrics(repository: GitHubRepository): P
     lastCommitMessage,
   };
 }
+
+export async function fetchGitHubRepositoryEvidence(repository: GitHubRepository, contributor?: {
+  id: string;
+  username: string;
+}) {
+  const base = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
+  const json = async (path: string): Promise<unknown> => {
+    const response = await request(path);
+    if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
+    return response.json();
+  };
+  const response = await request(base);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
+  const data: unknown = await response.json();
+  if (isRecord(data) && data.private === true) return null;
+  if (!isRecord(data) || data.private !== false || typeof data.default_branch !== 'string'
+      || typeof data.full_name !== 'string' || !parseGitHubRepositoryUrl(`https://github.com/${data.full_name}`)
+      || typeof data.name !== 'string' || typeof data.created_at !== 'string'
+      || typeof data.fork !== 'boolean' || typeof data.archived !== 'boolean') {
+    throw new Error('Unsupported or invalid GitHub repository');
+  }
+  const createdAt = Date.parse(data.created_at);
+  if (!Number.isFinite(createdAt)) throw new Error('Invalid GitHub repository creation date');
+  const branch = encodeURIComponent(data.default_branch);
+  const [commits, contributions, languages, tree] = await Promise.all([
+    listCount(`${base}/commits?sha=${branch}`, true),
+    contributor
+      ? listCount(`${base}/commits?sha=${branch}&author=${encodeURIComponent(contributor.username)}`, true)
+      : null,
+    json(`${base}/languages`),
+    count(data.size) ? json(`${base}/git/trees/${branch}?recursive=1`) : null,
+  ]);
+  const first = contributions?.first;
+  const matchedContributor = Boolean(contributor && isRecord(data.owner)
+    && String(data.owner.id) === contributor.id && isRecord(first) && isRecord(first.author)
+    && String(first.author.id) === contributor.id);
+  const commit = isRecord(commits.first) ? commits.first.commit : null;
+  const lastCommitAt = isRecord(commit) && isRecord(commit.committer)
+    && typeof commit.committer.date === 'string' ? new Date(commit.committer.date) : null;
+  const paths = isRecord(tree) && Array.isArray(tree.tree)
+    ? tree.tree.flatMap(entry => isRecord(entry) && entry.type === 'blob' && typeof entry.path === 'string'
+      ? [entry.path] : [])
+    : [];
+  const languageBytes = isRecord(languages)
+    ? Object.fromEntries(Object.entries(languages).map(([name, bytes]) => [name, count(bytes)]))
+    : {};
+  return {
+    githubRepoId: String(count(data.id)),
+    repoFullName: data.full_name,
+    repoUrl: `https://github.com/${data.full_name}`,
+    name: data.name,
+    description: typeof data.description === 'string' ? data.description : null,
+    isFork: data.fork,
+    isArchived: data.archived,
+    repoAgeInDays: Math.max(0, Math.floor((Date.now() - createdAt) / 86_400_000)),
+    primaryLanguage: typeof data.language === 'string' ? data.language : '',
+    languages: languageBytes,
+    stars: count(data.stargazers_count),
+    forks: count(data.forks_count),
+    totalCommitCount: commits.total,
+    userCommitCount: matchedContributor ? contributions?.total ?? 0 : 0,
+    contributorId: matchedContributor ? contributor?.id : undefined,
+    lastCommitAt: lastCommitAt && Number.isFinite(lastCommitAt.getTime()) ? lastCommitAt : null,
+    fileCount: paths.length,
+    files: paths.filter(path => /(^|\/)(dockerfile|docker-compose|readme|\.github\/workflows\/|\.gitlab-ci)/i.test(path)).slice(0, 100),
+    hasTests: paths.some(path => /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.[^/]+$/i.test(path)),
+    hasCI: paths.some(path => /^\.github\/workflows\/.+\.ya?ml$|^\.gitlab-ci\.yml$/i.test(path)),
+  };
+}
