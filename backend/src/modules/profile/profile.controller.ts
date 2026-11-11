@@ -92,69 +92,39 @@ export async function getAchievements(req: AuthenticatedRequest, res: Response):
 import { PublicProfileService } from './publicProfile.service.js';
 import { UserSettings } from '../../db/models/userSettings.model.js';
 import { mapToPublicProfileDTO } from './profile.dto.js';
-import { getRedisClient } from '../../shared/redis/client.js';
 
 export async function getPublicProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
   try {
     const { username } = req.params;
     const viewerType = req.user ? 'authenticated' : 'public';
-    // Ideally extract real IP, using string for demo
     const viewerIp = typeof req.ip === 'string' ? req.ip : '127.0.0.1';
     
-    // 1. Check Cache
-    const redis = getRedisClient();
-    const usernameStr = (Array.isArray(username) ? username[0] : username) as string;
-    const cacheKey = `public_profile:${usernameStr.toLowerCase()}`;
-    const cached = await redis.get(cacheKey);
-    
-    // Read user settings for privacy checks, skip if purely public cache hit without recruiter check
-    // Wait, since visibility depends on viewer type (recruiter_only), we can't cache blindly if we don't know the viewer's clearance.
-    // Instead, we cache the FULL DTO and apply privacy filters per request, OR cache the public DTO.
-    // Let's cache the public version, and if recruiter, bypass cache or use a recruiter cache key.
-    
-    let profile = null;
-    let dto = null;
-
-    if (cached && viewerType === 'public') {
-      dto = JSON.parse(cached);
-    } else {
-      profile = await PublicProfileService.getPublicProfileByUsername(
-        usernameStr,
-        viewerIp,
-        viewerType,
-        req.user?.id ? new Types.ObjectId(req.user.id) : undefined
-      );
-
-      if (!profile) {
-        commonErrors.notFound(res, 'Public Profile');
-        return;
-      }
-
-      const userSettings = await UserSettings.findOne({ userId: profile.userId });
-      
-      // Privacy Checks
-      if (userSettings?.privacy.profileVisibility === 'private') {
-        commonErrors.notFound(res, 'Public Profile');
-        return;
-      }
-      
-      if (userSettings?.privacy.profileVisibility === 'recruiter_only' && viewerType === 'public') {
-        commonErrors.notFound(res, 'Public Profile');
-        return;
-      }
-
-      dto = mapToPublicProfileDTO(
-        profile,
-        !(userSettings?.privacy.showStreak ?? true),
-        !(userSettings?.privacy.showGithub ?? true)
-      );
-
-      // Cache the public version for 5 minutes
-      if (viewerType === 'public') {
-        await redis.set(cacheKey, JSON.stringify(dto), 'EX', 300);
-      }
+    const usernameStr = Array.isArray(username) ? username[0] : username;
+    if (!usernameStr) {
+      commonErrors.notFound(res, 'Public Profile');
+      return;
     }
 
+    const profile = await PublicProfileService.getPublicProfileByUsername(
+      usernameStr,
+      viewerIp,
+      viewerType,
+      req.user?.id ? new Types.ObjectId(req.user.id) : undefined
+    );
+
+    if (!profile) {
+      commonErrors.notFound(res, 'Public Profile');
+      return;
+    }
+
+    const settings = await UserSettings.findOne({ userId: profile.userId }).select('privacy').lean();
+    if (profile.visibility !== 'public' ||
+        (settings?.privacy?.profileVisibility && settings.privacy.profileVisibility !== 'public')) {
+      commonErrors.notFound(res, 'Public Profile');
+      return;
+    }
+
+    const dto = mapToPublicProfileDTO(profile, settings?.privacy);
     successResponse(res, dto, 'Public profile retrieved successfully');
   } catch (error) {
     if (error instanceof Error && error.message === 'Profile not found') {

@@ -15,7 +15,7 @@ describe('PublicProfileService.getPublicProfileByUsername lookup', () => {
   let computeProfile: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    computeProfile = vi.spyOn(PublicProfileService, 'computeProfile').mockResolvedValue(undefined);
+    computeProfile = vi.spyOn(PublicProfileService, 'computeProfile').mockResolvedValue({ trustScore: 0, suspicionScore: 0, flags: [] });
   });
 
   afterEach(() => {
