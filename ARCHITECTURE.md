@@ -296,6 +296,24 @@ Optional `GITHUB_TOKEN` raises GitHub API rate limits.
 
 Structured logging via Winston (`backend/src/shared/logger.ts`). Failed jobs route to the dead-letter queue (`dlq.service.ts`).
 
+The full `GET /api/v1/dashboard` response uses a user-scoped Redis key with a
+five-minute TTL. Concurrent misses share one dashboard load per API process;
+individual dashboard subresource endpoints retain their existing read behavior.
+Activity, problem, project, platform connection/sync and mission writes invalidate
+the dashboard after persistence, alongside the existing XP and streak hooks.
+Redis invalidation advances a generation atomically with deletion; conditional
+fills prevent an API load from caching stale data after a worker invalidates it.
+Generation keys are retained so an older in-flight load cannot reuse an expired
+generation. Coalescing is local to a process, rather than a distributed lock.
+
+Cache errors fall back to database reads, and cache commands have a 500ms wait
+limit so connection retries cannot indefinitely block dashboard reads or committed
+writes. During a Redis outage, invalidation is best effort and existing entries
+can remain stale until their five-minute TTL expires. The protected
+`/api/system/request-metrics` response includes process-local `cache` counters:
+`hits`, `misses`, `coalesced`, `loads`, `bypasses`, `errors`, and `inFlight`.
+Misses count requests without a cached value; loads count actual database loads.
+
 ---
 
 ## CI/CD

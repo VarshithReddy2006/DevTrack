@@ -10,7 +10,7 @@ vi.mock('../../../shared/sse/index.js', () => ({ eventBus: {
   emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn(), emitXpUpdated: vi.fn(),
   emitLevelUp: vi.fn(), emitChallengeCompleted: completionEvent,
 } }));
-vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateAllUserCache: vi.fn() } }));
+vi.mock('../../../shared/cache/cacheManager.js', () => ({ cacheManager: { invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn() } }));
 vi.mock('../../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { updateFromEvent: vi.fn() } }));
 vi.mock('../../../shared/redis/syncLock.service.js', () => ({
   acquireSyncLockWithRetry: vi.fn().mockResolvedValue(true), releaseSyncLock: vi.fn(),

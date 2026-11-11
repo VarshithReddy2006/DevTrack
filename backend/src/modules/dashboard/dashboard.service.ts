@@ -10,6 +10,7 @@ import {
   PlatformStats,
   UserAnalytics,
 } from '../../db/models/index.js';
+import { cacheManager, CACHE_KEYS } from '../../shared/cache/cacheManager.js';
 import { logger } from '../../shared/logger.js';
 import type {
   ApiDashboardResponse,
@@ -40,6 +41,10 @@ export interface GithubDashboardStatsData {
 
 
 export async function getDashboard(userId: string): Promise<ApiDashboardResponse> {
+  return cacheManager.getOrSet(CACHE_KEYS.dashboard(userId), () => loadDashboard(userId), 300);
+}
+
+async function loadDashboard(userId: string): Promise<ApiDashboardResponse> {
   const [platformStats, streak, missions, recentActivity, githubStats] = await Promise.all([
     getPlatformStats(userId),
     getStreakData(userId),

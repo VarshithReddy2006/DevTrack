@@ -1,4 +1,5 @@
 // src/modules/platform-sync/sync.service.ts
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { ConnectedPlatform, PlatformStats, SyncJob, DsaSubmission, DsaContest, DsaTopicProgress, DsaProblem, DailyActivity } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
@@ -818,6 +819,9 @@ async function syncPlatformWithLock(userId: string, platformName: string): Promi
 
     const syncDurationMs = Date.now() - syncStartedAt;
 
+    // Refresh before notifying clients that may immediately reload the dashboard.
+    await cacheManager.invalidateDashboard(userId);
+
     // Emit SSE completion event with actual duration
     eventBus.emitSyncCompleted(userId, platformName, {
       totalSolved: fetched.totalSolved,
@@ -859,6 +863,8 @@ async function syncPlatformWithLock(userId: string, platformName: string): Promi
     eventBus.emitSyncFailed(userId, platformName, errorMessage);
 
     return { platform: platformName, success: false, error: errorMessage };
+  } finally {
+    await cacheManager.invalidateDashboard(userId);
   }
 }
 
