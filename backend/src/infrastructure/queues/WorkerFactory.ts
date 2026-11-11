@@ -14,14 +14,14 @@ export class WorkerFactory {
    * 
    * @param queueName Name of the queue
    * @param processor Async function that processes the job
-   * @param options Additional worker options (concurrency, etc)
+   * @param options Additional worker options. Set jobTimeoutMs to null when the processor must finish before BullMQ settles the job.
    */
   static createWorker<T>(
     queueName: string,
     processor: (job: Job<T>) => Promise<any>,
-    options?: Partial<WorkerOptions>
+    options?: Partial<WorkerOptions> & { jobTimeoutMs?: number | null }
   ): Worker<T> {
-    
+    const { jobTimeoutMs = 5 * 60 * 1000, ...workerOptions } = options ?? {};
     const worker = new Worker<T>(
       queueName,
       async (job: Job<T>) => {
@@ -29,14 +29,15 @@ export class WorkerFactory {
         logger.info(`[Worker:${queueName}] Started Job ${jobId}`);
         
         try {
-          // Timeout protection (e.g. max 5 minutes per job to prevent hanging)
           let timer: ReturnType<typeof setTimeout> | undefined;
-          const timeoutPromise = new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error('Job execution timed out after 5 minutes')), 5 * 60 * 1000);
-          });
-          
           try {
-            const result = await Promise.race([processor(job), timeoutPromise]);
+            const processing = processor(job);
+            const result = jobTimeoutMs === null ? await processing : await Promise.race([
+              processing,
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`Job execution timed out after ${jobTimeoutMs / 60_000} minutes`)), jobTimeoutMs);
+              }),
+            ]);
             logger.info(`[Worker:${queueName}] Completed Job ${jobId}`);
             return result;
           } finally { clearTimeout(timer); }
@@ -67,11 +68,11 @@ export class WorkerFactory {
       },
       {
         connection: getRedisClient(),
-        concurrency: options?.concurrency || 3,
+        concurrency: workerOptions.concurrency || 3,
         settings: {
           backoffStrategy: RetryPolicy.getCustomBackoffLogic()
         },
-        ...options
+        ...workerOptions
       }
     );
 
