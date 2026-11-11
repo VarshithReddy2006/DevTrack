@@ -52,6 +52,22 @@ export const useUserStore = create<UserState>((set, get) => ({
     useDsaStore.getState().reset();
     useProjectsStore.getState().reset();
 
+    // Disconnect and clear SSE connections to avoid cross-user event leakage
+    try {
+      const { useSseStore } = await import('../lib/realtime/sse-manager');
+      useSseStore.getState().disconnect();
+      useSseStore.getState().clearHistory();
+    } catch {
+      // ignore
+    }
+
+    try {
+      const { disconnectGlobalSse } = await import('../hooks/useSse');
+      disconnectGlobalSse();
+    } catch {
+      // ignore
+    }
+
     // Clear profile editing data from localStorage
     localStorage.removeItem('devtrack-profile');
 

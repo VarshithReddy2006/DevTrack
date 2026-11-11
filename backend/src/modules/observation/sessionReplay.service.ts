@@ -6,6 +6,27 @@ import { SessionReplay } from '../../db/models/sessionReplay.model.js';
 import { BetaUser } from '../../db/models/betaUser.model.js';
 import { logger } from '../../shared/logger.js';
 
+export class SessionNotFoundError extends Error {
+  statusCode = 404;
+  constructor(message: string = 'Session not found') {
+    super(message);
+    this.name = 'SessionNotFoundError';
+  }
+}
+
+export class SessionForbiddenError extends Error {
+  statusCode = 403;
+  constructor(message: string = 'Forbidden: session does not belong to user') {
+    super(message);
+    this.name = 'SessionForbiddenError';
+  }
+}
+
+const MAX_PAGES = 500;
+const MAX_INTERACTIONS = 2000;
+const MAX_FRICTION_EVENTS = 1000;
+const MAX_NETWORK_REQUESTS = 1000;
+
 export interface SessionMetadata {
   sessionId: string;
   userId: mongoose.Types.ObjectId;
@@ -34,9 +55,22 @@ export interface FrictionEvent {
   context?: Record<string, unknown>;
 }
 
+function normalizeUserId(id?: string | mongoose.Types.ObjectId): string | null {
+  if (!id) return null;
+  return id.toString();
+}
+
 export const sessionReplay = {
   // ─── Start Session Replay ────────────────────────────────────────────────
   async startSession(metadata: SessionMetadata): Promise<void> {
+    const existing = await SessionReplay.findOne({ sessionId: metadata.sessionId }).lean();
+    if (existing) {
+      if (existing.userId.toString() !== metadata.userId.toString()) {
+        throw new SessionForbiddenError('Session belongs to another user');
+      }
+      return;
+    }
+
     const betaUser = await BetaUser.findOne({ userId: metadata.userId }).lean();
 
     await SessionReplay.create({
@@ -58,68 +92,117 @@ export const sessionReplay = {
   },
 
   // ─── End Session Replay ─────────────────────────────────────────────────
-  async endSession(sessionId: string): Promise<void> {
+  async endSession(sessionId: string, userId?: string | mongoose.Types.ObjectId): Promise<void> {
     const replay = await SessionReplay.findOne({ sessionId });
-    if (!replay) return;
+    if (!replay) {
+      throw new SessionNotFoundError(`Session ${sessionId} not found`);
+    }
 
-    replay.endTime = new Date();
-    replay.duration = replay.endTime.getTime() - replay.startTime.getTime();
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
 
-    await replay.save();
+    const endTime = new Date();
+    const duration = Math.max(0, endTime.getTime() - replay.startTime.getTime());
 
-    logger.debug('[session-replay] Session ended', { sessionId, duration: replay.duration });
+    await SessionReplay.updateOne(
+      { sessionId, userId: replay.userId },
+      { $set: { endTime, duration } }
+    );
+
+    logger.debug('[session-replay] Session ended', { sessionId, duration });
   },
 
   // ─── Record Page View ───────────────────────────────────────────────────
-  async recordPageView(sessionId: string, path: string): Promise<void> {
+  async recordPageView(sessionId: string, path: string, userId?: string | mongoose.Types.ObjectId): Promise<void> {
     const replay = await SessionReplay.findOne({ sessionId });
-    if (!replay) return;
-
-    // Exit previous page if exists
-    const lastPage = replay.pages[replay.pages.length - 1];
-    if (lastPage && !lastPage.exitedAt) {
-      lastPage.exitedAt = new Date();
-      lastPage.duration = lastPage.exitedAt.getTime() - lastPage.enteredAt.getTime();
+    if (!replay) {
+      throw new SessionNotFoundError(`Session ${sessionId} not found`);
     }
 
-    // Add new page
-    replay.pages.push({
-      path,
-      enteredAt: new Date(),
-    });
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
 
-    await replay.save();
+    const enteredAt = new Date();
+    await SessionReplay.updateOne(
+      { sessionId, userId: replay.userId },
+      {
+        $push: {
+          pages: {
+            $each: [{ path, enteredAt }],
+            $slice: -MAX_PAGES,
+          },
+        },
+      }
+    );
   },
 
   // ─── Record Interaction ────────────────────────────────────────────────
-  async recordInteraction(event: InteractionEvent): Promise<void> {
+  async recordInteraction(event: InteractionEvent, userId?: string | mongoose.Types.ObjectId): Promise<void> {
     const replay = await SessionReplay.findOne({ sessionId: event.sessionId });
-    if (!replay) return;
+    if (!replay) {
+      throw new SessionNotFoundError(`Session ${event.sessionId} not found`);
+    }
 
-    replay.interactions.push({
-      element: event.element,
-      action: event.action,
-      timestamp: event.timestamp,
-      context: event.context,
-    });
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
 
-    await replay.save();
+    await SessionReplay.updateOne(
+      { sessionId: event.sessionId, userId: replay.userId },
+      {
+        $push: {
+          interactions: {
+            $each: [
+              {
+                element: event.element,
+                action: event.action,
+                timestamp: event.timestamp || new Date(),
+                context: event.context,
+              },
+            ],
+            $slice: -MAX_INTERACTIONS,
+          },
+        },
+      }
+    );
   },
 
   // ─── Record Friction Event ──────────────────────────────────────────────
-  async recordFrictionEvent(event: FrictionEvent): Promise<void> {
+  async recordFrictionEvent(event: FrictionEvent, userId?: string | mongoose.Types.ObjectId): Promise<void> {
     const replay = await SessionReplay.findOne({ sessionId: event.sessionId });
-    if (!replay) return;
+    if (!replay) {
+      throw new SessionNotFoundError(`Session ${event.sessionId} not found`);
+    }
 
-    replay.frictionEvents.push({
-      element: event.element,
-      type: event.type,
-      severity: event.severity,
-      timestamp: event.timestamp,
-      context: event.context,
-    });
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
 
-    await replay.save();
+    await SessionReplay.updateOne(
+      { sessionId: event.sessionId, userId: replay.userId },
+      {
+        $push: {
+          frictionEvents: {
+            $each: [
+              {
+                element: event.element,
+                type: event.type,
+                severity: event.severity,
+                timestamp: event.timestamp || new Date(),
+                context: event.context,
+              },
+            ],
+            $slice: -MAX_FRICTION_EVENTS,
+          },
+        },
+      }
+    );
 
     logger.debug('[session-replay] Friction event recorded', { sessionId: event.sessionId, type: event.type });
   },
@@ -130,20 +213,38 @@ export const sessionReplay = {
     url: string,
     method: string,
     status: number,
-    duration: number
+    duration: number,
+    userId?: string | mongoose.Types.ObjectId
   ): Promise<void> {
     const replay = await SessionReplay.findOne({ sessionId });
-    if (!replay) return;
+    if (!replay) {
+      throw new SessionNotFoundError(`Session ${sessionId} not found`);
+    }
 
-    replay.networkRequests.push({
-      url,
-      method,
-      status,
-      duration,
-      timestamp: new Date(),
-    });
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
 
-    await replay.save();
+    await SessionReplay.updateOne(
+      { sessionId, userId: replay.userId },
+      {
+        $push: {
+          networkRequests: {
+            $each: [
+              {
+                url,
+                method,
+                status,
+                duration,
+                timestamp: new Date(),
+              },
+            ],
+            $slice: -MAX_NETWORK_REQUESTS,
+          },
+        },
+      }
+    );
   },
 
   // ─── Record Performance Metrics ────────────────────────────────────────
@@ -154,22 +255,156 @@ export const sessionReplay = {
       firstContentfulPaint?: number;
       timeToInteractive?: number;
       cumulativeLayoutShift?: number;
-    }
+    },
+    userId?: string | mongoose.Types.ObjectId
   ): Promise<void> {
     const replay = await SessionReplay.findOne({ sessionId });
-    if (!replay) return;
+    if (!replay) {
+      throw new SessionNotFoundError(`Session ${sessionId} not found`);
+    }
 
-    replay.performanceMetrics = {
-      ...replay.performanceMetrics,
-      ...metrics,
-    };
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
 
-    await replay.save();
+    const setObj: Record<string, number> = {};
+    if (metrics.loadTime !== undefined) setObj['performanceMetrics.loadTime'] = metrics.loadTime;
+    if (metrics.firstContentfulPaint !== undefined) setObj['performanceMetrics.firstContentfulPaint'] = metrics.firstContentfulPaint;
+    if (metrics.timeToInteractive !== undefined) setObj['performanceMetrics.timeToInteractive'] = metrics.timeToInteractive;
+    if (metrics.cumulativeLayoutShift !== undefined) setObj['performanceMetrics.cumulativeLayoutShift'] = metrics.cumulativeLayoutShift;
+
+    await SessionReplay.updateOne(
+      { sessionId, userId: replay.userId },
+      { $set: setObj }
+    );
+  },
+
+  // ─── Atomic Batch Ingestion ─────────────────────────────────────────────
+  async recordEventsBatch(
+    sessionId: string,
+    userId: string | mongoose.Types.ObjectId,
+    events: Array<{
+      event: string;
+      timestamp?: string | Date;
+      properties?: Record<string, any>;
+    }>
+  ): Promise<void> {
+    const replay = await SessionReplay.findOne({ sessionId });
+    if (!replay) {
+      throw new SessionNotFoundError(`Session ${sessionId} not found`);
+    }
+
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
+
+    const pagesToPush: Array<{ path: string; enteredAt: Date }> = [];
+    const interactionsToPush: Array<{ element: string; action: string; timestamp: Date; context?: Record<string, unknown> }> = [];
+    const frictionEventsToPush: Array<{
+      element: string;
+      type: 'hesitation' | 'confusion' | 'error' | 'abandonment';
+      severity: 'low' | 'medium' | 'high';
+      timestamp: Date;
+      context?: Record<string, unknown>;
+    }> = [];
+    const networkRequestsToPush: Array<{
+      url: string;
+      method: string;
+      status: number;
+      duration: number;
+      timestamp: Date;
+    }> = [];
+
+    for (const item of events) {
+      const timestamp = item.timestamp ? new Date(item.timestamp) : new Date();
+
+      if (item.event === 'page_view') {
+        pagesToPush.push({
+          path: item.properties?.page || '/',
+          enteredAt: timestamp,
+        });
+      } else if (['hesitation', 'abandonment', 'confusion', 'error_occurred'].includes(item.event)) {
+        let mappedType: 'hesitation' | 'abandonment' | 'confusion' | 'error' = 'confusion';
+        if (item.event === 'hesitation') mappedType = 'hesitation';
+        if (item.event === 'abandonment') mappedType = 'abandonment';
+        if (item.event === 'error_occurred') mappedType = 'error';
+
+        frictionEventsToPush.push({
+          element: item.properties?.element || 'app',
+          type: mappedType,
+          severity: item.properties?.severity || 'low',
+          timestamp,
+          context: item.properties,
+        });
+      } else if (item.event === 'network_request') {
+        networkRequestsToPush.push({
+          url: item.properties?.url || '',
+          method: item.properties?.method || 'GET',
+          status: item.properties?.status || 200,
+          duration: item.properties?.duration || 0,
+          timestamp,
+        });
+      } else {
+        interactionsToPush.push({
+          element: item.properties?.element || 'app',
+          action: item.event,
+          timestamp,
+          context: item.properties,
+        });
+      }
+    }
+
+    const updateOps: any = {};
+    if (pagesToPush.length > 0) {
+      updateOps.$push = updateOps.$push || {};
+      updateOps.$push.pages = {
+        $each: pagesToPush,
+        $slice: -MAX_PAGES,
+      };
+    }
+    if (interactionsToPush.length > 0) {
+      updateOps.$push = updateOps.$push || {};
+      updateOps.$push.interactions = {
+        $each: interactionsToPush,
+        $slice: -MAX_INTERACTIONS,
+      };
+    }
+    if (frictionEventsToPush.length > 0) {
+      updateOps.$push = updateOps.$push || {};
+      updateOps.$push.frictionEvents = {
+        $each: frictionEventsToPush,
+        $slice: -MAX_FRICTION_EVENTS,
+      };
+    }
+    if (networkRequestsToPush.length > 0) {
+      updateOps.$push = updateOps.$push || {};
+      updateOps.$push.networkRequests = {
+        $each: networkRequestsToPush,
+        $slice: -MAX_NETWORK_REQUESTS,
+      };
+    }
+
+    if (Object.keys(updateOps).length > 0) {
+      await SessionReplay.updateOne(
+        { sessionId, userId: replay.userId },
+        updateOps
+      );
+    }
   },
 
   // ─── Get Session Replay ───────────────────────────────────────────────
-  async getSessionReplay(sessionId: string) {
-    return SessionReplay.findOne({ sessionId }).lean();
+  async getSessionReplay(sessionId: string, userId?: string | mongoose.Types.ObjectId) {
+    const replay = await SessionReplay.findOne({ sessionId }).lean();
+    if (!replay) return null;
+
+    const normalizedReqUser = normalizeUserId(userId);
+    if (normalizedReqUser && replay.userId.toString() !== normalizedReqUser) {
+      throw new SessionForbiddenError('Forbidden: session does not belong to user');
+    }
+
+    return replay;
   },
 
   // ─── Get User Session Replays ─────────────────────────────────────────

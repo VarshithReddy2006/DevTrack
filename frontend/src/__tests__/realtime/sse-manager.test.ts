@@ -10,6 +10,7 @@ import {
 } from '../../lib/realtime/sse-manager';
 import { getSSEHandshakeTicket } from '../../services/authService';
 import { queryClient } from '../../lib/queryClient';
+import { useUserStore } from '../../store/userStore';
 
 vi.mock('../../services/authService', () => ({
   getSSEHandshakeTicket: vi.fn(),
@@ -362,3 +363,72 @@ describe('snapshot reset', () => {
     expect(received).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Envelope ID deduplication & Auth Hydration
+// ---------------------------------------------------------------------------
+describe('envelope ID deduplication and auth hydration lifecycle', () => {
+  it('deduplicates replayed events that share an envelope ID', async () => {
+    const received: SseEvent[] = [];
+    useSseStore.getState().subscribe('xp_updated', (event) => received.push(event));
+
+    await connect();
+    latest().open();
+
+    const envelope = {
+      id: 'envelope-unique-999',
+      type: 'xp_updated',
+      timestamp: '2026-11-07T12:00:00.000Z',
+      payload: { xp: 50 },
+    };
+
+    // First arrival
+    latest().emit(envelope);
+    expect(received).toHaveLength(1);
+
+    // Replayed arrival with identical envelope ID
+    latest().emit(envelope);
+    expect(received).toHaveLength(1);
+
+    // Replayed arrival with different sequence/payload but same envelope ID
+    latest().emit({ ...envelope, sequence: 5, payload: { xp: 100 } });
+    expect(received).toHaveLength(1);
+  });
+
+  it('connects when auth state hydrates asynchronously and disconnects on logoutCleanup', async () => {
+    localStorage.removeItem('devtrack_access_token');
+    useUserStore.getState().clearUser();
+
+    // Trigger connect while unauthenticated (should not create active EventSource)
+    await useSseStore.getState().connect();
+    await settle();
+    expect(useSseStore.getState().connectionState.error).toBe('No auth token');
+
+    // Simulate auth hydration
+    useUserStore.getState().setUser({
+      id: 'user_123',
+      email: 'user@example.com',
+      username: 'user123',
+      displayName: 'User 123',
+      avatarUrl: null,
+      bio: null,
+      timezone: 'UTC',
+      joinedAt: '2026-01-01T00:00:00.000Z',
+      lastActiveAt: '2026-01-01T00:00:00.000Z',
+      isEmailVerified: true,
+      role: 'user',
+    });
+
+    await settle();
+    expect(MockEventSource.instances.length).toBeGreaterThan(0);
+    latest().open();
+    expect(useSseStore.getState().connectionState.connected).toBe(true);
+
+    // Simulate logout
+    await useUserStore.getState().logoutCleanup();
+    await settle();
+    expect(useSseStore.getState().connectionState.connected).toBe(false);
+    expect(useSseStore.getState().eventHistory).toHaveLength(0);
+  });
+});
+
