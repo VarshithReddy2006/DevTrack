@@ -237,7 +237,15 @@ function calculateXpAward(
     case 'dsa_accepted': return xpForDifficulty(difficulty);
     case 'dsa_contest': return XP_REWARDS.contestParticipated;
     case 'daily_streak': return XP_REWARDS.dailyStreak;
-    case 'sync_completed': return XP_REWARDS.syncCompleted;
+    case 'sync_completed': {
+      if (typeof metadata?.deltaSolved === 'number') {
+        const delta = metadata.deltaSolved;
+        if (delta <= 0) return 0;
+        if (metadata.isFirstSync) return XP_REWARDS.syncCompleted;
+        return delta * XP_REWARDS.syncCompleted;
+      }
+      return XP_REWARDS.syncCompleted;
+    }
     case 'focus_session': return 50; // Pomodoro/Focus session reward
     case 'challenge_completed': return typeof metadata?.xpReward === 'number' ? metadata.xpReward : 35;
     case 'milestone': return 0;
