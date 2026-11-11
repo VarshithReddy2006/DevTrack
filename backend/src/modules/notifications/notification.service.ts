@@ -2,6 +2,7 @@
 // Phase-B: In-app notifications, event fanout, digest support
 
 import { NotificationRecord, NotificationPreference } from '../../db/models/notification.model.js';
+import { UserSettings } from '../../db/models/userSettings.model.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { getRedisClient } from '../../shared/redis/client.js';
 import { logger } from '../../shared/logger.js';
@@ -254,14 +255,14 @@ export const notificationService = {
 
   // ─── Engagement triggers ─────────────────────────────────────────────
   async triggerStreakReminder(userId: string, currentStreak: number): Promise<void> {
-    if (currentStreak >= 3) {
-      await this.create(
-        userId,
-        'streak_reminder',
-        'Keep your streak alive!',
-        `You have a ${currentStreak}-day streak. Don't break it!`
-      );
-    }
+    if (currentStreak <= 0) return;
+    if (await UserSettings.exists({ userId, 'notifications.streakReminder': false })) return;
+    await this.create(
+      userId,
+      'streak_reminder',
+      'Keep your streak alive!',
+      `You have a ${currentStreak}-day streak. Don't break it!`
+    );
   },
 
   async triggerStreakMilestone(userId: string, streakDays: number): Promise<void> {

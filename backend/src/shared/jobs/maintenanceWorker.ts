@@ -9,9 +9,11 @@ import { createDlqWorker, dlqService, DLQ_QUEUE_NAMES } from './dlq.service.js';
 import { QueueNames, SystemMaintenanceJobData } from './types.js';
 import { generateDailyMissions, generateWeeklyMissions } from '../../modules/missions/missionGenerator.service.js';
 import { cleanupStaleLocks } from '../redis/syncLock.service.js';
-import { UserAnalytics, DailyChallenge } from '../../db/models/index.js';
+import { User, UserAnalytics, UserStreakLog } from '../../db/models/index.js';
 import { AntiGamingWorker } from '../../modules/profile/antiGaming.worker.js';
 import { getNotificationQueue } from './queueFactory.js';
+import { seedDailyChallengeWindow } from '../../modules/daily-challenge/daily-challenge.service.js';
+import { localDateString, localDayBounds, resolveTimezone } from '../../modules/daily-challenge/daily-challenge.time.js';
 
 let _worker: Worker<SystemMaintenanceJobData> | null = null;
 let _queue: Queue<SystemMaintenanceJobData> | null = null;
@@ -135,87 +137,70 @@ async function runCleanupStaleSyncLocks(): Promise<void> {
   }
 }
 
-async function runStreakAtRiskCheck(): Promise<void> {
+const HOUR_MS = 60 * 60 * 1000;
+
+export async function runStreakAtRiskCheck(): Promise<void> {
   logger.info('[maintenance] Running streak at risk check');
-  try {
-    // Query all users with currentStreak > 0 and not active today
-    const atRiskUsers = await UserAnalytics.find({
-      currentStreak: { $gt: 0 },
-      isActiveToday: false,
-    }).select('userId currentStreak');
+  const now = new Date();
+  const windows = new Map<string, { today: Date; yesterday: Date; withinWindow: boolean }>();
+  let enqueueRequests = 0;
 
-    const notificationQueue = getNotificationQueue();
-    let notifiedCount = 0;
+  const candidates = UserAnalytics.find({ currentStreak: { $gt: 0 } })
+    .select('userId currentStreak streakFreezeUntil').lean().cursor();
+  for await (const candidate of candidates) {
+    try {
+      const user = await User.findById(candidate.userId).select('timezone').lean();
+      if (!user) continue;
 
-    for (const user of atRiskUsers) {
-      try {
-        await notificationQueue.add(
-          'streak-at-risk',
-          {
-            type: 'streak_at_risk',
-            userId: user.userId.toString(),
-            data: { currentStreak: user.currentStreak },
-          },
-          { jobId: `streak-risk-${user.userId}-${Date.now()}` }
-        );
-        notifiedCount++;
-      } catch (err) {
-        logger.warn('[maintenance] Failed to enqueue streak at risk notification', {
-          userId: user.userId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+      const timezone = resolveTimezone(user.timezone);
+      let window = windows.get(timezone);
+      if (!window) {
+        const dateKey = localDateString(now, timezone);
+        const { end } = localDayBounds(dateKey, timezone);
+        // Streak logs store the local calendar date at UTC midnight.
+        const today = new Date(`${dateKey}T00:00:00.000Z`);
+        window = {
+          today,
+          yesterday: new Date(today.getTime() - 24 * HOUR_MS),
+          withinWindow: end.getTime() - now.getTime() <= 6 * HOUR_MS,
+        };
+        windows.set(timezone, window);
       }
+      if (!window.withinWindow) continue;
+
+      const freezeActive = candidate.streakFreezeUntil && candidate.streakFreezeUntil >= now;
+      const oldestActiveDay = freezeActive
+        ? new Date(window.yesterday.getTime() - 24 * HOUR_MS)
+        : window.yesterday;
+      const lastLog = await UserStreakLog.findOne({
+        userId: candidate.userId,
+        date: { $gte: oldestActiveDay, $lte: window.today },
+        activityCount: { $gt: 0 },
+      }).sort({ date: -1 }).select('date').lean();
+      if (!lastLog || lastLog.date.getTime() === window.today.getTime()) continue;
+
+      const userId = candidate.userId.toString();
+      const dateKey = window.today.toISOString().slice(0, 10);
+      const id = `streak-risk-${userId}-${dateKey}`;
+      await getNotificationQueue().add('streak-at-risk', {
+        type: 'streak_at_risk',
+        userId,
+        data: { currentStreak: candidate.currentStreak },
+      }, {
+        jobId: id,
+        // Keep deduplication even if queue retention removes the completed job.
+        deduplication: { id, ttl: 72 * HOUR_MS },
+      });
+      enqueueRequests++;
+    } catch (err) {
+      logger.warn('[maintenance] Failed to check streak reminder eligibility', {
+        userId: candidate.userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-
-    logger.info('[maintenance] Streak at risk check completed', {
-      atRiskUsers: atRiskUsers.length,
-      notifiedCount,
-    });
-  } catch (err) {
-    logger.error('[maintenance] Streak at risk check failed', err);
   }
-}
 
-async function runGenerateDailyChallenge(): Promise<void> {
-  logger.info('[maintenance] Generating daily challenge');
-  try {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const dateStr = tomorrow.toISOString().split('T')[0]; // YYYY-MM-DD
-
-    // Check if challenge already exists for tomorrow
-    const existing = await DailyChallenge.findOne({ date: dateStr });
-    if (existing) {
-      logger.info('[maintenance] Daily challenge already exists for tomorrow', { date: dateStr });
-      return;
-    }
-
-    // Simple challenge generation - rotate through a predefined set
-    const challenges = [
-      { title: 'Two Sum', difficulty: 'easy' as const, platform: 'leetcode' as const, xpReward: 25 },
-      { title: 'Longest Substring Without Repeating Characters', difficulty: 'medium' as const, platform: 'leetcode' as const, xpReward: 50 },
-      { title: 'Median of Two Sorted Arrays', difficulty: 'hard' as const, platform: 'leetcode' as const, xpReward: 100 },
-    ];
-
-    const dayOfMonth = tomorrow.getDate();
-    const challenge = challenges[dayOfMonth % challenges.length];
-
-    await DailyChallenge.create({
-      date: dateStr,
-      title: challenge.title,
-      titleSlug: challenge.title.toLowerCase().replace(/\s+/g, '-'),
-      description: `Complete the ${challenge.title} problem on ${challenge.platform}`,
-      difficulty: challenge.difficulty,
-      platform: challenge.platform,
-      problemUrl: `https://${challenge.platform}.com/problemset/`,
-      xpReward: challenge.xpReward,
-      completionCount: 0,
-    });
-
-    logger.info('[maintenance] Daily challenge generated', { date: dateStr, title: challenge.title });
-  } catch (err) {
-    logger.error('[maintenance] Daily challenge generation failed', err);
-  }
+  logger.info('[maintenance] Streak at risk check completed', { enqueueRequests });
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +245,7 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
           await runStreakAtRiskCheck();
           break;
         case 'generate_daily_challenge':
-          await runGenerateDailyChallenge();
+          await seedDailyChallengeWindow();
           break;
         case 'audit_public_profiles':
           await AntiGamingWorker.startAuditJob(new Date(job.opts.prevMillis ?? job.timestamp));
@@ -366,12 +351,13 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
     }
   );
 
-  // Streak at risk check daily at 18:00 UTC
+  // Retire the previous daily schedule before registering the hourly sweep.
+  await _queue.removeRepeatable('streak-at-risk-check', { pattern: '0 18 * * *' }, 'maintenance-streak-at-risk');
   await _queue.add(
     'streak-at-risk-check',
     { task: 'streak_at_risk_check' },
     {
-      repeat: { pattern: '0 18 * * *' }, // 18:00 UTC daily
+      repeat: { every: HOUR_MS },
       jobId: 'maintenance-streak-at-risk',
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 10 },
