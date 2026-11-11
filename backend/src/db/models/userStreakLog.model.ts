@@ -8,6 +8,7 @@ export type StreakType = 'dsa' | 'github' | 'unified' | 'focus';
 export interface IUserStreakLog extends Document {
   userId: Schema.Types.ObjectId;
   date: Date; // Normalized to UTC midnight of user's timezone
+  dateKey?: string; // Normalized date string YYYY-MM-DD
   streakType: StreakType;
   activityCount: number;
   sources: string[]; // e.g., submissionIds, commit SHAs
@@ -20,6 +21,7 @@ const userStreakLogSchema = new Schema<IUserStreakLog>(
   {
     userId: { type: Schema.Types.ObjectId, required: true, index: true },
     date: { type: Date, required: true },
+    dateKey: { type: String, index: true },
     streakType: {
       type: String,
       required: true,

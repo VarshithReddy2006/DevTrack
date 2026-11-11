@@ -2,7 +2,7 @@
 // Timezone-safe streak computation with anti-cheat, deduplication, and freeze support.
 
 import { Types } from 'mongoose';
-import { User, UserStreakLog, UserAnalytics, type StreakType, type IUserStreakLog } from '../../db/models/index.js';
+import { User, UserStreakLog, UserAnalytics, DailyActivity, type StreakType, type IUserStreakLog } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { getXpProcessingQueue } from '../../shared/jobs/index.js';
@@ -31,6 +31,19 @@ export interface StreakStatus {
   streakFreezeUntil: Date | null;
 }
 
+export interface CanonicalStreakData {
+  currentStreak: number;
+  longestStreak: number;
+  lastActiveDate: string;
+  streakStartDate: string;
+  isActiveToday: boolean;
+}
+
+export interface StreakDayItem {
+  date: Date;
+  activityCount?: number;
+}
+
 // ─── Core streak recorder ─────────────────────────────────────────────────────
 
 export async function recordActivity(payload: RecordActivityPayload): Promise<void> {
@@ -39,6 +52,7 @@ export async function recordActivity(payload: RecordActivityPayload): Promise<vo
 
   // ── Step 1: Normalize date to user's timezone midnight ───────────────────
   const normalizedDate = normalizeToUserDate(activityDate, timezone);
+  const dateKey = normalizedDate.toISOString().split('T')[0];
 
   // ── Step 2: Anti-cheat validation ─────────────────────────────────────────
   const now = new Date();
@@ -54,53 +68,56 @@ export async function recordActivity(payload: RecordActivityPayload): Promise<vo
     return;
   }
 
-  // ── Step 3: Deduplication ────────────────────────────────────────────────
-  const existingLog = await UserStreakLog.findOne({
+  // ── Step 3: Atomic Deduplication & Upsert ──────────────────────────────────
+  const filter = {
     userId: userObjId,
     date: normalizedDate,
     streakType,
-  });
+  };
 
-  if (existingLog) {
-    // Check if source already recorded
-    if (existingLog.sources.includes(source)) {
-      logger.debug('[streak] Duplicate source ignored', {
-        event: 'streak_duplicate_source',
-        userId,
+  const updatePipeline = [
+    {
+      $set: {
+        userId: userObjId,
+        date: normalizedDate,
+        dateKey,
         streakType,
-        source,
-      });
-      return;
-    }
+        timezone,
+        metadata: { $ifNull: ['$metadata', metadata] },
+        createdAt: { $ifNull: ['$createdAt', '$$NOW'] },
+        activityCount: {
+          $cond: {
+            if: { $in: [source, { $ifNull: ['$sources', []] }] },
+            then: { $ifNull: ['$activityCount', 1] },
+            else: { $add: [{ $ifNull: ['$activityCount', 0] }, 1] },
+          },
+        },
+        sources: {
+          $cond: {
+            if: { $in: [source, { $ifNull: ['$sources', []] }] },
+            then: { $ifNull: ['$sources', []] },
+            else: { $concatArrays: [{ $ifNull: ['$sources', []] }, [source]] },
+          },
+        },
+      },
+    },
+  ];
 
-    // Add new source to existing log
-    await UserStreakLog.findByIdAndUpdate(existingLog._id, {
-      $inc: { activityCount: 1 },
-      $addToSet: { sources: source },
-    });
-    logger.debug('[streak] Source added to existing log', {
-      event: 'streak_source_added',
-      userId,
-      streakType,
-      source,
-    });
-  } else {
-    // Create new log
-    await UserStreakLog.create({
-      userId: userObjId,
-      date: normalizedDate,
-      streakType,
-      activityCount: 1,
-      sources: [source],
-      timezone,
-      metadata,
-    });
-    logger.debug('[streak] New activity logged', {
-      event: 'streak_new_log',
-      userId,
-      streakType,
-      date: normalizedDate.toISOString(),
-    });
+  let attempts = 0;
+  while (attempts < 3) {
+    try {
+      await UserStreakLog.findOneAndUpdate(filter, updatePipeline, {
+        upsert: true,
+        new: true,
+      });
+      break;
+    } catch (err: any) {
+      if (err?.code === 11000 && attempts < 2) {
+        attempts++;
+        continue;
+      }
+      throw err;
+    }
   }
 
   // ── Step 4: Recalculate streak ────────────────────────────────────────────
@@ -109,19 +126,39 @@ export async function recordActivity(payload: RecordActivityPayload): Promise<vo
 
 // ─── Recalculation ─────────────────────────────────────────────────────────
 
-export async function recalculateStreak(userId: string, streakType: StreakType): Promise<StreakStatus> {
+export async function recalculateStreak(
+  userId: string,
+  streakType: StreakType,
+  options?: { skipCacheInvalidation?: boolean }
+): Promise<StreakStatus> {
   const userObjId = new Types.ObjectId(userId);
   const timezone = await getUserTimezone(userId);
 
   // Get all logs for this user and streak type, sorted by date descending.
   // Nothing writes 'unified' logs, so 'unified' is the union of every type's days.
   const isUnified = streakType === 'unified';
-  const logs = await UserStreakLog.find({
+  let logs: (IUserStreakLog | StreakDayItem)[] = await UserStreakLog.find({
     userId: userObjId,
     streakType: isUnified ? { $in: ALL_STREAK_TYPES } : streakType,
   })
     .sort({ date: -1 })
     .limit(365 * (isUnified ? ALL_STREAK_TYPES.length : 1)); // Cap at 1 year of days for performance
+
+  if (logs.length === 0) {
+    const dailyActivities = await DailyActivity.find({
+      userId: userObjId,
+      count: { $gt: 0 },
+    })
+      .sort({ date: -1 })
+      .limit(365);
+
+    if (dailyActivities.length > 0) {
+      logs = dailyActivities.map((da) => ({
+        date: da.date,
+        activityCount: da.count,
+      }));
+    }
+  }
 
   if (logs.length === 0) {
     // currentStreak is one field per user. Only reset it when the user has no
@@ -207,11 +244,13 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
   );
 
   // Invalidate before events can trigger dashboard reloads.
-  try {
-    await cacheManager.invalidateUserStreak(userId);
-    await cacheManager.invalidateDashboard(userId);
-  } catch (err) {
-    logger.warn('[streak] Cache invalidation failed (non-fatal)', { error: err });
+  if (!options?.skipCacheInvalidation) {
+    try {
+      await cacheManager.invalidateUserStreak(userId);
+      await cacheManager.invalidateDashboard(userId);
+    } catch (err) {
+      logger.warn('[streak] Cache invalidation failed (non-fatal)', { error: err });
+    }
   }
 
   // ── Step 6: Emit streak milestone events and trigger XP ───────────────
@@ -221,7 +260,7 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
     (m) => currentStreak >= m && previousStreak < m
   );
 
-  if (hitMilestone) {
+  if (hitMilestone && !options?.skipCacheInvalidation) {
     eventBus.emitStreakMilestone(userId, currentStreak, streakType);
 
     // Trigger streak bonus XP via queue. The ledger key is the milestone plus the
@@ -247,7 +286,7 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
   }
 
   // ── Step 7: Emit streak-at-risk if applicable ──────────────────────────
-  if (currentStreak > 0 && !isActiveToday && !status.streakFreezeUntil) {
+  if (currentStreak > 0 && !isActiveToday && !status.streakFreezeUntil && !options?.skipCacheInvalidation) {
     const now = new Date();
     const localHourFormatter = new Intl.DateTimeFormat('en-US', {
       timeZone: timezone, hour: 'numeric', hour12: false,
@@ -259,16 +298,18 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
   }
 
   // ── Step 9: Runtime state sync ──────────────────────────────────────────
-  try {
-    await unifiedRuntimeStateService.updateFromEvent({
-      eventId: `streak_${streakType}_${Date.now()}`,
-      eventType: 'streak_updated',
-      userId,
-      timestamp: new Date(),
-      data: status as unknown as Record<string, unknown>,
-    });
-  } catch (err) {
-    logger.warn('[streak] Runtime state sync failed (non-fatal)', { error: err });
+  if (!options?.skipCacheInvalidation) {
+    try {
+      await unifiedRuntimeStateService.updateFromEvent({
+        eventId: `streak_${streakType}_${Date.now()}`,
+        eventType: 'streak_updated',
+        userId,
+        timestamp: new Date(),
+        data: status as unknown as Record<string, unknown>,
+      });
+    } catch (err) {
+      logger.warn('[streak] Runtime state sync failed (non-fatal)', { error: err });
+    }
   }
 
   logger.info('[streak] Recalculated', {
@@ -285,10 +326,10 @@ export async function recalculateStreak(userId: string, streakType: StreakType):
 }
 
 function calculateCurrentStreak(
-  logs: IUserStreakLog[],
+  logs: (IUserStreakLog | StreakDayItem)[],
   timezone: string,
   streakFreezeUntil: Date | null
-): { currentStreak: number; streakDays: Date[]; freezeConsumed: boolean } {
+): { currentStreak: number; longestStreak: number; streakDays: Date[]; freezeConsumed: boolean } {
   const streakDays: Date[] = [];
   let streakCount = 0;
   let freezeConsumed = false;
@@ -298,7 +339,7 @@ function calculateCurrentStreak(
   for (const log of logs) {
     const dateKey = log.date.toISOString().split('T')[0];
     const existing = dateMap.get(dateKey) ?? 0;
-    dateMap.set(dateKey, existing + log.activityCount);
+    dateMap.set(dateKey, existing + (log.activityCount || 1));
   }
 
   // Sort dates descending
@@ -333,7 +374,27 @@ function calculateCurrentStreak(
     expectedDate = new Date(logDate.getTime() - 24 * 60 * 60 * 1000);
   }
 
-  return { currentStreak: streakCount, streakDays, freezeConsumed };
+  // Calculate longest consecutive streak from all distinct dates
+  let longestStreak = 0;
+  if (sortedDates.length > 0) {
+    const sortedAscending = [...sortedDates].reverse();
+    let currentRun = 1;
+    longestStreak = 1;
+    for (let i = 1; i < sortedAscending.length; i++) {
+      const prev = new Date(sortedAscending[i - 1] + 'T00:00:00.000Z');
+      const curr = new Date(sortedAscending[i] + 'T00:00:00.000Z');
+      const dayDiff = Math.round((curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24));
+      if (dayDiff === 1) {
+        currentRun++;
+        if (currentRun > longestStreak) longestStreak = currentRun;
+      } else if (dayDiff > 1) {
+        currentRun = 1;
+      }
+    }
+  }
+  longestStreak = Math.max(longestStreak, streakCount);
+
+  return { currentStreak: streakCount, longestStreak, streakDays, freezeConsumed };
 }
 
 // ─── Reset streak ────────────────────────────────────────────────────────────
@@ -389,39 +450,50 @@ export async function activateStreakFreeze(userId: string): Promise<void> {
 // ─── Unified streak computation ────────────────────────────────────────────
 
 export async function getUnifiedStreak(userId: string): Promise<StreakStatus> {
+  return recalculateStreak(userId, 'unified');
+}
+
+export async function getCanonicalStreakData(userId: string): Promise<CanonicalStreakData> {
+  const status = await recalculateStreak(userId, 'unified', { skipCacheInvalidation: true });
   const userObjId = new Types.ObjectId(userId);
   const timezone = await getUserTimezone(userId);
-  const today = normalizeToUserDate(new Date(), timezone);
 
-  // Check all three streak types for today
-  const [dsaLog, githubLog] = await Promise.all([
-    UserStreakLog.findOne({
+  let streakStartDate = '';
+  if (status.currentStreak > 0 && status.lastActiveDate) {
+    let logs: (IUserStreakLog | StreakDayItem)[] = await UserStreakLog.find({
       userId: userObjId,
-      date: today,
-      streakType: 'dsa',
-    }),
-    UserStreakLog.findOne({
-      userId: userObjId,
-      date: today,
-      streakType: 'github',
-    }),
-  ]);
+      streakType: { $in: ALL_STREAK_TYPES },
+    })
+      .sort({ date: -1 })
+      .limit(365 * ALL_STREAK_TYPES.length);
 
-  // Determine which streak type to use for unified
-  const analytics = await UserAnalytics.findOne({ userId: userObjId });
+    if (logs.length === 0) {
+      const dailyActivities = await DailyActivity.find({
+        userId: userObjId,
+        count: { $gt: 0 },
+      })
+        .sort({ date: -1 })
+        .limit(365);
+      if (dailyActivities.length > 0) {
+        logs = dailyActivities.map((da) => ({
+          date: da.date,
+          activityCount: da.count,
+        }));
+      }
+    }
 
-  if (dsaLog || githubLog) {
-    // At least one activity today - update unified streak
-    await recalculateStreak(userId, 'unified');
+    const { streakDays } = calculateCurrentStreak(logs, timezone, status.streakFreezeUntil);
+    if (streakDays.length > 0) {
+      streakStartDate = streakDays[streakDays.length - 1].toISOString().split('T')[0];
+    }
   }
 
   return {
-    currentStreak: analytics?.currentStreak ?? 0,
-    bestStreak: analytics?.bestStreak ?? 0,
-    streakType: 'unified',
-    lastActiveDate: analytics?.lastActiveDate ?? null,
-    isActiveToday: !!(dsaLog || githubLog),
-    streakFreezeUntil: analytics?.streakFreezeUntil ?? null,
+    currentStreak: status.currentStreak,
+    longestStreak: status.bestStreak,
+    lastActiveDate: status.lastActiveDate ? status.lastActiveDate.toISOString().split('T')[0] : '',
+    streakStartDate,
+    isActiveToday: status.isActiveToday,
   };
 }
 
