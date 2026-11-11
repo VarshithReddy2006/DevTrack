@@ -174,6 +174,24 @@ export const notificationService = {
     // Cached records are delivery hints only; reads always use MongoDB.
   },
 
+  async deleteNotification(userId: string, notificationId: string): Promise<boolean> {
+    const result = await NotificationRecord.deleteOne({ userId, id: notificationId });
+    if (result.deletedCount > 0) {
+      await this.invalidateCachedNotification(userId, notificationId);
+      return true;
+    }
+    return false;
+  },
+
+  async clearNotifications(userId: string, readOnly = true): Promise<number> {
+    const query: Record<string, unknown> = { userId };
+    if (readOnly) {
+      query.read = true;
+    }
+    const result = await NotificationRecord.deleteMany(query);
+    return result.deletedCount;
+  },
+
   async invalidateCachedNotification(userId: string, id: string): Promise<void> {
     try {
       await getRedisClient().del(`notification:${userId}:${id}`);
@@ -193,7 +211,7 @@ export const notificationService = {
     return { ...DEFAULT_PREFERENCES, ...preferences, types: { ...DEFAULT_PREFERENCES.types, ...preferences?.types } };
   },
 
-  async updatePreferences(userId: string, updates: Partial<NotificationPreferences>): Promise<void> {
+  async updatePreferences(userId: string, updates: Partial<NotificationPreferences>): Promise<NotificationPreferences> {
     const fields: Record<string, unknown> = {};
     for (const key of ['enableInApp', 'enablePush', 'digestFrequency'] as const) {
       if (updates[key] !== undefined) fields[`preferences.${key}`] = updates[key];
@@ -202,6 +220,7 @@ export const notificationService = {
       if (type in DEFAULT_PREFERENCES.types) fields[`preferences.types.${type}`] = enabled;
     }
     await NotificationPreference.updateOne({ userId }, { $set: fields }, { upsert: true, runValidators: true });
+    return this.getPreferences(userId);
   },
 
   // ─── Derive tone from user behavioral state ─────────────────────────────

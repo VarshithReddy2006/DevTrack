@@ -35,4 +35,36 @@ export const notificationController = {
     const count = await notificationService.getUnreadCount(userId);
     res.json({ unread: count });
   }),
+
+  getPreferences: withAuth('[notifications]', 'get preferences', async (userId, _req, res) => {
+    const preferences = await notificationService.getPreferences(userId);
+    res.json(preferences);
+  }),
+
+  updatePreferences: withAuth('[notifications]', 'update preferences', async (userId, req, res) => {
+    const preferences = await notificationService.updatePreferences(userId, req.body);
+    res.json(preferences);
+  }),
+
+  deleteNotification: withAuth('[notifications]', 'delete notification', async (userId, req, res) => {
+    const notificationId = req.params.id as string;
+    if (!notificationId) {
+      ApiResponse.badRequest(res, 'Notification ID required');
+      return;
+    }
+
+    const deleted = await notificationService.deleteNotification(userId, notificationId);
+    if (!deleted) {
+      ApiResponse.notFound(res, 'Notification not found');
+      return;
+    }
+
+    res.json({ success: true });
+  }),
+
+  clearNotifications: withAuth('[notifications]', 'clear notifications', async (userId, req, res) => {
+    const readOnly = req.query.readOnly !== 'false';
+    const deletedCount = await notificationService.clearNotifications(userId, readOnly);
+    res.json({ success: true, deletedCount });
+  }),
 };

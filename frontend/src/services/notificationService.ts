@@ -78,4 +78,37 @@ export const notificationService = {
   markAllRead: async (): Promise<void> => {
     await axiosClient.post('/notifications/read-all');
   },
+
+  /**
+   * DELETE /api/notifications/:id — delete a specific notification.
+   */
+  delete: async (id: string): Promise<void> => {
+    await axiosClient.delete(`/notifications/${id}`);
+  },
+
+  /**
+   * DELETE /api/notifications — clear read or all notifications.
+   */
+  clear: async (readOnly = true): Promise<{ success: boolean; deletedCount: number }> => {
+    const { data } = await axiosClient.delete<{ success: boolean; deletedCount: number }>('/notifications', {
+      params: { readOnly },
+    });
+    return data;
+  },
+
+  /**
+   * GET /api/notifications/preferences — get notification preferences.
+   */
+  getPreferences: async (): Promise<Record<string, unknown>> => {
+    const { data } = await axiosClient.get<Record<string, unknown>>('/notifications/preferences');
+    return data;
+  },
+
+  /**
+   * PATCH /api/notifications/preferences — update notification preferences.
+   */
+  updatePreferences: async (preferences: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const { data } = await axiosClient.patch<Record<string, unknown>>('/notifications/preferences', preferences);
+    return data;
+  },
 };

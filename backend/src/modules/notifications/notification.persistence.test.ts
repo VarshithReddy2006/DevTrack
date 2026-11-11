@@ -58,4 +58,74 @@ describe('durable notifications with Redis offline', () => {
     await service.cleanupExpired();
     expect(await NotificationRecord.countDocuments()).toBe(0);
   });
+
+  it('updates and returns full preferences and merges with defaults', async () => {
+    const defaults = await service.getPreferences('pref-user');
+    expect(defaults.enableInApp).toBe(true);
+    expect(defaults.digestFrequency).toBe('realtime');
+    expect(defaults.types.streak_reminder).toBe(true);
+
+    const updated = await service.updatePreferences('pref-user', {
+      digestFrequency: 'daily',
+      types: { streak_reminder: false } as any,
+    });
+
+    expect(updated.digestFrequency).toBe('daily');
+    expect(updated.types.streak_reminder).toBe(false);
+    expect(updated.types.achievement).toBe(true);
+
+    const fetched = await service.getPreferences('pref-user');
+    expect(fetched.digestFrequency).toBe('daily');
+    expect(fetched.types.streak_reminder).toBe(false);
+  });
+
+  it('deletes an owned notification and isolates cross-tenant deletion', async () => {
+    const userA = 'user-alice';
+    const userB = 'user-bob';
+
+    const notifA = await service.create(userA, 'system', 'Alice Notif', 'Body');
+    const notifB = await service.create(userB, 'system', 'Bob Notif', 'Body');
+
+    // Bob cannot delete Alice's notification
+    const bobDeleteAlice = await service.deleteNotification(userB, notifA!.id);
+    expect(bobDeleteAlice).toBe(false);
+    expect((await service.getNotifications(userA)).total).toBe(1);
+
+    // Alice can delete her own notification
+    const aliceDelete = await service.deleteNotification(userA, notifA!.id);
+    expect(aliceDelete).toBe(true);
+    expect((await service.getNotifications(userA)).total).toBe(0);
+
+    // Deleting a non-existent or already deleted notification returns false
+    const deleteAgain = await service.deleteNotification(userA, notifA!.id);
+    expect(deleteAgain).toBe(false);
+
+    // Bob's notification is untouched
+    expect((await service.getNotifications(userB)).total).toBe(1);
+  });
+
+  it('clears only read notifications when readOnly=true, and all when readOnly=false', async () => {
+    const userId = 'user-clear';
+    const n1 = await service.create(userId, 'system', 'N1', 'B1');
+    const n2 = await service.create(userId, 'system', 'N2', 'B2');
+    const n3 = await service.create(userId, 'system', 'N3', 'B3');
+
+    // Mark n1 and n2 as read
+    await service.markAsRead(userId, n1!.id);
+    await service.markAsRead(userId, n2!.id);
+
+    // Clear read-only
+    const clearedRead = await service.clearNotifications(userId, true);
+    expect(clearedRead).toBe(2);
+
+    // Only n3 remains
+    const remaining = await service.getNotifications(userId);
+    expect(remaining.total).toBe(1);
+    expect(remaining.notifications[0].id).toBe(n3!.id);
+
+    // Clear all
+    const clearedAll = await service.clearNotifications(userId, false);
+    expect(clearedAll).toBe(1);
+    expect((await service.getNotifications(userId)).total).toBe(0);
+  });
 });
