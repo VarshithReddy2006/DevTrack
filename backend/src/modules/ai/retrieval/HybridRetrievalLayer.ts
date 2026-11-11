@@ -1,3 +1,4 @@
+import type { EmbeddingScope } from '../embedding/embeddingScope.js';
 import { logger } from '../../../shared/logger.js';
 import { VectorRetrievalEngine } from './VectorRetrievalEngine.js';
 
@@ -8,10 +9,10 @@ export class HybridRetrievalLayer {
     this.vectorEngine = vectorEngine;
   }
 
-  async retrieve(queryVector: number[], deterministicMatches: string[], alpha: number = 0.5): Promise<{ id: string, score: number }[]> {
+  async retrieve(scope: EmbeddingScope, queryVector: number[], deterministicMatches: string[], alpha: number = 0.5): Promise<{ id: string, score: number }[]> {
     logger.info('[HybridRetrieval] Merging semantic and deterministic results');
     
-    const semanticResults = await this.vectorEngine.retrieveTopK(queryVector, 20);
+    const semanticResults = await this.vectorEngine.retrieveTopK(scope, queryVector, 20);
     const semanticScoreMap = new Map(semanticResults.map(r => [r.id, r.score]));
     
     const combinedScores = new Map<string, number>();

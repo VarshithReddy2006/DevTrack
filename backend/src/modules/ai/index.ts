@@ -12,6 +12,7 @@ export { AIProviderAdapter, type AIProvider, type AIRequest, type AIResponse, ty
 // ---------------------------------------------------------------------------
 export { EmbeddingProviderAdapter, type EmbeddingResponse } from './embedding/EmbeddingProviderAdapter.js';
 export { RealEmbeddingPipeline } from './embedding/RealEmbeddingPipeline.js';
+export type { EmbeddingScope } from './embedding/embeddingScope.js';
 export { EmbeddingPersistenceLayer } from './embedding/EmbeddingPersistenceLayer.js';
 
 // ---------------------------------------------------------------------------

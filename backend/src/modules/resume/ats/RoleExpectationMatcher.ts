@@ -19,14 +19,12 @@ export class RoleExpectationMatcher {
       // Try generating embedding via real pipeline
       if (process.env.OPENAI_API_KEY) {
         try {
-          const tempId = `role_${createHash('md5').update(roleDescription).digest('hex')}`;
-          const resumeId = `resume_${createHash('md5').update(resumeText).digest('hex')}`;
-
-          await this.pipeline.processAndStore(resumeId, resumeText);
-          resumeVector = await this.pipeline.getEmbeddingForId(resumeId);
-
-          await this.pipeline.processAndStore(tempId, roleDescription);
-          roleVector = await this.pipeline.getEmbeddingForId(tempId);
+          const [resume, role] = await Promise.all([
+            this.pipeline.embedText(resumeText),
+            this.pipeline.embedText(roleDescription),
+          ]);
+          resumeVector = resume.vector;
+          roleVector = role.vector;
         } catch (e) {
           // fallback gracefully
         }

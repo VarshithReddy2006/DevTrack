@@ -1,7 +1,9 @@
-import { logger } from '../../../shared/logger.js';
-import { getRedisClient, getRedisHealth } from '../../../shared/redis/index.js';
+import { createHash } from 'node:crypto';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
+import { logger } from '../../../shared/logger.js';
+import { getRedisClient, getRedisHealth } from '../../../shared/redis/index.js';
+import { EMBEDDING_VERSION, embeddingScopeFilter, type EmbeddingScope } from './embeddingScope.js';
 
 export interface EmbeddingResponse {
   vector: number[];
@@ -10,139 +12,125 @@ export interface EmbeddingResponse {
   model: string;
 }
 
+const OPENAI = { provider: 'openai', model: 'text-embedding-3-small', dimensions: 1536 } as const;
+const GEMINI = { provider: 'gemini', model: 'gemini-embedding-2', dimensions: 3072 } as const;
 const MAX_RETRIES = 3;
-const TIMEOUT_MS = 15000;
+const TIMEOUT_MS = 15_000;
+const CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+function cacheKey(text: string, owner: ReturnType<typeof embeddingScopeFilter>, model: Omit<EmbeddingResponse, 'vector'>): string {
+  const hash = createHash('sha256').update(JSON.stringify([
+    owner.scope, owner.userId?.toHexString(), model.provider, model.model, model.dimensions, EMBEDDING_VERSION, text,
+  ])).digest('hex');
+  return `ai:embedding:v3:${hash}`;
+}
+
+function matchesModel(value: unknown, model: Omit<EmbeddingResponse, 'vector'>): value is EmbeddingResponse {
+  if (!value || typeof value !== 'object') return false;
+  const embedding = value as Partial<EmbeddingResponse>;
+  return embedding.provider === model.provider && embedding.model === model.model
+    && embedding.dimensions === model.dimensions && Array.isArray(embedding.vector)
+    && embedding.vector.length === model.dimensions && embedding.vector.every(Number.isFinite);
+}
 
 export class EmbeddingProviderAdapter {
-  /**
-   * Helper for exponential backoff retries with timeout
-   */
   private async withRetry<T>(operation: () => Promise<T>, context: string): Promise<T> {
-    let lastError: Error | unknown;
+    let lastError: unknown;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const timeoutPromise = new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error(`${context} timed out after ${TIMEOUT_MS}ms`)), TIMEOUT_MS)
-        );
-        return await Promise.race([operation(), timeoutPromise]);
+        return await Promise.race([
+          operation(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`${context} timed out after ${TIMEOUT_MS}ms`)), TIMEOUT_MS);
+          }),
+        ]);
       } catch (error) {
         lastError = error;
-        logger.warn(`[EmbeddingProvider] Attempt ${attempt}/${MAX_RETRIES} failed for ${context}: ${error instanceof Error ? error.message : String(error)}`);
-        if (attempt < MAX_RETRIES) {
-          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // 1s, 2s, 4s
-          await new Promise(res => setTimeout(res, delay));
-        }
+        logger.warn(`[EmbeddingProvider] Attempt ${attempt}/${MAX_RETRIES} failed for ${context}`);
+      } finally {
+        clearTimeout(timer);
       }
+      if (attempt < MAX_RETRIES) await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
     }
-    throw new Error(`[EmbeddingProvider] Failed ${context} after ${MAX_RETRIES} attempts. Last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    throw new Error(`[EmbeddingProvider] Failed ${context} after ${MAX_RETRIES} attempts`, { cause: lastError });
   }
 
-  async generateEmbeddingBatch(texts: string[]): Promise<EmbeddingResponse[]> {
+  async generateEmbeddingBatch(texts: string[], scope?: EmbeddingScope): Promise<EmbeddingResponse[]> {
     if (!texts.length) return [];
-    
-    const redis = getRedisClient();
-    const results: (EmbeddingResponse | null)[] = new Array(texts.length).fill(null);
-    const missingIndices: number[] = [];
-    const missingTexts: string[] = [];
-    
-    const isRedisConnected = getRedisHealth().status === 'connected';
-
-    // Check cache first
-    for (let i = 0; i < texts.length; i++) {
-      const cacheKey = `ai:embedding:v2:${Buffer.from(texts[i]).toString('base64').substring(0, 100)}`;
-      let cached = null;
-      if (isRedisConnected) {
-        cached = await redis.get(cacheKey).catch(() => null);
-      }
-      if (cached) {
-        results[i] = JSON.parse(cached);
-      } else {
-        missingIndices.push(i);
-        missingTexts.push(texts[i]);
-      }
+    const owner = scope === undefined ? undefined : embeddingScopeFilter(scope);
+    const openAiKey = process.env.OPENAI_API_KEY;
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const model = openAiKey && !openAiKey.startsWith('sk-or-') ? OPENAI
+      : geminiKey && geminiKey !== 'dummy_key_for_dev' ? GEMINI
+      : null;
+    if (!model) {
+      logger.warn('[EmbeddingProvider] No valid API key configured. Using deterministic placeholder vectors.');
+      return texts.map(text => {
+        const hash = createHash('sha256').update(text).digest();
+        const vector = Array.from({ length: OPENAI.dimensions }, (_, i) => Math.sin(i + hash[i % hash.length]) * 0.1);
+        return { vector, provider: 'gemini', model: 'deterministic-fallback-v1', dimensions: vector.length };
+      });
     }
 
-    if (missingTexts.length > 0) {
+    // Caller-owned text without a verified scope is transient and never cached.
+    const redisClient = owner ? getRedisClient() : undefined;
+    const redis = redisClient && getRedisHealth().status === 'connected' ? redisClient : undefined;
+    const keys = owner && redis ? texts.map(text => cacheKey(text, owner, model)) : [];
+    const results = await Promise.all(texts.map(async (_, index): Promise<EmbeddingResponse | undefined> => {
+      if (!redis) return undefined;
       try {
-        const openAiKey = process.env.OPENAI_API_KEY;
-        const geminiKey = process.env.GEMINI_API_KEY;
-        let fetchedEmbeddings: EmbeddingResponse[] = [];
-        
-        if (openAiKey && !openAiKey.startsWith('sk-or-')) {
-          logger.info(`[EmbeddingProvider] Generating embeddings via OpenAI for ${missingTexts.length} chunks`);
-          const openai = new OpenAI({ apiKey: openAiKey });
-          
-          fetchedEmbeddings = await this.withRetry(async () => {
-            const response = await openai.embeddings.create({
-              model: "text-embedding-3-small",
-              input: missingTexts,
-            });
-            
-            return response.data.map(item => ({
-              vector: item.embedding,
-              provider: 'openai' as const,
-              dimensions: item.embedding.length,
-              model: 'text-embedding-3-small'
-            }));
-          }, 'OpenAI batch embedding');
-          
-        } else if (geminiKey && geminiKey !== 'dummy_key_for_dev') {
-          logger.info(`[EmbeddingProvider] Generating embeddings via Gemini for ${missingTexts.length} chunks`);
-          const genAI = new GoogleGenerativeAI(geminiKey);
-          const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
-          
-          fetchedEmbeddings = await this.withRetry(async () => {
-            const promises = missingTexts.map(async text => {
-              const result = await model.embedContent(text);
-              return {
-                vector: result.embedding.values,
-                provider: 'gemini' as const,
-                dimensions: result.embedding.values.length,
-                model: 'text-embedding-004'
-              };
-            });
-            return Promise.all(promises);
-          }, 'Gemini concurrent embeddings');
-        } else {
-          logger.warn('[EmbeddingProvider] No valid API key configured or dummy key detected. Generating stable pseudo-random placeholder vectors.');
-          fetchedEmbeddings = missingTexts.map((text) => {
-            // Generate stable pseudo-random vector of length 1536 based on text length and character indices
-            const vector = Array.from({ length: 1536 }, (_, i) => Math.sin(i + text.length) * 0.1);
-            return {
-              vector,
-              provider: 'gemini' as const,
-              dimensions: 1536,
-              model: 'text-embedding-004'
-            };
+        const cached = await redis.get(keys[index]);
+        const value: unknown = cached ? JSON.parse(cached) : undefined;
+        return matchesModel(value, model) ? value : undefined;
+      } catch {
+        return undefined;
+      }
+    }));
+    const missing = results.flatMap((result, index) => result ? [] : [index]);
+    if (missing.length) {
+      const input = missing.map(index => texts[index]);
+      const vectors = await this.withRetry(async () => {
+        const vectors = model.provider === 'openai'
+          ? await this.embedWithOpenAI(openAiKey!, input)
+          : await this.embedWithGemini(geminiKey!, input);
+        if (vectors.length !== input.length || vectors.some(vector => (
+          !Array.isArray(vector) || vector.length !== model.dimensions || !vector.every(Number.isFinite)
+        ))) {
+          throw new Error('Embedding provider returned unexpected vector dimensions or batch size');
+        }
+        return vectors;
+      }, `${model.provider} batch embedding`);
+
+      await Promise.all(missing.map(async (index, position) => {
+        const embedding = { ...model, vector: vectors[position] };
+        results[index] = embedding;
+        if (redis) {
+          await redis.set(keys[index], JSON.stringify(embedding), 'EX', CACHE_TTL_SECONDS).catch(() => {
+            logger.warn('[EmbeddingProvider] Failed to cache embedding');
           });
         }
-
-        // Merge back and cache
-        for (let i = 0; i < missingIndices.length; i++) {
-          const originalIndex = missingIndices[i];
-          const embedding = fetchedEmbeddings[i];
-          results[originalIndex] = embedding;
-          
-          if (isRedisConnected) {
-            // Cache for 30 days
-            const cacheKey = `ai:embedding:v2:${Buffer.from(missingTexts[i]).toString('base64').substring(0, 100)}`;
-            await redis.set(cacheKey, JSON.stringify(embedding), 'EX', 30 * 24 * 60 * 60).catch(err => {
-              logger.warn(`[EmbeddingProvider] Failed to cache embedding`, err);
-            });
-          }
-        }
-      } catch (err) {
-        logger.error('[EmbeddingProvider] Batch embedding generation failed', { err });
-        throw err; // Ensure worker can handle and record failure
-      }
+      }));
     }
-
     return results as EmbeddingResponse[];
   }
 
-  // Keep for backwards compatibility for single embeddings
-  async generateEmbedding(text: string): Promise<EmbeddingResponse> {
-    const results = await this.generateEmbeddingBatch([text]);
-    return results[0];
+  async generateEmbedding(text: string, scope?: EmbeddingScope): Promise<EmbeddingResponse> {
+    const [embedding] = await this.generateEmbeddingBatch([text], scope);
+    return embedding;
+  }
+
+  private async embedWithOpenAI(apiKey: string, input: string[]): Promise<number[][]> {
+    const client = new OpenAI({ apiKey });
+    const response = await client.embeddings.create({ model: OPENAI.model, dimensions: OPENAI.dimensions, input });
+    const ordered = [...response.data].sort((left, right) => left.index - right.index);
+    if (ordered.some((item, index) => item.index !== index)) throw new Error('Invalid OpenAI embedding indices');
+    return ordered.map(item => item.embedding);
+  }
+
+  private async embedWithGemini(apiKey: string, input: string[]): Promise<number[][]> {
+    const client = new GoogleGenerativeAI(apiKey);
+    const model = client.getGenerativeModel({ model: GEMINI.model });
+    return Promise.all(input.map(async text => (await model.embedContent(text)).embedding.values));
   }
 }
