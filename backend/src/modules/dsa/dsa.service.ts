@@ -666,6 +666,103 @@ export async function getContests(
 // TOPICS ANALYTICS
 // ---------------------------------------------------------------------------
 
+export interface DsaDistributionResult {
+  totalProblems: number;
+  totalSolved: number;
+  favoriteCount: number;
+  difficultyDistribution: {
+    easy: number;
+    medium: number;
+    hard: number;
+  };
+  statusDistribution: {
+    unsolved: number;
+    attempted: number;
+    solved: number;
+    revisit: number;
+  };
+  platformDistribution: Record<
+    string,
+    {
+      total: number;
+      solved: number;
+      easy: number;
+      medium: number;
+      hard: number;
+    }
+  >;
+  tagFrequency: Array<{ tag: string; count: number }>;
+}
+
+export async function getProblemDistribution(userId: string): Promise<DsaDistributionResult> {
+  const userObjId = new Types.ObjectId(userId);
+  const problems = await DsaProblem.find({ userId: userObjId }).lean();
+
+  let totalSolved = 0;
+  let favoriteCount = 0;
+  const difficultyDistribution = { easy: 0, medium: 0, hard: 0 };
+  const statusDistribution = { unsolved: 0, attempted: 0, solved: 0, revisit: 0 };
+  const platformDistribution: Record<
+    string,
+    { total: number; solved: number; easy: number; medium: number; hard: number }
+  > = {};
+  const tagCounts: Record<string, number> = {};
+
+  for (const p of problems) {
+    if (p.isFavorite) favoriteCount++;
+
+    const diff = p.difficulty as 'easy' | 'medium' | 'hard';
+    if (diff in difficultyDistribution) {
+      difficultyDistribution[diff]++;
+    }
+
+    const st = p.status as 'unsolved' | 'attempted' | 'solved' | 'revisit';
+    if (st in statusDistribution) {
+      statusDistribution[st]++;
+    }
+    if (st === 'solved') {
+      totalSolved++;
+    }
+
+    const platform = p.platform || 'custom';
+    if (!platformDistribution[platform]) {
+      platformDistribution[platform] = { total: 0, solved: 0, easy: 0, medium: 0, hard: 0 };
+    }
+    platformDistribution[platform].total++;
+    if (st === 'solved') {
+      platformDistribution[platform].solved++;
+    }
+    if (diff in platformDistribution[platform]) {
+      platformDistribution[platform][diff]++;
+    }
+
+    if (Array.isArray(p.tags)) {
+      for (const t of p.tags) {
+        if (t && typeof t === 'string') {
+          const tag = t.trim();
+          if (tag) {
+            tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+          }
+        }
+      }
+    }
+  }
+
+  const tagFrequency = Object.entries(tagCounts)
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    totalProblems: problems.length,
+    totalSolved,
+    favoriteCount,
+    difficultyDistribution,
+    statusDistribution,
+    platformDistribution,
+    tagFrequency,
+  };
+}
+
 export async function getTopicAnalytics(userId: string): Promise<ApiDsaTopicsListResponse> {
   const { topics, totals, totalProblems } = await reconcileUserDsaSummary(userId);
   return { topics, summary: { totalTopics: topics.length, totalSolved: totals.solved, totalProblems } };

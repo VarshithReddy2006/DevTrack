@@ -110,3 +110,8 @@ export async function getTopicAnalytics(req: AuthenticatedRequest, res: Response
   const data = await service.getTopicAnalytics(req.user!.id);
   successResponse(res, data, 'Topic analytics retrieved successfully');
 }
+
+export async function getDistribution(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const data = await service.getProblemDistribution(req.user!.id);
+  successResponse(res, data, 'Problem distribution retrieved successfully');
+}
