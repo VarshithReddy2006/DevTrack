@@ -5,11 +5,12 @@
 import { Worker, Job, Queue } from 'bullmq';
 import { getRedisClient } from '../redis/index.js';
 import { logger } from '../logger.js';
-import { dlqService } from './dlq.service.js';
+import { createDlqWorker, dlqService, DLQ_QUEUE_NAMES } from './dlq.service.js';
 import { QueueNames, SystemMaintenanceJobData } from './types.js';
 import { generateDailyMissions, generateWeeklyMissions } from '../../modules/missions/missionGenerator.service.js';
 import { cleanupStaleLocks } from '../redis/syncLock.service.js';
 import { UserAnalytics, DailyChallenge } from '../../db/models/index.js';
+import { AntiGamingWorker } from '../../modules/profile/antiGaming.worker.js';
 import { getNotificationQueue } from './queueFactory.js';
 
 let _worker: Worker<SystemMaintenanceJobData> | null = null;
@@ -24,12 +25,7 @@ async function runCleanupFailedJobs(): Promise<void> {
   try {
     let totalCleaned = 0;
     // Clean DLQ entries for all known queue types
-    const queues = [
-      QueueNames.PLATFORM_SYNC,
-      QueueNames.XP_PROCESSING,
-      QueueNames.STREAK_RECALC,
-      QueueNames.SYSTEM_MAINTENANCE,
-    ];
+    const queues = DLQ_QUEUE_NAMES;
     for (const q of queues) {
       try {
         const cleaned = await dlqService.cleanupDlq(q);
@@ -231,7 +227,7 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
 
   const redis = getRedisClient();
 
-  _worker = new Worker<SystemMaintenanceJobData>(
+  _worker = createDlqWorker<SystemMaintenanceJobData>(
     QueueNames.SYSTEM_MAINTENANCE,
     async (job: Job<SystemMaintenanceJobData>) => {
       const { task } = job.data;
@@ -265,6 +261,9 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
           break;
         case 'generate_daily_challenge':
           await runGenerateDailyChallenge();
+          break;
+        case 'audit_public_profiles':
+          await AntiGamingWorker.startAuditJob(new Date(job.opts.prevMillis ?? job.timestamp));
           break;
         default:
           logger.warn('[maintenance] Unknown task type', { task });
@@ -386,6 +385,19 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
     {
       repeat: { pattern: '0 23 * * *' }, // 23:00 UTC daily
       jobId: 'maintenance-daily-challenge',
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
+    }
+  );
+
+  await _queue.add(
+    'audit-public-profiles',
+    { task: 'audit_public_profiles' },
+    {
+      repeat: { pattern: '0 3 * * *', tz: 'UTC' },
+      jobId: 'maintenance-audit-public-profiles',
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 60_000 },
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 10 },
     }

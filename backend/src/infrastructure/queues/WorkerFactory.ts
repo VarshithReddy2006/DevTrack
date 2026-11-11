@@ -5,6 +5,7 @@ import { logger } from '../../shared/logger.js';
 import { ErrorClassifier, NonRetryableError } from './ErrorClassifier.js';
 import { DeadLetterHandler } from './DeadLetterHandler.js';
 import { RetryPolicy } from './RetryPolicy.js';
+import { attachWorkerDlq } from '../../shared/jobs/dlq.service.js';
 
 export class WorkerFactory {
   /**
@@ -13,14 +14,14 @@ export class WorkerFactory {
    * 
    * @param queueName Name of the queue
    * @param processor Async function that processes the job
-   * @param options Additional worker options (concurrency, etc)
+   * @param options Additional worker options. Set jobTimeoutMs to null when the processor must finish before BullMQ settles the job.
    */
   static createWorker<T>(
     queueName: string,
     processor: (job: Job<T>) => Promise<any>,
-    options?: Partial<WorkerOptions>
+    options?: Partial<WorkerOptions> & { jobTimeoutMs?: number | null }
   ): Worker<T> {
-    
+    const { jobTimeoutMs = 5 * 60 * 1000, ...workerOptions } = options ?? {};
     const worker = new Worker<T>(
       queueName,
       async (job: Job<T>) => {
@@ -28,14 +29,18 @@ export class WorkerFactory {
         logger.info(`[Worker:${queueName}] Started Job ${jobId}`);
         
         try {
-          // Timeout protection (e.g. max 5 minutes per job to prevent hanging)
-          const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Job execution timed out after 5 minutes')), 5 * 60 * 1000);
-          });
-          
-          await Promise.race([processor(job), timeoutPromise]);
-
-          logger.info(`[Worker:${queueName}] Completed Job ${jobId}`);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const processing = processor(job);
+            const result = jobTimeoutMs === null ? await processing : await Promise.race([
+              processing,
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`Job execution timed out after ${jobTimeoutMs / 60_000} minutes`)), jobTimeoutMs);
+              }),
+            ]);
+            logger.info(`[Worker:${queueName}] Completed Job ${jobId}`);
+            return result;
+          } finally { clearTimeout(timer); }
         } catch (error) {
           logger.error(`[Worker:${queueName}] Failed Job ${jobId} on attempt ${job.attemptsMade + 1}`, error);
           
@@ -51,7 +56,7 @@ export class WorkerFactory {
           }
 
           // If retryable, check if we've exhausted attempts
-          if (job.attemptsMade >= (job.opts.attempts || RetryPolicy.MAX_ATTEMPTS) - 1) {
+          if (job.attemptsMade >= (job.opts.attempts || 1) - 1) {
             logger.error(`[Worker:${queueName}] Job ${jobId} exhausted all retries. Moving to DLQ.`);
             await DeadLetterHandler.handlePermanentFailure(queueName, `Worker:${queueName}`, job, classifiedError);
             throw classifiedError;
@@ -63,17 +68,15 @@ export class WorkerFactory {
       },
       {
         connection: getRedisClient(),
-        concurrency: options?.concurrency || 3,
+        concurrency: workerOptions.concurrency || 3,
         settings: {
           backoffStrategy: RetryPolicy.getCustomBackoffLogic()
         },
-        ...options
+        ...workerOptions
       }
     );
 
-    worker.on('failed', (job, err) => {
-      // Handled internally by process wrapper, but useful for overall worker telemetry
-    });
+    attachWorkerDlq(worker, queueName);
 
     worker.on('stalled', (jobId) => {
       logger.warn(`[Worker:${queueName}] Job ${jobId} stalled. Recovery workflow initiated.`);

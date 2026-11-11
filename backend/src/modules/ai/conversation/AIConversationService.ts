@@ -55,6 +55,7 @@ class AIConversationServiceClass {
       // Generate AI response
       const aiRequest: AIRequest = {
         prompt: userPrompt,
+        tenantScope: userId,
         systemPrompt,
         temperature: 0.7,
         maxTokens: 500,

@@ -1,57 +1,45 @@
-// src/shared/jobs/workers.ts
-import { Worker } from 'bullmq';
-import { logger } from '../logger.js';
+import { createWorkerRuntime, workerDefinitions } from '../../workers/worker-runtime.js';
 import { getRedisClient } from '../redis/index.js';
-import { QueueNames } from './types.js';
 
-import { startPlatformSyncWorker } from './platformSyncWorker.js';
-import { startMaintenanceWorker } from './maintenanceWorker.js';
-import { startXpWorker as startXpProcessingWorker } from './xpWorker.js';
-import { startStreakRecalcWorker } from './streakRecalcWorker.js';
-import { startNotificationWorker } from './notificationWorker.js';
-import { startProfileRebuildWorker } from './profileRebuildWorker.js';
+let runtime: ReturnType<typeof createWorkerRuntime> | undefined;
 
-import { startDsaAnalyticsWorker } from './workers/dsaAnalyticsWorker.js';
-import { startProjectIntelligenceWorker } from './workers/projectIntelligenceWorker.js';
-import { startSkillIntelligenceWorker } from './workers/skillIntelligenceWorker.js';
-import { startBenchmarkWorker } from './workers/benchmarkWorker.js';
-import { startRoadmapRecommendationWorker } from './workers/roadmapRecommendationWorker.js';
-import { startReadinessAggregationWorker } from './workers/readinessAggregationWorker.js';
-
-let workers: Worker[] = [];
-
+/** API and compatibility callers share one managed registry per process. */
 export async function startAllWorkers(): Promise<void> {
-  const redis = getRedisClient();
-  if (redis.status !== 'ready') {
-    logger.warn('[workers] Redis not ready. Skipping worker startup.', { status: redis.status });
-    return;
-  }
-
-  logger.info('[workers] Starting background job workers...');
-
-  workers = [
-    startPlatformSyncWorker(),
-    startMaintenanceWorker(),
-    startXpProcessingWorker(),
-    startStreakRecalcWorker(),
-    startNotificationWorker(),
-    startProfileRebuildWorker(),
-    
-    // Readiness Pipeline
-    startDsaAnalyticsWorker(),
-    startProjectIntelligenceWorker(),
-    startSkillIntelligenceWorker(),
-    startBenchmarkWorker(),
-    startRoadmapRecommendationWorker(),
-    startReadinessAggregationWorker()
-  ];
-
-  logger.info(`[workers] Successfully started ${workers.length} workers.`);
+  if (process.env.ENABLE_WORKERS === 'false') return;
+  if (getRedisClient().status !== 'ready') throw new Error('Redis must be ready before workers start');
+  runtime ??= createWorkerRuntime('all', {
+    validate: async () => {}, connect: async () => {}, disconnect: async () => {},
+  });
+  try { await runtime.start(); }
+  catch (error) { await stopAllWorkers().catch(() => undefined); throw error; }
 }
 
 export async function stopAllWorkers(): Promise<void> {
-  logger.info(`[workers] Gracefully shutting down ${workers.length} workers...`);
-  await Promise.allSettled(workers.map((w) => w.close()));
-  workers = [];
-  logger.info('[workers] All workers stopped.');
+  const current = runtime;
+  if (!current) return;
+  try { await current.stop(); }
+  finally { if (runtime === current) runtime = undefined; }
+}
+
+export async function getRegisteredWorkerStatuses() {
+  const { getOrCreateQueue } = await import('./queueFactory.js');
+  return Promise.all(workerDefinitions.map(async ({ role, queueName }) => {
+    const name = queueName!;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (getRedisClient().status !== 'ready') throw new Error('Redis unavailable');
+      const queue = getOrCreateQueue(name);
+      const [counts, consumers] = await Promise.race([
+        Promise.all([queue.getJobCounts(), queue.getWorkers()]),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Queue health timed out')), 1000); }),
+      ]);
+      return { name, role, status: consumers.length ? 'healthy' : 'missing-consumer', consumers: consumers.length,
+        active: counts.active ?? 0, waiting: counts.waiting ?? 0, failed: counts.failed ?? 0,
+        completed: counts.completed ?? 0, delayed: counts.delayed ?? 0 };
+    } catch (error) {
+      return { name, role, status: 'unavailable', consumers: 0,
+        error: error instanceof Error ? error.message : String(error),
+        active: null, waiting: null, failed: null, completed: null, delayed: null };
+    } finally { clearTimeout(timer); }
+  }));
 }

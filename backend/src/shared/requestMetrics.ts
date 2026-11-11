@@ -2,6 +2,7 @@
 // Tracks request counts, latency histograms, and error rates per endpoint.
 // Designed to be consumed by /metrics and health endpoints.
 
+import { cacheManager } from './cache/cacheManager.js';
 import type { Request, Response, NextFunction } from 'express';
 
 export interface RequestMetric {
@@ -154,6 +155,7 @@ function now(): number {
 }
 
 export interface MetricsSnapshot {
+  cache: ReturnType<typeof cacheManager.getReadStats>;
   uptime: number;
   totalRequests: number;
   totalErrors: number;
@@ -185,6 +187,7 @@ export function getMetricsSnapshot(): MetricsSnapshot {
   }
 
   return {
+    cache: cacheManager.getReadStats(),
     uptime: Math.floor(uptime),
     totalRequests: store.totalRequests,
     totalErrors: store.totalErrors,

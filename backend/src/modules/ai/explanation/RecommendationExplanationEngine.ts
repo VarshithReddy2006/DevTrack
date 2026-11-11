@@ -56,6 +56,7 @@ class RecommendationExplanationEngineClass {
       // Generate AI response
       const aiRequest: AIRequest = {
         prompt: userPrompt,
+        tenantScope: userId,
         systemPrompt,
         temperature: 0.5,
         maxTokens: 300,

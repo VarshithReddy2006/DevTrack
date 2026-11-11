@@ -146,6 +146,7 @@ class AIDegradedHandlerClass {
       // Try a simple AI request to test provider health
       const testResponse = await AIProviderAdapter.generateResponse({
         prompt: 'test',
+        cache: false,
         maxTokens: 10,
       });
 

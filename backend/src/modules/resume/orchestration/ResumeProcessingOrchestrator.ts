@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/orchestration/ResumeProcessingOrchestrator.ts
+import { artifactStorage } from '../upload/artifact-storage.js';
 import type { Types } from 'mongoose';
 import { ResumeSession, type ProcessingStage } from '../../../db/models/resumeSession.model.js';
 import { DocumentParsingPipeline } from '../parsing/document-parsing-pipeline.js';
@@ -282,7 +283,7 @@ export class ResumeProcessingOrchestrator {
 
     const result = await this.parsingPipeline.parse(
       session.sessionId,
-      session.uploadMetadata.uploadPath,
+      await artifactStorage.readPath(session.uploadMetadata.uploadPath),
       session.uploadMetadata.originalFilename
     );
 

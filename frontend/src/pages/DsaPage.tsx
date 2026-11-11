@@ -236,7 +236,7 @@ const DsaPage: React.FC = () => {
                     <p className="text-label text-[9px] !text-dt-textSecondary/50 mt-0.5">Live neural analysis</p>
                   </div>
                 </div>
-                <InsightsCard title="Growth Insights" submissions={safeData.submissions} topics={safeData.topics} />
+                <InsightsCard title="Growth Insights" submissions={safeData.submissions} topics={safeData.topics} solvedByDifficulty={safeData.solvedByDifficulty} />
               </div>
             </motion.div>
 

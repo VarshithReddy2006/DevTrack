@@ -1,4 +1,5 @@
 // src/modules/profile/profile.service.ts
+import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { User, UserProfile, ConnectedPlatform, PlatformStats } from '../../db/models/index.js';
 import { PLATFORMS } from '../../config/constants.js';
@@ -156,6 +157,7 @@ export async function connectPlatform(
     { upsert: true, new: true }
   );
 
+  await cacheManager.invalidateDashboard(userId);
   return {
     id: platform._id.toString(),
     platformName: platform.platformName,

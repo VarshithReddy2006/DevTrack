@@ -37,7 +37,7 @@ export class IntelligenceReplayEngine {
       .sort({ 'timestamps.completedAt': 1 })
       .lean();
 
-    return sessions.flatMap((session) => {
+    const sessionSnapshots = sessions.flatMap((session) => {
       if (stateType === 'runtime') {
         return session.runtimeEvents || [];
       }
@@ -49,6 +49,22 @@ export class IntelligenceReplayEngine {
       }
       return (session.replayState?.snapshots || []).filter((snapshot: any) => snapshot.stage === stateType || snapshot.stateType === stateType);
     });
+
+    const capturedSnapshots = await this.persistence.querySnapshots({
+      userId,
+      stateType,
+      fromDate,
+      toDate,
+    });
+
+    const combined = [...sessionSnapshots, ...capturedSnapshots];
+    combined.sort((a, b) => {
+      const timeA = new Date(a.timestamp || a.occurredAt || 0).getTime();
+      const timeB = new Date(b.timestamp || b.occurredAt || 0).getTime();
+      return timeA - timeB;
+    });
+
+    return combined;
   }
 
   async replaySession(sessionId: string): Promise<any[]> {

@@ -17,7 +17,7 @@ export interface RealtimeEventJobData {
 }
 
 export interface SystemMaintenanceJobData {
-  task: 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge';
+  task: 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles';
   requestId?: string;
 }
 
@@ -91,8 +91,11 @@ export interface DatasetIngestionJobData {
   datasetId: string;
   sourceFilePath: string;
   batchSize?: number;
+  maxFailedRows?: number;
   requestId?: string;
 }
+
+export const MAX_DATASET_INGESTION_BATCH_SIZE = 5000;
 
 export interface DatasetValidationJobData {
   datasetId: string;

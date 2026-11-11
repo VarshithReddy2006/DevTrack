@@ -14,6 +14,8 @@ export interface IDatasetIngestionState extends Document {
   duplicatesSkipped: number;
   embeddingsGenerated: number;
   lastCheckpointIndex: number;
+  sourceVersion?: string;
+  attemptId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -23,7 +25,6 @@ const datasetIngestionStateSchema = new Schema<IDatasetIngestionState>(
     datasetId: {
       type: String,
       required: true,
-      index: true,
     },
     sourceFilePath: {
       type: String,
@@ -71,6 +72,8 @@ const datasetIngestionStateSchema = new Schema<IDatasetIngestionState>(
       type: Number,
       default: 0,
     },
+    sourceVersion: String,
+    attemptId: String,
   },
   {
     timestamps: true,
@@ -86,7 +89,15 @@ const datasetIngestionStateSchema = new Schema<IDatasetIngestionState>(
 );
 
 // Indexes
+datasetIngestionStateSchema.index({ datasetId: 1 }, { unique: true, name: 'unique_dataset_ingestion_id' });
 datasetIngestionStateSchema.index({ datasetId: 1, status: 1 });
 datasetIngestionStateSchema.index({ startedAt: -1 });
 
 export const DatasetIngestionState = model<IDatasetIngestionState>('DatasetIngestionState', datasetIngestionStateSchema);
+
+export const DatasetIngestedRow = model('DatasetIngestedRow', new Schema({
+  _id: { type: String, required: true },
+  datasetId: { type: String, required: true, index: true },
+  firstRowIndex: { type: Number, required: true },
+  data: { type: Schema.Types.Mixed, required: true },
+}));

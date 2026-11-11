@@ -45,6 +45,7 @@ Separate the HTTP server from background workers so each scales independently.
 |---------|---------|-------------|
 | API | `node dist/index.js` | `ENABLE_WORKERS=false` |
 | Sync worker | `node dist/worker-entrypoint.js` | `WORKER_TYPE=sync` |
+| Readiness intelligence | `node dist/worker-entrypoint.js` | `WORKER_TYPE=readiness` |
 | XP worker | `node dist/worker-entrypoint.js` | `WORKER_TYPE=xp` |
 | Maintenance worker | `node dist/worker-entrypoint.js` | `WORKER_TYPE=maintenance` |
 | Resume intelligence | `node dist/worker-entrypoint.js` | `WORKER_TYPE=resume-intelligence` |
@@ -57,6 +58,13 @@ Use explicit roles in production.
 `all` starts the union once and is intended for local development. There is no
 separate orchestration-compensation consumer; `orch` and `orchestration` are
 unsupported. The resume role runs the existing resume consumers and profile rebuild.
+The `readiness` role runs all six Readiness consumers. The `xp` role also runs
+streak recalculation and notifications. The Resume role includes both legacy
+feature queues and session-based upload, ATS, embedding, semantic and recommendation
+queues. Start all six roles in production with API `ENABLE_WORKERS=false`.
+Shutdown allows nine seconds for startup/drain/disconnect, then exits nonzero on a
+deadline failure; unfinished work is recovered through BullMQ stalled-job handling.
+
 The dataset role runs dataset ingestion independently. Backend `npm run worker:*`
 commands use the same dispatcher; their positional role overrides `WORKER_TYPE`.
 On SIGINT/SIGTERM, registered workers drain before MongoDB/shared Redis disconnect.
@@ -144,7 +152,7 @@ Services: `mongo` (7), `redis` (7-alpine), `backend`, `frontend` (Nginx).
 
 - `api` - Express only, `ENABLE_WORKERS=false`
 - `frontend` - Nginx serving the built app on host port 80 (`FRONTEND_PORT`); `/api` is proxied to the `api` service
-- `worker-sync` (2 replicas), `worker-xp`, `worker-resume`, `worker-dataset`, `worker-maint`
+- `worker-sync` (2 replicas), `worker-xp`, `worker-readiness`, `worker-resume`, `worker-dataset`, `worker-maint`
 - `mongo`, `redis` with health checks
 
 Use `docker compose --env-file .env.production -f docker-compose.prod.yml ...`
@@ -205,6 +213,7 @@ Create one Render service per worker type:
 | Service Name | `WORKER_TYPE` | Start Command |
 |---------------|---------------|---------------|
 | `devtrack-sync` | `sync` | `node dist/worker-entrypoint.js` |
+| `devtrack-readiness` | `readiness` | `node dist/worker-entrypoint.js` |
 | `devtrack-xp` | `xp` | `node dist/worker-entrypoint.js` |
 | `devtrack-resume` | `resume-intelligence` | `node dist/worker-entrypoint.js` |
 | `devtrack-dataset` | `dataset` | `node dist/worker-entrypoint.js` |
@@ -319,3 +328,27 @@ curl https://your-api.render.com/health/detailed  # requires admin auth
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - Worker topology and queue names
 - [README.md](./README.md) - Local development setup
 - [PROJECT_STATUS.md](./PROJECT_STATUS.md) - Known production gaps
+
+## Daily challenge tiers
+
+Before deploying issue #96 to an existing database:
+
+1. Stop API and sync workers that read or write daily challenges. Keep old
+   versions stopped until the new version is deployed.
+2. From `backend/`, explicitly set `MONGODB_URI` to the intended database and run
+   `npm run migrate:daily-challenge-tiers`.
+3. Deploy the new code and restart writers.
+
+The migration first creates the unique `{ date: 1, difficulty: 1 }` index,
+then removes the old unique date-only index. It is safe to rerun. No challenge
+documents, completion counts, IDs, or XP transactions are rewritten. Existing
+challenges remain the challenge for their date and tier; missing tiers are
+created lazily. Fresh databases get the compound index from the model.
+
+Difficulty is selected per user on each request using the existing streak
+rules and the user's local weekday. A change in streak may select a different
+tier; completion and rewards are tracked independently per tier through the
+existing user/challenge XP ledger key. New tier completion counts start at zero.
+
+Do not roll back to date-only uniqueness after multiple tiers exist without a
+separate data migration. This command does not perform that rollback.

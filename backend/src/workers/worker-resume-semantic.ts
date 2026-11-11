@@ -10,10 +10,10 @@ import { semanticAnalysisZodSchema } from '../modules/resume/ai/semanticAnalysis
 
 let worker: Worker | null = null;
 
-export async function startResumeSemanticWorker(): Promise<void> {
+export async function startResumeSemanticWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[ResumeSemanticWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[ResumeSemanticWorker] Starting resume semantic worker');
@@ -75,6 +75,7 @@ ${text}`;
         // Generate response using existing AI Provider Adapter, prioritizing Gemini 1.5 Flash
         const response = await AIProviderAdapter.generateResponse({
           prompt: userPrompt,
+          tenantScope: session.userId?.toString() ?? `session:${sessionId}`,
           systemPrompt,
           model: 'gemini-1.5-flash',
           providerPreference: 'gemini',
@@ -152,6 +153,7 @@ ${text}`;
   });
 
   logger.info('[ResumeSemanticWorker] Resume semantic worker started');
+  return worker;
 }
 
 export async function stopResumeSemanticWorker(): Promise<void> {

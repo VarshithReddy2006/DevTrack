@@ -10,7 +10,7 @@ import { getRedisHealth } from '../../shared/redis/client.js';
 import cacheManager from '../../shared/cache/cacheManager.js';
 import { eventBus } from '../../shared/sse/eventBus.js';
 import { logger } from '../../shared/logger.js';
-import { QueueNames } from '../../shared/jobs/types.js';
+import { MAX_DATASET_INGESTION_BATCH_SIZE, QueueNames } from '../../shared/jobs/types.js';
 import { PublicProfile } from '../../db/models/publicProfile.model.js';
 import { ProfileAuditLog } from '../../db/models/profileAuditLog.model.js';
 import { QueueMetrics as QueueMetricsService } from '../../infrastructure/queues/QueueMetrics.js';
@@ -542,7 +542,16 @@ export const opsController = {
   async triggerIngestion(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const datasetId = req.params.datasetId as string;
-      const batchSize = parseInt(req.body.batchSize as string) || 1000;
+      const batchSize = Number(req.body?.batchSize ?? 1000);
+      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > MAX_DATASET_INGESTION_BATCH_SIZE) {
+        res.status(400).json({ error: `batchSize must be an integer between 1 and ${MAX_DATASET_INGESTION_BATCH_SIZE}` });
+        return;
+      }
+      const maxFailedRows = req.body?.maxFailedRows;
+      if (maxFailedRows !== undefined && (!Number.isSafeInteger(maxFailedRows) || maxFailedRows < 0)) {
+        res.status(400).json({ error: 'maxFailedRows must be a nonnegative integer' });
+        return;
+      }
 
       const { datasetRegistry } = await import('../../core/datasets/DatasetRegistry.js');
       const metadata = datasetRegistry.getDataset(datasetId);
@@ -556,27 +565,19 @@ export const opsController = {
       const queue = QueueRegistry.getOrCreateQueue(QueueNames.DATASET_INGESTION);
       
       const { DatasetIngestionState } = await import('../../db/models/datasetIngestion.model.js');
-      let state = await DatasetIngestionState.findOne({ datasetId });
-      if (!state) {
-        state = new DatasetIngestionState({
-          datasetId,
-          sourceFilePath: metadata.path,
-          status: 'pending',
-          startedAt: new Date()
-        });
-        await state.save();
-      } else {
-        state.status = 'pending';
-        state.errorMessage = null;
-        state.startedAt = new Date();
-        await state.save();
-      }
+      await DatasetIngestionState.init();
+      const state = await DatasetIngestionState.findOneAndUpdate(
+        { datasetId },
+        { $setOnInsert: { datasetId, sourceFilePath: metadata.path, status: 'pending' } },
+        { upsert: true, new: true }
+      );
 
       // Add to BullMQ queue
       await queue.add('ingest', {
         datasetId,
         sourceFilePath: metadata.path,
-        batchSize
+        batchSize,
+        maxFailedRows
       });
 
       logger.warn('[ops] Dataset ingestion triggered', { admin: req.user?.username, datasetId, batchSize });

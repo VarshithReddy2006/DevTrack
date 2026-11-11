@@ -10,14 +10,7 @@ import { logger } from '../logger.js';
 import { eventBus } from '../sse/index.js';
 import { getRedisClient, disconnectRedis, getRedisHealth } from '../redis/index.js';
 import { getOrCreateQueue, closeAllQueues, QueueNames } from '../jobs/index.js';
-import {
-  startPlatformSyncWorker,
-  stopPlatformSyncWorker,
-  getWorkerStatus,
-} from '../jobs/platformSyncWorker.js';
-import { startXpWorker, stopXpWorker, getXpWorkerStatus } from '../jobs/xpWorker.js';
-import { startStreakRecalcWorker, stopStreakRecalcWorker } from '../jobs/streakRecalcWorker.js';
-import { startNotificationWorker, stopNotificationWorker } from '../jobs/notificationWorker.js';
+import { startAllWorkers, stopAllWorkers } from '../jobs/workers.js';
 import {
   startSyncScheduler,
   stopSyncScheduler,
@@ -36,6 +29,12 @@ import {
   setSchedulerStatus,
   setSseStatus,
 } from './infrastructureRegistry.js';
+
+let shutdownRequested = false;
+let shutdownPromise: Promise<void> | undefined;
+function assertStarting(): void {
+  if (shutdownRequested) throw new Error('Startup interrupted by shutdown');
+}
 
 export interface StartupResult {
   success: boolean;
@@ -76,14 +75,14 @@ async function bootRedis(): Promise<boolean> {
   setRedisStatus('initializing');
   try {
     const client = getRedisClient();
-    await new Promise<void>((resolve) => {
-      if (client.status === 'ready' || client.status === 'connecting' || client.status === 'wait') {
+    if (client.status !== 'ready') await new Promise<void>(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        client.off('ready', done); client.off('error', done);
         resolve();
-      } else {
-        client.once('ready', () => resolve());
-        client.once('error', () => resolve());
-        setTimeout(resolve, 3000);
-      }
+      };
+      const timer = setTimeout(done, 3000);
+      client.once('ready', done); client.once('error', done);
     });
     const health = getRedisHealth();
     if (health.status === 'connected') {
@@ -122,63 +121,26 @@ async function bootQueues(redisOk: boolean): Promise<boolean> {
   }
 }
 
-function bootWorkers(redisOk: boolean): { platformSync: boolean; xp: boolean } {
-  let platformSync = false;
-  let xp = false;
-
-  if (process.env.ENABLE_WORKERS === 'false') {
-    setPlatformSyncWorkerStatus('stopped', 'Disabled by ENABLE_WORKERS=false');
-    setXpWorkerStatus('stopped', 'Disabled by ENABLE_WORKERS=false');
-    logger.info('[startup] Workers disabled via ENABLE_WORKERS=false env flag', { event: 'workers_disabled' });
-    return { platformSync, xp };
+async function bootWorkers(redisOk: boolean): Promise<{ platformSync: boolean; xp: boolean }> {
+  if (process.env.ENABLE_WORKERS === 'false' || !redisOk) {
+    const disabled = process.env.ENABLE_WORKERS === 'false';
+    setPlatformSyncWorkerStatus(disabled ? 'stopped' : 'degraded', disabled ? 'Workers run in standalone processes' : 'Redis unavailable');
+    setXpWorkerStatus(disabled ? 'stopped' : 'degraded', disabled ? 'Workers run in standalone processes' : 'Redis unavailable');
+    return { platformSync: false, xp: false };
   }
-
-  if (!redisOk) {
-    setPlatformSyncWorkerStatus('degraded', 'Redis unavailable');
-    setXpWorkerStatus('degraded', 'Redis unavailable');
-    return { platformSync, xp };
-  }
-
   try {
-    startPlatformSyncWorker();
+    await startAllWorkers();
     setPlatformSyncWorkerStatus('healthy');
-    platformSync = true;
-    logger.info('[startup] Platform sync worker started', { event: 'worker_started' });
-  } catch (err) {
-    setPlatformSyncWorkerStatus('failed', err instanceof Error ? err.message : String(err));
-    logger.error('[startup] Platform sync worker failed', err as Error);
-  }
-
-  try {
-    startXpWorker();
     setXpWorkerStatus('healthy');
-    xp = true;
-    logger.info('[startup] XP worker started', { event: 'xp_worker_started' });
-  } catch (err) {
-    setXpWorkerStatus('failed', err instanceof Error ? err.message : String(err));
-    logger.error('[startup] XP worker failed', err as Error);
+    return { platformSync: true, xp: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setPlatformSyncWorkerStatus('failed', message);
+    setXpWorkerStatus('failed', message);
+    logger.error('[startup] Worker registry failed; partial consumers drained', error);
+    return { platformSync: false, xp: false };
   }
-
-  // Streak recalc worker
-  try {
-    startStreakRecalcWorker();
-    logger.info('[startup] Streak recalc worker started', { event: 'streak_worker_started' });
-  } catch (err) {
-    logger.error('[startup] Streak recalc worker failed', err as Error);
-  }
-
-  // Notification worker
-  try {
-    startNotificationWorker();
-    logger.info('[startup] Notification worker started', { event: 'notification_worker_started' });
-  } catch (err) {
-    logger.error('[startup] Notification worker failed', err as Error);
-  }
-
-  return { platformSync, xp };
 }
-
-
 
 function bootScheduler(queuesOk: boolean): boolean {
   if (!queuesOk) {
@@ -200,24 +162,31 @@ function bootScheduler(queuesOk: boolean): boolean {
 }
 
 export async function startup(app: Express): Promise<StartupResult> {
+  assertStarting();
   setApiStatus('initializing');
   const warnings: string[] = [];
 
   const mongoOk = await bootMongo();
+  assertStarting();
   if (!mongoOk) {
     setApiStatus('failed', 'MongoDB required');
     return { success: false, phases: { mongodb: false, redis: false, queues: false, platformSyncWorker: false, xpWorker: false, scheduler: false, retention: false }, degraded: true, warnings: ['MongoDB required — cannot start'] };
   }
 
   const redisOk = await bootRedis();
+  assertStarting();
   if (!redisOk) warnings.push('Redis unavailable — BullMQ workers disabled');
 
   const queuesOk = await bootQueues(redisOk);
+  assertStarting();
   if (!queuesOk && redisOk) warnings.push('Queue initialization failed');
 
-  const workers = bootWorkers(redisOk);
-  if (!workers.platformSync) warnings.push('Platform sync worker not started');
-  if (!workers.xp) warnings.push('XP worker not started');
+  const workers = await bootWorkers(redisOk);
+  assertStarting();
+  if (process.env.ENABLE_WORKERS !== 'false') {
+    if (!workers.platformSync) warnings.push('Platform sync worker not started');
+    if (!workers.xp) warnings.push('XP worker not started');
+  }
 
   const schedulerOk = bootScheduler(queuesOk);
   if (!schedulerOk) warnings.push('Scheduler paused');
@@ -243,21 +212,23 @@ export async function startup(app: Express): Promise<StartupResult> {
 // Shutdown
 // ---------------------------------------------------------------------------
 
-export async function shutdown(): Promise<void> {
+export function shutdown(): Promise<void> {
+  shutdownRequested = true;
+  shutdownPromise ??= performShutdown();
+  return shutdownPromise;
+}
+
+async function performShutdown(): Promise<void> {
   logger.info('[shutdown] Initiating graceful shutdown');
 
   stopSyncScheduler();
   stopMissionScheduler(); // Stop mission scheduler
   setSchedulerStatus('stopped');
 
-  await stopPlatformSyncWorker();
+  let workerError: unknown;
+  try { await stopAllWorkers(); } catch (error) { workerError = error; }
   setPlatformSyncWorkerStatus('stopped');
-
-  await stopXpWorker();
   setXpWorkerStatus('stopped');
-
-  await stopStreakRecalcWorker();
-  await stopNotificationWorker();
 
   await closeAllQueues();
   setQueuesStatus('stopped');
@@ -269,6 +240,7 @@ export async function shutdown(): Promise<void> {
   setSseStatus('stopped');
 
   setApiStatus('stopped');
+  if (workerError) throw workerError;
   logger.info('[shutdown] Graceful shutdown complete', { event: 'shutdown_complete' });
 }
 

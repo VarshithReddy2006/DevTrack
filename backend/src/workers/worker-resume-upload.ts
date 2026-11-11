@@ -3,16 +3,17 @@ import { Job, Worker } from 'bullmq';
 import { WorkerFactory } from '../infrastructure/queues/WorkerFactory.js';
 import { logger } from '../shared/logger.js';
 import { QueueNames, type ResumeCheckpointJobData, type ResumeUploadJobData } from '../shared/jobs/types.js';
+import { artifactStorage } from '../modules/resume/upload/artifact-storage.js';
 import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
 import { ResumeSession } from '../db/models/resumeSession.model.js';
 
 let worker: Worker | null = null;
 const orchestrator = new ResumeProcessingOrchestrator();
 
-export async function startResumeUploadWorker(): Promise<void> {
+export async function startResumeUploadWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[ResumeUploadWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[ResumeUploadWorker] Starting resume upload worker');
@@ -23,10 +24,14 @@ export async function startResumeUploadWorker(): Promise<void> {
       const { sessionId, userId } = job.data;
 
       if ('recoveryRetryCount' in job.data) {
-        const session = await ResumeSession.findOne({ sessionId, userId });
+        let session = await ResumeSession.findOne({ sessionId, userId });
         if (session?.currentStage === 'FAILED' && session.failureState?.failed && session.checkpointState?.stage
           && (session.failureState.retryCount ?? 0) === job.data.recoveryRetryCount) {
           await orchestrator.resumeFromCheckpoint(sessionId);
+          session = await ResumeSession.findOne({ sessionId });
+          if (session?.currentStage === 'COMPLETED' && session.uploadMetadata?.uploadPath) {
+            await artifactStorage.remove(session.uploadMetadata.uploadPath);
+          }
         }
         return;
       }
@@ -80,8 +85,14 @@ export async function startResumeUploadWorker(): Promise<void> {
           });
         }
 
-        // Start processing orchestration
-        await orchestrator.startProcessing(sessionId);
+        // A redelivery after completion can retry cleanup without re-parsing.
+        if (session.currentStage !== 'COMPLETED') {
+          await orchestrator.startProcessing(sessionId);
+          session = await ResumeSession.findOne({ sessionId });
+        }
+        if (session?.currentStage === 'COMPLETED') {
+          await artifactStorage.remove(session.uploadMetadata.uploadPath);
+        }
 
         logger.info(`[ResumeUploadWorker] Upload job completed: ${sessionId}`);
       } catch (error) {
@@ -101,6 +112,8 @@ export async function startResumeUploadWorker(): Promise<void> {
   });
 
   logger.info('[ResumeUploadWorker] Resume upload worker started');
+
+  return worker;
 }
 
 export async function stopResumeUploadWorker(): Promise<void> {

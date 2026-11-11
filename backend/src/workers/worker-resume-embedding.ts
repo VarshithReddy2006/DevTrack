@@ -51,10 +51,10 @@ function chunkTextSafely(text: string, maxLength: number = 4000): string[] {
   return chunks;
 }
 
-export async function startResumeEmbeddingWorker(): Promise<void> {
+export async function startResumeEmbeddingWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[ResumeEmbeddingWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[ResumeEmbeddingWorker] Starting resume embedding worker');
@@ -150,6 +150,8 @@ export async function startResumeEmbeddingWorker(): Promise<void> {
   });
 
   logger.info('[ResumeEmbeddingWorker] Resume embedding worker started');
+
+  return worker;
 }
 
 export async function stopResumeEmbeddingWorker(): Promise<void> {

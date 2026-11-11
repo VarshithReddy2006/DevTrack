@@ -21,7 +21,7 @@ vi.mock('../../../modules/missions/missionProgress.service.js', () => ({
 
 vi.mock('../../../shared/cache/cacheManager.js', () => ({
   cacheManager: {
-    invalidateAllUserCache: vi.fn().mockResolvedValue(undefined),
+    invalidateDashboard: vi.fn().mockResolvedValue(undefined), invalidateAllUserCache: vi.fn().mockResolvedValue(undefined),
   },
 }));
 

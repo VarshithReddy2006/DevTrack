@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/workers/resume-export.worker.ts
+import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
@@ -16,12 +17,12 @@ interface IResumeExportJob {
 
 let worker: Worker | null = null;
 
-export function startResumeExportWorker(): void {
-  if (worker) return;
+export function startResumeExportWorker(): Worker {
+  if (worker) return worker;
 
   const service = new ResumeIntelligenceService();
 
-  worker = new Worker<IResumeExportJob>(
+  worker = createDlqWorker<IResumeExportJob>(
     RESUME_EXPORT_QUEUE,
     async (job: Job<IResumeExportJob>) => {
       logger.info(`[ResumeExportWorker] Processing job ${job.id}`);
@@ -39,6 +40,8 @@ export function startResumeExportWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return worker;
 }
 
 export async function stopResumeExportWorker(): Promise<void> {

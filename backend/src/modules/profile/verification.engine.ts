@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import { User } from '../../db/models/user.model.js';
 import { UserXp } from '../../db/models/userXp.model.js';
 import { PlatformStats } from '../../db/models/platformStats.model.js';
-import { ProfileAuditLog } from '../../db/models/profileAuditLog.model.js';
 
 export class VerificationEngine {
   /**
@@ -54,11 +53,11 @@ export class VerificationEngine {
     }
 
     // 4. Solve Farming Heuristics (DSA)
-    const leetcodeStats = await PlatformStats.findOne({ userId, platformName: 'leetcode' });
-    if (leetcodeStats && leetcodeStats.rawData) {
-      const raw = leetcodeStats.rawData as any;
-      const totalSolved = raw.totalSolved || 0;
-      const hardSolved = raw.hardSolved || 0;
+    const leetcodeStats = await PlatformStats.findOne({ userId, platformName: 'leetcode' }).lean();
+    if (leetcodeStats) {
+      const raw = leetcodeStats.rawData;
+      const totalSolved = leetcodeStats.totalSolved ?? (typeof raw?.totalSolved === 'number' ? raw.totalSolved : 0);
+      const hardSolved = leetcodeStats.hardSolved ?? (typeof raw?.hardSolved === 'number' ? raw.hardSolved : 0);
 
       // Impossible velocity heuristic
       // In a real app we'd look at DailyActivity, but here we approximate based on joinedAt vs total solved
@@ -74,15 +73,6 @@ export class VerificationEngine {
 
     // Final calculations
     trustScore = Math.max(0, Math.min(1000, trustScore - (suspicionScore * 5))); // Penalize trust based on suspicion
-
-    await ProfileAuditLog.create({
-      userId,
-      eventType: 'anti_gaming_check',
-      triggeredBy: 'system',
-      details: { flags, suspicionScore, trustScore },
-      suspicionScoreBefore: null,
-      suspicionScoreAfter: suspicionScore,
-    });
 
     return { trustScore: Math.round(trustScore), suspicionScore, flags };
   }

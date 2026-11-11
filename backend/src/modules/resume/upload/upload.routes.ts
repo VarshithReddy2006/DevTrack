@@ -6,29 +6,33 @@ import { uploadSingle } from './multer.config.js';
 import { validateUpload } from './upload.validation.js';
 import * as controller from './upload.controller.js';
 
-const router = Router();
+export function createResumeUploadRoutes(auth = authMiddleware): Router {
+  const router = Router();
 
-// All routes require authentication
-router.use(authMiddleware);
+  // All routes require authentication
+  router.use(auth);
 
-/**
- * POST /api/resume/upload
- * Upload a resume file (PDF, DOCX, TXT, MD)
- */
-router.post('/upload', rateLimiters.resume, uploadSingle, validateUpload, controller.uploadResume);
+  /**
+   * POST /api/resume/upload
+   * Upload a resume file (PDF, DOCX, TXT, MD)
+   */
+  router.post('/upload', rateLimiters.resume, uploadSingle, validateUpload, controller.uploadResume);
 
-/**
- * GET /api/resume/session/:id
- * Get resume session by ID
- */
-router.get('/session/:id', rateLimiters.resumeRead, controller.getSession);
+  /**
+   * GET /api/resume/session/:id
+   * Get resume session by ID
+   */
+  router.get('/session/:id', rateLimiters.resumeRead, controller.getSession);
 
-/**
- * GET /api/resume/session/:id/status
- * Get session processing status
- */
-router.get('/session/:id/status', rateLimiters.resumeRead, controller.getSessionStatus);
+  /**
+   * GET /api/resume/session/:id/status
+   * Get session processing status
+   */
+  router.get('/session/:id/status', rateLimiters.resumeRead, controller.getSessionStatus);
 
-router.post('/sessions/:id/resume', rateLimiters.resume, controller.resumeSession);
+  router.post('/sessions/:id/resume', rateLimiters.resume, controller.resumeSession);
 
-export default router;
+  return router;
+}
+
+export default createResumeUploadRoutes();

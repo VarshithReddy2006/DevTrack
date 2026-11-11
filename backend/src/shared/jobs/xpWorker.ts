@@ -2,12 +2,12 @@
 // Processes XP events from the xp-processing queue with idempotency protection.
 // Trace context is restored from the originating sync job for full distributed correlation.
 
+import { createDlqWorker } from './dlq.service.js';
 import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../redis/index.js';
 import { logger } from '../logger.js';
 import { processXpEvent } from '../../modules/xp/processor.js';
 import { QueueNames, JobRetryConfig, XpProcessingJobData } from './types.js';
-import { dlqService } from './dlq.service.js';
 import { runJobInTrace } from '../tracing/tracing.js';
 
 // Operational metrics
@@ -26,7 +26,7 @@ export function startXpWorker(): Worker<XpProcessingJobData> {
 
   const redis = getRedisClient();
 
-  _worker = new Worker<XpProcessingJobData>(
+  _worker = createDlqWorker<XpProcessingJobData>(
     QueueNames.XP_PROCESSING,
     async (job: Job<XpProcessingJobData>) => {
       // Restore distributed trace context from the originating sync worker
@@ -111,23 +111,6 @@ export function startXpWorker(): Worker<XpProcessingJobData> {
       jobId: job?.id,
       userId: job?.data.userId,
     });
-
-    if (job && job.attemptsMade >= JobRetryConfig.xpProcessing.attempts) {
-      dlqService
-        .quarantineJob(
-          QueueNames.XP_PROCESSING,
-          job as unknown as import('bullmq').Job,
-          err.message,
-          job.attemptsMade,
-          JobRetryConfig.xpProcessing.attempts
-        )
-        .catch((dlqErr) => {
-          logger.error('[xp-worker] Failed to quarantine job in DLQ', dlqErr, {
-            event: 'dlq_quarantine_failed',
-            jobId: job?.id,
-          });
-        });
-    }
   });
 
   _worker.on('error', (err: Error) => {

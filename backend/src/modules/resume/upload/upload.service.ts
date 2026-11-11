@@ -5,6 +5,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { logger } from '../../../shared/logger.js';
 import { ResumeSession } from '../../../db/models/resumeSession.model.js';
+import { artifactStorage, type ArtifactStorage } from './artifact-storage.js';
 import { getResumeUploadQueue } from '../../../shared/jobs/queueFactory.js';
 
 export interface IUploadResult {
@@ -35,17 +36,7 @@ export interface ISessionStatus {
  * Handles resume file uploads, validation, and session creation
  */
 export class UploadService {
-  private uploadDir: string;
-  private parsedDir: string;
-  private failedDir: string;
-  private processedDir: string;
-
-  constructor() {
-    this.uploadDir = path.join(process.cwd(), 'uploads', 'raw');
-    this.parsedDir = path.join(process.cwd(), 'uploads', 'parsed');
-    this.failedDir = path.join(process.cwd(), 'uploads', 'failed');
-    this.processedDir = path.join(process.cwd(), 'uploads', 'processed');
-  }
+  constructor(private readonly storage: ArtifactStorage = artifactStorage) {}
 
   /**
    * Process uploaded file
@@ -56,33 +47,15 @@ export class UploadService {
     // Generate session ID
     const sessionId = this.generateSessionId();
 
-    // Create upload path
-    await fs.mkdir(this.uploadDir, { recursive: true });
     const safeOriginalName = this.sanitizeFilename(file.originalname);
-    const uploadPath = path.join(this.uploadDir, `${sessionId}-${safeOriginalName}`);
-
+    let uploadPath: string;
     try {
-      // Move file from temporary multer destination to raw uploads directory
-      try {
-        await fs.rename(file.path, uploadPath);
-      } catch (renameErr: any) {
-        if (renameErr.code === 'EXDEV') {
-          logger.warn(`[UploadService] Cross-device rename (EXDEV) detected. Falling back to copy-and-unlink.`);
-          await fs.copyFile(file.path, uploadPath);
-          await fs.unlink(file.path);
-        } else {
-          throw renameErr;
-        }
-      }
-    } catch (err: any) {
-      logger.error(`[UploadService] Failed to move temporary file: ${err.message}`);
-      // Clean up multer temp file if copy/rename failed
-      try {
-        await fs.unlink(file.path);
-      } catch (unlinkErr) {
-        // ignore
-      }
-      throw new Error(`Failed to store uploaded file: ${err.message}`);
+      uploadPath = await this.storage.store(file.path, `${sessionId}-${safeOriginalName}`);
+    } catch (error) {
+      await fs.unlink(file.path).catch(() => {});
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error('[UploadService] Failed to store uploaded file', error);
+      throw new Error(`Failed to store uploaded file: ${message}`);
     }
 
     // Create upload result
@@ -141,7 +114,7 @@ export class UploadService {
       logger.error(`[UploadService] Database persistence failed for session: ${err.message}`);
       // Clean up raw stored file
       try {
-        await fs.unlink(uploadPath);
+        await this.storage.remove(uploadPath);
       } catch (unlinkErr) {
         // ignore
       }
@@ -310,9 +283,7 @@ export class UploadService {
    */
   async moveToFailed(filePath: string, reason: string): Promise<void> {
     const filename = path.basename(filePath);
-    const destination = path.join(this.failedDir, filename);
-    
-    await fs.rename(filePath, destination);
+    await this.storage.move(filePath, 'failed');
     logger.error(`[UploadService] Moved file to failed: ${filename} - ${reason}`);
   }
 
@@ -321,9 +292,7 @@ export class UploadService {
    */
   async moveToProcessed(filePath: string): Promise<void> {
     const filename = path.basename(filePath);
-    const destination = path.join(this.processedDir, filename);
-    
-    await fs.rename(filePath, destination);
+    await this.storage.move(filePath, 'processed');
     logger.info(`[UploadService] Moved file to processed: ${filename}`);
   }
 }

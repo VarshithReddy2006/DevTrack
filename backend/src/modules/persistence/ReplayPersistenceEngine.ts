@@ -1,6 +1,6 @@
 import { logger } from '../../shared/logger.js';
 import { ResumeSession } from '../../db/models/resumeSession.model.js';
-import { UnifiedRuntimeStateStore } from './UnifiedRuntimeStateStore.js';
+import { UnifiedRuntimeStateStore, type ISnapshotQueryFilter } from './UnifiedRuntimeStateStore.js';
 
 export class ReplayPersistenceEngine {
   private store = new UnifiedRuntimeStateStore();
@@ -13,6 +13,10 @@ export class ReplayPersistenceEngine {
   async restoreState(stateId: string): Promise<any> {
     logger.info(`[ReplayPersistence] Restoring state ${stateId}`);
     return this.store.getState(stateId);
+  }
+
+  async querySnapshots(filter: ISnapshotQueryFilter): Promise<any[]> {
+    return this.store.querySnapshots(filter);
   }
 
   async persistSessionReplay(sessionId: string): Promise<any[]> {

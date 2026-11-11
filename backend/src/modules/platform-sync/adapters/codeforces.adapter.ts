@@ -1,135 +1,48 @@
-// src/modules/platform-sync/adapters/codeforces.adapter.ts
-// Isolated Codeforces adapter — normalizes REST API responses into canonical shapes.
-// Handles paginated submission fetching and unique problem counting.
-
-import { fetchWithTimeout } from '../../../shared/fetchWithTimeout.js';
 import { BasePlatformAdapter } from './BasePlatformAdapter.js';
-import { logger } from '../../../shared/logger.js';
-import type {
-  PlatformSubmission,
-  PlatformStats,
-  PlatformProfile,
-} from './types.js';
-
-const CF_BASE = 'https://codeforces.com/api';
-
-async function cfFetch<T>(path: string): Promise<T> {
-  const res = await fetchWithTimeout(`${CF_BASE}${path}`);
-
-  if (!res.ok) throw new Error(`Codeforces API error (${res.status})`);
-
-  const json = await res.json() as { status: string; result?: T };
-  if (json.status !== 'OK' || !json.result) {
-    throw new Error('Codeforces returned non-OK status');
-  }
-  return json.result;
-}
-
-// ---------------------------------------------------------------------------
-// Adapter implementation
-// ---------------------------------------------------------------------------
+import { fetchStatsData } from './codeforces.data.js';
+import { fetchWithRetry } from './http.js';
+import type { PlatformSubmission, PlatformContest, PlatformStats } from './types.js';
 
 export class CodeforcesAdapter extends BasePlatformAdapter {
   readonly platform = 'codeforces' as const;
-
-  async fetchSubmissions(username: string, _since?: Date): Promise<PlatformSubmission[]> {
-    const raw = await cfFetch<any[]>(`/user.status?handle=${encodeURIComponent(username)}&from=1&count=100`);
-
-    return raw
-      .filter((s: any) => s.verdict === 'OK')
-      .map((s: any) => ({
-        externalId: String(s.id),
-        platform: 'codeforces' as const,
-        title: s.problem?.name ?? 'Unknown',
-        difficulty: this.mapDifficulty(s.problem?.rating),
-        status: 'accepted' as const,
-        submittedAt: new Date((s.creationTimeSeconds ?? 0) * 1000),
-        language: s.programmingLanguage ?? undefined,
-        _raw: s,
-      }));
+  protected profileUrl(username: string): string { return `https://codeforces.com/profile/${encodeURIComponent(username)}`; }
+  async fetchStats(username: string) {
+    return { ...await fetchStatsData(username), platform: this.platform, fetchedAt: new Date() };
   }
-
-  async fetchStats(username: string): Promise<PlatformStats> {
-    const users = await cfFetch<any[]>(`/user.info?handles=${encodeURIComponent(username)}`);
-    if (!users[0]) throw new Error('Codeforces user not found');
-    const user = users[0];
-
-    // Count unique solved problems via paginated user.status
-    const totalSolved = await this.countUniqueSolved(username);
-
-    // Fetch contest count
-    let totalContests = 0;
-    try {
-      const ratings = await cfFetch<any[]>(`/user.rating?handle=${encodeURIComponent(username)}`);
-      totalContests = ratings.length;
-    } catch (err) {
-      logger.debug('[codeforces-adapter] Failed to fetch contest count', { username, error: err instanceof Error ? err.message : String(err) });
-    }
-
-    return {
-      platform: 'codeforces',
-      totalSolved,
-      easySolved: 0,
-      mediumSolved: 0,
-      hardSolved: 0,
-      rating: user.rating ?? undefined,
-      totalContests,
-      fetchedAt: new Date(),
-    };
-  }
-
-  async fetchProfile(username: string): Promise<PlatformProfile> {
-    const users = await cfFetch<any[]>(`/user.info?handles=${encodeURIComponent(username)}`);
-    if (!users[0]) throw new Error('Codeforces user not found');
-    const user = users[0];
-
-    return {
-      platform: 'codeforces',
-      username: user.handle,
-      displayName: [user.firstName, user.lastName].filter(Boolean).join(' ') || undefined,
-      avatarUrl: user.titlePhoto || undefined,
-      profileUrl: `https://codeforces.com/profile/${username}`,
-      fetchedAt: new Date(),
-    };
-  }
-
-  // ─── Private helpers ─────────────────────────────────────────────────────
-
-  private async countUniqueSolved(handle: string): Promise<number> {
-    const solved = new Set<string>();
-    let from = 1;
-    const count = 5000;
-
-    while (true) {
-      try {
-        const batch = await cfFetch<any[]>(
-          `/user.status?handle=${encodeURIComponent(handle)}&from=${from}&count=${count}`
-        );
-        if (!batch || batch.length === 0) break;
-
-        for (const s of batch) {
-          if (s.verdict === 'OK' && s.problem) {
-            solved.add(`${s.problem.contestId ?? 'na'}-${s.problem.index ?? s.problem.name ?? 'na'}`);
-          }
-        }
-
-        if (batch.length < count) break;
-        from += count;
-      } catch (err) {
-        logger.debug('[codeforces-adapter] Submissions pagination fetch failed, stopping', { handle, error: err instanceof Error ? err.message : String(err) });
-        break;
+  async fetchSubmissions(username: string, since?: Date): Promise<PlatformSubmission[]> {
+    const cutoff = since ? new Date(since) : new Date();
+    if (!since) { cutoff.setDate(cutoff.getDate() - 364); cutoff.setHours(0, 0, 0, 0); }
+    const submissions: PlatformSubmission[] = [];
+    for (let from = 1; ; from += 1000) {
+      const response = await fetchWithRetry(`https://codeforces.com/api/user.status?handle=${encodeURIComponent(username)}&from=${from}&count=1000`);
+      if (!response.ok) throw new Error(`Codeforces submissions API error (${response.status})`);
+      const data = await response.json() as { status: string; result?: any[] };
+      if (data.status !== 'OK' || !Array.isArray(data.result)) throw new Error('Invalid Codeforces submissions response');
+      let reachedCutoff = false;
+      for (const row of data.result) {
+        const submittedAt = new Date(Number(row.creationTimeSeconds) * 1000);
+        if (!Number.isFinite(submittedAt.getTime())) continue;
+        if (submittedAt < cutoff) { reachedCutoff = true; break; }
+        if (row.id == null || !row.verdict || !row.problem) continue;
+        const problem = row.problem;
+        const problemExternalId = `${problem.contestId ?? 'na'}-${problem.index ?? 'na'}`;
+        const status = row.verdict === 'OK' ? 'accepted' : row.verdict === 'TIME_LIMIT_EXCEEDED' ? 'time_limit'
+          : row.verdict === 'RUNTIME_ERROR' ? 'runtime_error' : row.verdict === 'COMPILATION_ERROR' ? 'compilation_error' : 'wrong_answer';
+        submissions.push({ externalId: String(row.id), problemExternalId,
+          problemUrl: problem.contestId ? `https://codeforces.com/problemset/problem/${problem.contestId}/${problem.index}` : 'https://codeforces.com',
+          category: 'Competitive', platform: this.platform, title: problem.name ?? 'Unknown',
+          difficulty: !problem.rating ? 'unknown' : problem.rating <= 1200 ? 'easy' : problem.rating <= 1800 ? 'medium' : 'hard',
+          status, submittedAt, language: row.programmingLanguage ?? row.language ?? 'unknown' });
       }
+      if (reachedCutoff || data.result.length < 1000) return submissions;
     }
-
-    return solved.size;
   }
-
-  private mapDifficulty(rating?: number): 'easy' | 'medium' | 'hard' | 'unknown' {
-    if (!rating) return 'unknown';
-    if (rating <= 1200) return 'easy';
-    if (rating <= 1800) return 'medium';
-    return 'hard';
+  async fetchContests(_username: string, stats: PlatformStats): Promise<PlatformContest[]> {
+    const rows = (stats.rawData?.ratingHistory ?? []) as Array<{ contestId: number; contestName: string;
+      ratingUpdateTimeSeconds: number; rank: number; oldRating: number; newRating: number }>;
+    return rows.map(contest => ({ title: contest.contestName, participatedAt: new Date(contest.ratingUpdateTimeSeconds * 1000),
+      rank: contest.rank, totalParticipants: null, ratingBefore: contest.oldRating, ratingAfter: contest.newRating,
+      ratingChange: contest.newRating - contest.oldRating, url: `https://codeforces.com/contest/${contest.contestId}` }));
   }
 }
-
 export const codeforcesAdapter = new CodeforcesAdapter();

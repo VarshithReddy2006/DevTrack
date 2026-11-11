@@ -13,10 +13,10 @@ import { ReadinessDsa } from '../db/models/readinessDsa.model.js';
 
 let worker: Worker | null = null;
 
-export async function startResumeRecommendationWorker(): Promise<void> {
+export async function startResumeRecommendationWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[ResumeRecommendationWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[ResumeRecommendationWorker] Starting resume recommendation worker');
@@ -97,6 +97,7 @@ ${JSON.stringify(contextPayload, null, 2)}`;
         // 2. Generate Recommendations via Gemini
         const aiResponse = await AIProviderAdapter.generateResponse({
           prompt: userPrompt,
+          tenantScope: session.userId?.toString() ?? `session:${sessionId}`,
           systemPrompt,
           model: 'gemini-1.5-flash',
           providerPreference: 'gemini',
@@ -181,6 +182,7 @@ ${JSON.stringify(contextPayload, null, 2)}`;
   });
 
   logger.info('[ResumeRecommendationWorker] Resume recommendation worker started');
+  return worker;
 }
 
 export async function stopResumeRecommendationWorker(): Promise<void> {

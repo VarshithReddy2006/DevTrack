@@ -45,7 +45,10 @@ export type PlatformOverviewItem = {
   rank?: string | null;
 };
 
+export type DsaDifficultyCounts = Record<'easy' | 'medium' | 'hard' | 'unknown', number>;
+
 export type DsaData = {
+  solvedByDifficulty?: DsaDifficultyCounts;
   stats: DsaStat[];
   heatmap: number[];
   submissions: Submission[];

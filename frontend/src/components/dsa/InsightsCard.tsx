@@ -1,12 +1,13 @@
 import React from 'react';
 import { PlatformLogo } from './PlatformLogo';
 import { Icon } from '../shared/Icon';
-import type { Platform, Submission, Topic } from '../../types/dsa';
+import type { DsaDifficultyCounts, Platform, Submission, Topic } from '../../types/dsa';
 
 export type InsightsCardProps = {
   title: string;
   submissions: Submission[];
   topics: Topic[];
+  solvedByDifficulty?: DsaDifficultyCounts;
   className?: string;
 };
 
@@ -26,7 +27,7 @@ const parseSubmissionDate = (value: string) => {
 };
 
 export const InsightsCard: React.FC<InsightsCardProps> = React.memo(
-  ({ title, submissions, topics, className }) => {
+  ({ title, submissions, topics, solvedByDifficulty, className }) => {
     const total = submissions.length;
     const accepted = submissions.filter((s) => s.status === 'accepted').length;
     const acceptanceRate = total > 0 ? Math.round((accepted / total) * 100) : 0;
@@ -108,15 +109,13 @@ export const InsightsCard: React.FC<InsightsCardProps> = React.memo(
     const weeklyGoal = 18;
     const weeklyDone = trendData.reduce((a, b) => a + b.count, 0);
 
-    const difficultyDist = React.useMemo(() => {
-      const dist = { easy: 0, medium: 0, hard: 0 };
-      submissions.forEach((s) => {
-        if (s.difficulty === 'easy') dist.easy += 1;
-        else if (s.difficulty === 'medium') dist.medium += 1;
-        else if (s.difficulty === 'hard') dist.hard += 1;
-      });
-      return dist;
-    }, [submissions]);
+    const difficultySegments = solvedByDifficulty ? [
+      { label: 'Easy', count: solvedByDifficulty.easy, color: '#10B981' },
+      { label: 'Medium', count: solvedByDifficulty.medium, color: '#F59E0B' },
+      { label: 'Hard', count: solvedByDifficulty.hard, color: '#F43F5E' },
+      { label: 'Unknown', count: solvedByDifficulty.unknown, color: '#64748B' },
+    ] : [];
+    const solvedTotal = difficultySegments.reduce((sum, item) => sum + item.count, 0);
 
     return (
       <section
@@ -198,32 +197,24 @@ export const InsightsCard: React.FC<InsightsCardProps> = React.memo(
               </div>
             </div>
 
-            {/* Composition */}
-            <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] font-black text-dt-textSecondary/50 uppercase tracking-widest">Complexity Variance</p>
+            {solvedByDifficulty && (
+              <div className="flex flex-col gap-4">
+                <p className="text-[10px] font-black text-dt-textSecondary/50 uppercase tracking-widest">Solved by difficulty</p>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-dt-bg/40 flex shadow-inner" aria-hidden="true">
+                  {difficultySegments.map(({ label, count, color }) => (
+                    <div key={label} style={{ width: `${solvedTotal ? count / solvedTotal * 100 : 0}%`, background: color }} />
+                  ))}
+                </div>
+                <ul className="grid grid-cols-2 gap-3 text-[10px] font-black uppercase tracking-widest">
+                  {difficultySegments.map(({ label, count, color }) => (
+                    <li key={label} className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full" style={{ background: color }} aria-hidden="true" />
+                      {label} {count}
+                    </li>
+                  ))}
+                </ul>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-dt-bg/40 flex shadow-inner">
-                {(() => {
-                  const sum = Math.max(1, difficultyDist.easy + difficultyDist.medium + difficultyDist.hard);
-                  const e = Math.round((difficultyDist.easy / sum) * 100);
-                  const m = Math.round((difficultyDist.medium / sum) * 100);
-                  const h = 100 - e - m;
-                  return (
-                    <>
-                      <div className="h-full transition-all duration-1000 cubic-bezier(0.22, 1, 0.36, 1)" style={{ width: `${e}%`, background: '#10B981' }} />
-                      <div className="h-full transition-all duration-1000 cubic-bezier(0.22, 1, 0.36, 1)" style={{ width: `${m}%`, background: '#F59E0B' }} />
-                      <div className="h-full transition-all duration-1000 cubic-bezier(0.22, 1, 0.36, 1)" style={{ width: `${h}%`, background: '#F43F5E' }} />
-                    </>
-                  );
-                })()}
-              </div>
-              <div className="grid grid-cols-3 gap-3 text-[9px] font-black uppercase tracking-widest">
-                <div className="flex items-center justify-center gap-1.5 text-emerald-600 bg-emerald-500/5 py-1.5 rounded-lg border border-emerald-500/10">Easy</div>
-                <div className="flex items-center justify-center gap-1.5 text-amber-600 bg-amber-500/5 py-1.5 rounded-lg border border-amber-500/10">Med</div>
-                <div className="flex items-center justify-center gap-1.5 text-rose-600 bg-rose-500/5 py-1.5 rounded-lg border border-rose-500/10">Hard</div>
-              </div>
-            </div>
+            )}
           </div>
 
           {/* AI Synthesis */}
