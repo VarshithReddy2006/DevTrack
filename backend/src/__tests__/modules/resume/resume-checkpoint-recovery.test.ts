@@ -43,7 +43,6 @@ describe('ResumeProcessingOrchestrator checkpoint recovery', () => {
 
     const orchestrator = new ResumeProcessingOrchestrator() as any;
     vi.spyOn(orchestrator, 'streamProgress').mockResolvedValue(undefined);
-    vi.spyOn(orchestrator.failureHandler, 'handleFailure').mockResolvedValue(undefined);
     const executeStage = vi.spyOn(orchestrator, 'executeStage').mockImplementation(async () => {
       session.parsedContent = { text: 'partial update' };
       throw new Error('Stage failed');

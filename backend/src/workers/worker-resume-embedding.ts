@@ -8,6 +8,9 @@ import { EmbeddingProviderAdapter } from '../modules/ai/embedding/EmbeddingProvi
 import { EMBEDDING_VERSION } from '../modules/ai/embedding/embeddingScope.js';
 import { EmbeddingPersistenceLayer } from '../modules/ai/embedding/EmbeddingPersistenceLayer.js';
 
+import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
+
+const orchestrator = new ResumeProcessingOrchestrator(true);
 let worker: Worker | null = null;
 const embeddingAdapter = new EmbeddingProviderAdapter();
 const persistenceLayer = new EmbeddingPersistenceLayer();
@@ -63,6 +66,13 @@ export async function startResumeEmbeddingWorker(): Promise<Worker> {
   worker = WorkerFactory.createWorker<ResumeEmbeddingJobData>(
     QueueNames.RESUME_EMBEDDING,
     async (job: Job<ResumeEmbeddingJobData>) => {
+      if (job.name === 'resume-stage') {
+        if (job.data.generation === undefined) throw new Error('Missing resume stage generation');
+        await orchestrator.processQueuedStage(job.data.sessionId, 'EMBEDDING', job.data.generation,
+          job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
+        return;
+      }
+
       const { sessionId } = job.data;
 
       logger.info(`[ResumeEmbeddingWorker] Processing embedding job: ${sessionId}`);
@@ -142,7 +152,7 @@ export async function startResumeEmbeddingWorker(): Promise<Worker> {
         throw error; // Re-throw for BullMQ to handle retries if configured at queue level
       }
     },
-    { concurrency: 3 }
+    { concurrency: 3, jobTimeoutMs: null }
   );
 
   worker.on('completed', (job) => {

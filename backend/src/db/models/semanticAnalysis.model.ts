@@ -28,6 +28,7 @@ export interface ISemanticAnalysis extends Document {
   strengths: string[];
   semanticSummary: string;
   confidenceScore: number;
+  provenance?: { provider: string; model: string };
   analyzedAt: Date;
 }
 
@@ -64,6 +65,7 @@ const semanticAnalysisSchema = new Schema<ISemanticAnalysis>(
     strengths: [String],
     semanticSummary: { type: String, required: true },
     confidenceScore: { type: Number, required: true },
+    provenance: { provider: String, model: String },
     analyzedAt: { type: Date, default: Date.now },
   },
   {

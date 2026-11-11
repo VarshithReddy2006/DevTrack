@@ -189,6 +189,7 @@ export class UploadService {
       'RECOMMENDING': 90,
       'COMPLETED': 100,
       'FAILED': 100,
+      'DEGRADED': 100,
     };
 
     const progress = stageProgress[session.currentStage] || 50;
@@ -198,7 +199,9 @@ export class UploadService {
       status: session.currentStage,
       currentStage: session.currentStage,
       progress,
-      errors: session.failureState?.failed ? [session.failureState.failureReason || 'Processing failed'] : [],
+      errors: session.failureState?.failed ? [session.failureState.failureReason || 'Processing failed']
+        : session.currentStage === 'DEGRADED' && session.degradedState?.degradedReason
+          ? [session.degradedState.degradedReason] : [],
       metadata: {},
     };
   }

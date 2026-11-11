@@ -1,13 +1,15 @@
 import { Job, Worker } from 'bullmq';
 import { WorkerFactory } from '../infrastructure/queues/WorkerFactory.js';
-import { getRedisClient } from '../shared/redis/index.js';
 import { logger } from '../shared/logger.js';
 import { QueueNames, type ResumeSemanticJobData } from '../shared/jobs/types.js';
 import { ResumeSession } from '../db/models/resumeSession.model.js';
-import { AIProviderAdapter } from '../modules/ai/provider/AIProviderAdapter.js';
+import { SemanticIntelligenceLayer } from '../modules/resume/ai/SemanticIntelligenceLayer.js';
 import { SemanticAnalysis } from '../db/models/semanticAnalysis.model.js';
-import { semanticAnalysisZodSchema } from '../modules/resume/ai/semanticAnalysis.schema.js';
 
+import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
+
+const orchestrator = new ResumeProcessingOrchestrator(true);
+const semanticLayer = new SemanticIntelligenceLayer();
 let worker: Worker | null = null;
 
 export async function startResumeSemanticWorker(): Promise<Worker> {
@@ -21,6 +23,13 @@ export async function startResumeSemanticWorker(): Promise<Worker> {
   worker = WorkerFactory.createWorker<ResumeSemanticJobData>(
     QueueNames.RESUME_SEMANTIC,
     async (job: Job<ResumeSemanticJobData>) => {
+      if (job.name === 'resume-stage') {
+        if (job.data.generation === undefined) throw new Error('Missing resume stage generation');
+        await orchestrator.processQueuedStage(job.data.sessionId, 'SEMANTIC_ANALYZING', job.data.generation,
+          job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
+        return;
+      }
+
       const { sessionId } = job.data;
 
       logger.info(`[ResumeSemanticWorker] Processing semantic job: ${sessionId}`);
@@ -31,83 +40,15 @@ export async function startResumeSemanticWorker(): Promise<Worker> {
           throw new Error('Session not found or text not parsed yet');
         }
 
-        const text = session.parsedContent.text;
-
-        const systemPrompt = `You are an expert technical recruiter and senior engineering manager analyzing a software engineering resume.
-You MUST output your analysis in strict JSON format that matches EXACTLY the required schema.
-Do NOT wrap the JSON in markdown code blocks (e.g., \`\`\`json). Just output raw JSON.
-
-Schema requirements:
-{
-  "extractedSkills": {
-    "languages": ["string"],
-    "frameworks": ["string"],
-    "databases": ["string"],
-    "cloudTools": ["string"],
-    "devOpsTools": ["string"],
-    "aiMlTools": ["string"]
-  },
-  "experienceSignals": {
-    "yearsOfExperience": number,
-    "engineeringDepth": number (0-10),
-    "projectComplexity": number (0-10),
-    "leadershipIndicators": number (0-10),
-    "productionExposure": number (0-10)
-  },
-  "roleAlignment": {
-    "backend": number (0-100),
-    "frontend": number (0-100),
-    "fullstack": number (0-100),
-    "ml": number (0-100),
-    "devops": number (0-100)
-  },
-  "weaknesses": ["string" (vague wording, missing metrics, weak impact, etc)],
-  "strengths": ["string"],
-  "semanticSummary": "string",
-  "confidenceScore": number (0-100)
-}`;
-
-        const userPrompt = `Please analyze the following resume and extract the required structured intelligence.
-
-Resume Text:
-${text}`;
-
-        // Generate response using existing AI Provider Adapter, prioritizing Gemini 1.5 Flash
-        const response = await AIProviderAdapter.generateResponse({
-          prompt: userPrompt,
-          tenantScope: session.userId?.toString() ?? `session:${sessionId}`,
-          systemPrompt,
-          model: 'gemini-1.5-flash',
-          providerPreference: 'gemini',
-          temperature: 0.1, // Deterministic, analytical
-          maxTokens: 4000
-        });
-
-        // Clean up markdown block if the AI hallucinated it
-        let cleanContent = response.content.trim();
-        if (cleanContent.startsWith('```json')) {
-          cleanContent = cleanContent.slice(7);
-        }
-        if (cleanContent.endsWith('```')) {
-          cleanContent = cleanContent.slice(0, -3);
-        }
-        cleanContent = cleanContent.trim();
-
-        let parsedJson;
-        try {
-          parsedJson = JSON.parse(cleanContent);
-        } catch (parseError) {
-          logger.error(`[ResumeSemanticWorker] AI JSON Parse Error for session ${sessionId}. Output was: ${cleanContent.substring(0, 500)}`);
-          throw new Error(`AI generated malformed JSON: ${(parseError as Error).message}`);
-        }
-
-        // Strictly validate with Zod
-        const validatedData = semanticAnalysisZodSchema.parse(parsedJson);
+        const { analysis: validatedData, provenance, degradedReason } = await semanticLayer.analyzeResume(
+          session.parsedContent.text, session.userId?.toString() ?? sessionId,
+        );
+        if (!validatedData) throw new Error(degradedReason);
 
         // Persist to MongoDB
         await SemanticAnalysis.findOneAndUpdate(
           { sessionId },
-          { ...validatedData, sessionId },
+          { ...validatedData, provenance, sessionId },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
 
@@ -141,7 +82,7 @@ ${text}`;
         throw error; // Re-throw so BullMQ can attempt standard exponential retries
       }
     },
-    { concurrency: 3 }
+    { concurrency: 3, jobTimeoutMs: null }
   );
 
   worker.on('completed', (job) => {
