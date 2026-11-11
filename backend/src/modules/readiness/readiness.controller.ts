@@ -114,5 +114,82 @@ export const ReadinessController = {
 
     res.json({ success: true });
   }),
+
+  chatGuidance: withAuth('[readiness]', 'copilot chat guidance', async (userId, req, res) => {
+    const ChatGuidanceSchema = z.object({
+      prompt: z.string().min(1),
+      threadId: z.string().optional(),
+      targetRole: z.string().optional(),
+      contextType: z.enum(['copilot', 'roadmap', 'mentor', 'general']).optional(),
+    });
+
+    const parsed = ChatGuidanceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      ApiResponse.badRequest(res, 'Invalid chat payload');
+      return;
+    }
+
+    const { prompt, threadId = 'career-copilot', targetRole, contextType = 'copilot' } = parsed.data;
+
+    const { AIConversationService } = await import('../ai/conversation/AIConversationService.js');
+    const result = await AIConversationService.processQuestion({
+      userId,
+      question: prompt,
+      threadId,
+      targetRole,
+      contextType,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        answer: result.answer,
+        threadId: result.threadId,
+        confidence: result.confidence,
+        model: result.model,
+      },
+    });
+  }),
+
+  getGuidanceHistory: withAuth('[readiness]', 'get copilot guidance history', async (userId, req, res) => {
+    const threadId = (req.query.threadId as string) || 'career-copilot';
+    const { AIConversationService } = await import('../ai/conversation/AIConversationService.js');
+    const history = await AIConversationService.getConversationHistory(userId, threadId);
+
+    res.json({
+      success: true,
+      data: {
+        threadId,
+        messages: history.map((m, idx) => ({
+          id: `${threadId}-${idx}-${new Date(m.timestamp).getTime()}`,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp,
+        })),
+      },
+    });
+  }),
+
+  clearGuidanceHistory: withAuth('[readiness]', 'clear copilot guidance history', async (userId, req, res) => {
+    const threadId = (req.query.threadId as string) || 'career-copilot';
+    const { AIConversationService } = await import('../ai/conversation/AIConversationService.js');
+    await AIConversationService.clearConversationHistory(userId, threadId);
+
+    res.json({
+      success: true,
+      message: 'Conversation history cleared',
+      threadId,
+    });
+  }),
+
+  listGuidanceThreads: withAuth('[readiness]', 'list copilot guidance threads', async (userId, _req, res) => {
+    const { AIConversationService } = await import('../ai/conversation/AIConversationService.js');
+    const threads = await AIConversationService.listThreads(userId);
+
+    res.json({
+      success: true,
+      data: threads,
+    });
+  }),
 };
 

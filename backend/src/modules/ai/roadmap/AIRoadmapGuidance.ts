@@ -9,6 +9,7 @@ export interface RoadmapGuidanceInput {
   questionType: 'dependency' | 'sequencing' | 'importance' | 'architecture' | 'scalability';
   specificNode?: string;
   comparisonNodes?: string[];
+  threadId?: string;
 }
 
 export interface RoadmapGuidanceResponse {
@@ -54,6 +55,23 @@ class AIRoadmapGuidanceClass {
       };
       
       const aiResponse = await AIProviderAdapter.generateResponse(aiRequest);
+
+      if (input.threadId) {
+        try {
+          const { AIConversationService } = await import('../conversation/AIConversationService.js');
+          await AIConversationService.persistConversationTurn(
+            userId,
+            input.threadId,
+            `Roadmap ${questionType}: ${specificNode || ''}`,
+            aiResponse.content,
+            'roadmap',
+            targetRole,
+            aiResponse.tokensUsed
+          );
+        } catch (e) {
+          logger.warn('[AIRoadmapGuidance] Failed to persist roadmap turn', { userId, error: e });
+        }
+      }
       
       logger.info('[AIRoadmapGuidance] Roadmap concept explained', { 
         userId, 

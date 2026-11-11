@@ -7,6 +7,7 @@ export interface MentorInput {
   targetRole?: string;
   questionType: 'dependency' | 'progression' | 'readiness-shift' | 'benchmark-change' | 'maturity-gap';
   specificItem?: string;
+  threadId?: string;
 }
 
 export interface MentorResponse {
@@ -52,6 +53,23 @@ class ContextualEngineeringMentorClass {
       };
       
       const aiResponse = await AIProviderAdapter.generateResponse(aiRequest);
+
+      if (input.threadId) {
+        try {
+          const { AIConversationService } = await import('../conversation/AIConversationService.js');
+          await AIConversationService.persistConversationTurn(
+            userId,
+            input.threadId,
+            `Explain ${questionType}: ${specificItem || ''}`,
+            aiResponse.content,
+            'mentor',
+            targetRole,
+            aiResponse.tokensUsed
+          );
+        } catch (e) {
+          logger.warn('[ContextualEngineeringMentor] Failed to persist mentor turn', { userId, error: e });
+        }
+      }
       
       logger.info('[ContextualEngineeringMentor] Engineering concept explained', { 
         userId, 
