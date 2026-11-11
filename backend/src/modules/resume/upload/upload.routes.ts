@@ -29,4 +29,6 @@ router.get('/session/:id', rateLimiters.resumeRead, controller.getSession);
  */
 router.get('/session/:id/status', rateLimiters.resumeRead, controller.getSessionStatus);
 
+router.post('/sessions/:id/resume', rateLimiters.resume, controller.resumeSession);
+
 export default router;

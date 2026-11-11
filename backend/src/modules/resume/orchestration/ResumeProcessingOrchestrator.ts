@@ -194,15 +194,11 @@ export class ResumeProcessingOrchestrator {
     if (!checkpoint?.stage) throw new Error(`No checkpoint available for session: ${sessionId}`);
 
     Object.assign(session, checkpoint.snapshot);
-    session.currentStage = this.getNextStage(checkpoint.stage) || 'COMPLETED';
+    session.currentStage = checkpoint.stage;
     session.failureState = { failed: false, retryCount: session.failureState.retryCount || 0 };
     session.timestamps.lastUpdated = new Date();
     await session.save();
 
-    if (session.currentStage === 'COMPLETED') {
-      await this.completeProcessing(sessionId);
-      return;
-    }
     await this.transitionToNextStage(sessionId);
   }
 

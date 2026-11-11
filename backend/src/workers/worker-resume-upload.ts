@@ -1,10 +1,8 @@
 // src/workers/worker-resume-upload.ts
 import { Job, Worker } from 'bullmq';
 import { WorkerFactory } from '../infrastructure/queues/WorkerFactory.js';
-import { getRedisClient } from '../shared/redis/index.js';
 import { logger } from '../shared/logger.js';
-import { QueueNames, type ResumeUploadJobData } from '../shared/jobs/types.js';
-import { getResumeUploadQueue } from '../shared/jobs/queueFactory.js';
+import { QueueNames, type ResumeCheckpointJobData, type ResumeUploadJobData } from '../shared/jobs/types.js';
 import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
 import { ResumeSession } from '../db/models/resumeSession.model.js';
 
@@ -19,10 +17,21 @@ export async function startResumeUploadWorker(): Promise<void> {
 
   logger.info('[ResumeUploadWorker] Starting resume upload worker');
 
-  worker = WorkerFactory.createWorker<ResumeUploadJobData>(
+  worker = WorkerFactory.createWorker<ResumeUploadJobData | ResumeCheckpointJobData>(
     QueueNames.RESUME_UPLOAD,
-    async (job: Job<ResumeUploadJobData>) => {
-      const { sessionId, userId, filePath, originalFilename } = job.data;
+    async (job: Job<ResumeUploadJobData | ResumeCheckpointJobData>) => {
+      const { sessionId, userId } = job.data;
+
+      if ('recoveryRetryCount' in job.data) {
+        const session = await ResumeSession.findOne({ sessionId, userId });
+        if (session?.currentStage === 'FAILED' && session.failureState?.failed && session.checkpointState?.stage
+          && (session.failureState.retryCount ?? 0) === job.data.recoveryRetryCount) {
+          await orchestrator.resumeFromCheckpoint(sessionId);
+        }
+        return;
+      }
+
+      const { filePath, originalFilename } = job.data;
 
       logger.info(`[ResumeUploadWorker] Processing upload job: ${sessionId}`);
 
