@@ -49,7 +49,7 @@ test('a parser failure is persisted and shown as an actionable error', async ({ 
   const sessionId = await upload(page, {
     name: 'broken.pdf',
     mimeType: 'application/pdf',
-    buffer: Buffer.from('%PDF-1.4\ninvalid document body\n'),
+    buffer: Buffer.from(`%PDF-1.4\n${'invalid document body\n'.repeat(60)}`),
   });
 
   await expect.poll(async () => {
