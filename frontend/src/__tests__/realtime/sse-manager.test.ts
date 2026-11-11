@@ -17,7 +17,7 @@ vi.mock('../../services/authService', () => ({
 }));
 
 vi.mock('../../lib/queryClient', () => ({
-  queryClient: { invalidateQueries: vi.fn() },
+  queryClient: { invalidateQueries: vi.fn(), clear: vi.fn() },
 }));
 
 // ---------------------------------------------------------------------------
