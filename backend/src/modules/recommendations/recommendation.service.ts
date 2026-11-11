@@ -1,5 +1,5 @@
 // src/modules/recommendations/recommendation.service.ts
-import { Schema } from 'mongoose';
+import { isObjectIdOrHexString, type Schema } from 'mongoose';
 import { ATSGapDetectionEngine } from './engines/atsGapDetector.js';
 import { SemanticGapAnalyzer } from './engines/semanticGapAnalyzer.js';
 import { CredibilityReasoner } from './engines/credibilityReasoner.js';
@@ -7,15 +7,36 @@ import { RecommendationDependencyGraph } from './engines/dependencyGraph.js';
 import { RecommendationImpactEngine } from './engines/impactModel.js';
 import { IntelligenceRecommendation } from '../../db/models/intelligenceRecommendation.model.js';
 
+import { ResumeProfile } from '../../db/models/resumeProfile.model.js';
+import { ResumeSession } from '../../db/models/resumeSession.model.js';
+
 export class RecommendationIntelligenceService {
-  
+  static async refreshOwnedRecommendations(userId: string, reference: string) {
+    const session = await ResumeSession.findOne({ userId, sessionId: reference }).select('_id');
+    let ownerResourceId = session?._id;
+
+    if (!ownerResourceId && isObjectIdOrHexString(reference)) {
+      const profile = await ResumeProfile.findOne({ userId, _id: reference }).select('_id');
+      const sessionById = profile ? null : await ResumeSession.findOne({ userId, _id: reference }).select('_id');
+      ownerResourceId = profile?._id ?? sessionById?._id;
+    }
+
+    if (!ownerResourceId) {
+      throw Object.assign(new Error('Resume not found'), { statusCode: 404 });
+    }
+
+    const resumeId = String(ownerResourceId);
+    await this.generateIntelligence(userId, resumeId);
+    return this.getActiveRecommendations(userId, resumeId);
+  }
+
   /**
    * Generates or updates the intelligence recommendations for a given resume.
    * This is an idempotent operation that drops active recommendations and regenerates them based on current evidence.
    */
   static async generateIntelligence(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId, targetRole: string = 'Backend Engineer'): Promise<void> {
     // 1. Clear existing active recommendations to regenerate
-    await IntelligenceRecommendation.deleteMany({ resumeProfileId, state: 'active' });
+    await IntelligenceRecommendation.deleteMany({ userId, resumeProfileId, state: 'active' });
 
     // 2. Run independent gap detection engines
     await Promise.all([
@@ -25,18 +46,18 @@ export class RecommendationIntelligenceService {
     ]);
 
     // 3. Resolve dependencies (e.g. ATS blocks Credibility)
-    await RecommendationDependencyGraph.resolveDependencies(resumeProfileId);
+    await RecommendationDependencyGraph.resolveDependencies(userId, resumeProfileId);
 
     // 4. Calculate impact and cull low confidence
-    await RecommendationImpactEngine.evaluateImpact(resumeProfileId);
+    await RecommendationImpactEngine.evaluateImpact(userId, resumeProfileId);
   }
 
   /**
    * Retrieves all active recommendations for a resume, sorted by impact and dependencies.
    */
-  static async getActiveRecommendations(resumeProfileId: string | Schema.Types.ObjectId) {
-    const recs = await IntelligenceRecommendation.find({ resumeProfileId, state: 'active' })
-      .populate('dependencies')
+  static async getActiveRecommendations(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId) {
+    const recs = await IntelligenceRecommendation.find({ userId, resumeProfileId, state: 'active' })
+      .populate({ path: 'dependencies', match: { userId, resumeProfileId } })
       .lean();
 
     // Sort by impact score (descending)

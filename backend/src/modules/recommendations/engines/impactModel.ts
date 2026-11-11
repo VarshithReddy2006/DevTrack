@@ -4,8 +4,8 @@ import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecom
 
 export class RecommendationImpactEngine {
   
-  static async evaluateImpact(resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
-    const activeRecs = await IntelligenceRecommendation.find({ resumeProfileId, state: 'active' });
+  static async evaluateImpact(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
+    const activeRecs = await IntelligenceRecommendation.find({ userId, resumeProfileId, state: 'active' });
     
     let totalAtsImprovement = 0;
     let totalCredibilityImprovement = 0;

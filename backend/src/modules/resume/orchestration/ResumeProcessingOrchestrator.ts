@@ -490,15 +490,18 @@ export class ResumeProcessingOrchestrator {
     logger.info(`[ProcessingOrchestrator] Executing RECOMMENDING for session: ${session.sessionId}`);
     
     await this.failoverRuntime.executeWithFailover(async () => {
+      const userId = session.userId;
+      if (!userId) return;
+
       const targetRole = session.uploadMetadata.originalFilename.toLowerCase().includes('frontend') ? 'frontend engineer' : 'backend engineer';
       
       await RecommendationIntelligenceService.generateIntelligence(
-        session.userId!,
+        userId,
         session._id!,
         targetRole
       );
       
-      const activeRecs = await RecommendationIntelligenceService.getActiveRecommendations(session._id!);
+      const activeRecs = await RecommendationIntelligenceService.getActiveRecommendations(userId, session._id!);
       const recTitles = activeRecs.map(r => r.title);
       
       let credibilityScore = 85;
