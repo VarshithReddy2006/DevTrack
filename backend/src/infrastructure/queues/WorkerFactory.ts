@@ -5,6 +5,7 @@ import { logger } from '../../shared/logger.js';
 import { ErrorClassifier, NonRetryableError } from './ErrorClassifier.js';
 import { DeadLetterHandler } from './DeadLetterHandler.js';
 import { RetryPolicy } from './RetryPolicy.js';
+import { attachWorkerDlq } from '../../shared/jobs/dlq.service.js';
 
 export class WorkerFactory {
   /**
@@ -29,13 +30,16 @@ export class WorkerFactory {
         
         try {
           // Timeout protection (e.g. max 5 minutes per job to prevent hanging)
+          let timer: ReturnType<typeof setTimeout> | undefined;
           const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Job execution timed out after 5 minutes')), 5 * 60 * 1000);
+            timer = setTimeout(() => reject(new Error('Job execution timed out after 5 minutes')), 5 * 60 * 1000);
           });
           
-          await Promise.race([processor(job), timeoutPromise]);
-
-          logger.info(`[Worker:${queueName}] Completed Job ${jobId}`);
+          try {
+            const result = await Promise.race([processor(job), timeoutPromise]);
+            logger.info(`[Worker:${queueName}] Completed Job ${jobId}`);
+            return result;
+          } finally { clearTimeout(timer); }
         } catch (error) {
           logger.error(`[Worker:${queueName}] Failed Job ${jobId} on attempt ${job.attemptsMade + 1}`, error);
           
@@ -51,7 +55,7 @@ export class WorkerFactory {
           }
 
           // If retryable, check if we've exhausted attempts
-          if (job.attemptsMade >= (job.opts.attempts || RetryPolicy.MAX_ATTEMPTS) - 1) {
+          if (job.attemptsMade >= (job.opts.attempts || 1) - 1) {
             logger.error(`[Worker:${queueName}] Job ${jobId} exhausted all retries. Moving to DLQ.`);
             await DeadLetterHandler.handlePermanentFailure(queueName, `Worker:${queueName}`, job, classifiedError);
             throw classifiedError;
@@ -71,9 +75,7 @@ export class WorkerFactory {
       }
     );
 
-    worker.on('failed', (job, err) => {
-      // Handled internally by process wrapper, but useful for overall worker telemetry
-    });
+    attachWorkerDlq(worker, queueName);
 
     worker.on('stalled', (jobId) => {
       logger.warn(`[Worker:${queueName}] Job ${jobId} stalled. Recovery workflow initiated.`);

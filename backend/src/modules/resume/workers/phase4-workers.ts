@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/workers/evidence-graph.worker.ts
+import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { EvidenceGraphEngine } from '../evidence/EvidenceGraphEngine.js';
@@ -11,11 +12,11 @@ let evidenceGraphWorker: Worker | undefined;
 let embeddingWorker: Worker | undefined;
 let githubAnalysisWorker: Worker | undefined;
 
-export function startEvidenceGraphWorker(): void {
-  if (evidenceGraphWorker) return;
+export function startEvidenceGraphWorker(): Worker {
+  if (evidenceGraphWorker) return evidenceGraphWorker;
   const engine = new EvidenceGraphEngine();
 
-  evidenceGraphWorker = new Worker(
+  evidenceGraphWorker = createDlqWorker(
     EVIDENCE_GRAPH_QUEUE,
     async (job: Job) => {
       logger.info(`[EvidenceGraphWorker] Processing job ${job.id}`);
@@ -23,28 +24,32 @@ export function startEvidenceGraphWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return evidenceGraphWorker;
 }
 
 // src/modules/resume-intelligence/workers/embedding-generation.worker.ts
 export const EMBEDDING_GENERATION_QUEUE = 'embedding-generation';
-export function startEmbeddingWorker(): void {
-  if (embeddingWorker) return;
-  embeddingWorker = new Worker(
+export function startEmbeddingWorker(): Worker {
+  if (embeddingWorker) return embeddingWorker;
+  embeddingWorker = createDlqWorker(
     EMBEDDING_GENERATION_QUEUE,
     async (job: Job) => {
       logger.info(`[EmbeddingWorker] Generating embeddings for ${job.id}`);
     },
     { connection: getRedisConnection() }
   );
+
+  return embeddingWorker;
 }
 
 // src/modules/resume-intelligence/workers/github-analysis.worker.ts
 import { RepositoryIntelligenceEngine } from '../github/RepositoryIntelligenceEngine.js';
 export const GITHUB_ANALYSIS_QUEUE = 'github-analysis';
-export function startGithubAnalysisWorker(): void {
-  if (githubAnalysisWorker) return;
+export function startGithubAnalysisWorker(): Worker {
+  if (githubAnalysisWorker) return githubAnalysisWorker;
   const engine = new RepositoryIntelligenceEngine();
-  githubAnalysisWorker = new Worker(
+  githubAnalysisWorker = createDlqWorker(
     GITHUB_ANALYSIS_QUEUE,
     async (job: Job) => {
       logger.info(`[GithubAnalysisWorker] Analyzing repo ${job.data.repoUrl}`);
@@ -52,6 +57,8 @@ export function startGithubAnalysisWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return githubAnalysisWorker;
 }
 
 export async function stopEvidenceGraphWorker(): Promise<void> {

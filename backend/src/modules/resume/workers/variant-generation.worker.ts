@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/workers/variant-generation.worker.ts
+import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
@@ -15,12 +16,12 @@ interface IVariantGenerationJob {
 
 let worker: Worker | null = null;
 
-export function startVariantGenerationWorker(): void {
-  if (worker) return;
+export function startVariantGenerationWorker(): Worker {
+  if (worker) return worker;
 
   const service = new ResumeIntelligenceService();
 
-  worker = new Worker<IVariantGenerationJob>(
+  worker = createDlqWorker<IVariantGenerationJob>(
     VARIANT_GENERATION_QUEUE,
     async (job: Job<IVariantGenerationJob>) => {
       logger.info(`[VariantGenerationWorker] Processing job ${job.id}`);
@@ -37,6 +38,8 @@ export function startVariantGenerationWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return worker;
 }
 
 export async function stopVariantGenerationWorker(): Promise<void> {

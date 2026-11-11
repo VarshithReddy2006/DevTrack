@@ -145,26 +145,76 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 |-----------|---------------|------|
 | `api` | — (`ENABLE_WORKERS=false`) | HTTP + SSE only |
 | `worker-sync` | `sync` | Platform crawlers |
-| `worker-xp` | `xp` | Gamification |
+| `worker-xp` | `xp` | XP, streaks and notifications |
+| `worker-readiness` | `readiness` | Six Readiness intelligence consumers |
 | `worker-resume` | `resume-intelligence` | Resume consumers and profile rebuild |
 | `worker-dataset` | `dataset` | Dataset ingestion |
 | `worker-maint` | `maintenance` | Maintenance |
 
-The standalone dispatcher accepts exactly `sync`, `xp`, `maintenance`,
+The standalone dispatcher accepts exactly `sync`, `xp`, `readiness`, `maintenance`,
 `resume-intelligence`, `dataset`, and `all`. An unset or empty selector defaults to
 `all` for local development; production services must select an explicit role.
 Unknown values fail before loading service modules or connecting to databases.
 There is no standalone orchestration-compensation consumer: `orch` and
 `orchestration` are invalid selectors. The resume role groups existing consumers;
-it does not add a new orchestration engine. `all` is the union of the five roles.
+it does not add a new orchestration engine. `all` is the union of the six roles.
 
 Backend `worker:*` scripts use the same dispatcher with a positional selector.
 An explicit positional selector takes precedence over `WORKER_TYPE`. Shutdown
-waits for startup to settle, drains registered consumers (including XP and Phase 4),
-then disconnects MongoDB and shared Redis. Partial startup failures also drain
+waits for startup to settle, drains registered consumers concurrently,
+then disconnects MongoDB and shared Redis. A nine-second deadline bounds pending
+startup, drain and service cleanup; timeout exits nonzero and unfinished jobs rely
+on BullMQ stalled-job recovery. The API retains its ten-second process exit cap. Partial startup failures also drain
 registered consumers and exit nonzero; cleanup continues if one close fails.
 
+API startup uses the same lazy registry as the standalone dispatcher when
+`ENABLE_WORKERS` is unset or anything other than `false`. Set `ENABLE_WORKERS=false`
+on API processes when using standalone workers, including local `dev:all` alongside
+`dev:workers`, to choose one execution topology. The registry covers all existing
+worker constructors: six Readiness consumers, the legacy Resume feature queues,
+and session-based `resume-upload`, `resume-ats`, `resume-embedding`, `resume-semantic`
+and `resume-recommendation` consumers. Queue constants without an existing consumer
+(such as `resume-replay`) do not imply a registered worker.
+
+The admin-only `/api/system/queue-status` endpoint includes every registered queue
+and role, job counts and the number of Redis-observed consumers. This includes
+standalone consumers in other processes. Missing consumers and unavailable Redis
+are explicit statuses; failed queries return null counts rather than healthy zeros.
+Health queries have a one-second deadline.
+
+Run registry, startup, deadline and health tests from `backend/` with
+`node node_modules/vitest/vitest.mjs run -c vitest.worker-lifecycle.config.ts`.
+The live queue suite uses real BullMQ plus an owned MongoDB instance and a unique
+Redis namespace: set `WORKER_TEST_REDIS_URL` to a disposable Redis URL and run
+`node node_modules/vitest/vitest.mjs run -c vitest.worker-queues.config.ts` with
+`MONGODB_URI` unset. CI runs this suite against its Redis service. It verifies saved
+results from `readiness-dsa` and `resume-ats`; without the explicit URL it is skipped.
+
 Platform sync is **idempotent**: each external submission maps to `platform + externalId` to prevent duplicates.
+
+Terminal worker failures are captured by `attachWorkerDlq` in `shared/jobs/dlq.service.ts`.
+Factory workers install it automatically; other workers use `createDlqWorker`, which
+preserves their retry behavior and discards explicit `NonRetryableError` jobs.
+The hook uses each job's configured attempts and captures early unrecoverable failures.
+Dead letters wait in `<source-queue>-dlq` (BullMQ forbids colons in queue names),
+including payload, processor name, retry settings, stack, attempt counts and category.
+Capture IDs deduplicate repeated events; worker shutdown drains pending captures.
+Factory workers also retain their existing MongoDB failure audit.
+
+Admin-only recovery endpoints are `GET /api/system/dlq?queue=<source-queue>`
+(with optional `offset` and `limit`, capped at 100),
+`POST /api/system/dlq/:id/retry?queue=<source-queue>`, and
+`DELETE /api/system/dlq/:id?queue=<source-queue>`. Queue names are allowlisted.
+Replay preserves the original processor name and retry settings, coalesces concurrent
+requests with a deterministic replay ID, and removes the dead letter only after enqueue.
+The existing six-hour maintenance task removes entries older than seven days across
+all known queues. DLQ storage depends on Redis persistence; a failed capture is logged
+and the original source job remains subject to its configured failed-job retention.
+
+Run isolated queue-boundary and HTTP recovery tests from `backend/` with
+`node node_modules/vitest/vitest.mjs run -c vitest.dlq.config.ts`.
+These mock Redis/BullMQ; live Redis capture and replay remain a separate validation.
+
 
 ---
 
@@ -283,6 +333,29 @@ in a GET response does not imply the current API supports editing or applying it
 
 Optional `GITHUB_TOKEN` raises GitHub API rate limits.
 
+Platform sync delegates provider requests to the registered adapters in
+`backend/src/modules/platform-sync/adapters/`. Their common base applies circuit
+breakers and consistent failure results; shared HTTP requests retain bounded
+timeouts and exponential backoff for network failures, 429s and 5xx responses.
+Provider-owned helpers preserve the existing dashboard stats and calendar fields.
+The coordinator owns the distributed mutex, cooldown, sync job state, readiness
+refresh and lifecycle notifications. The queue worker does not repeat the
+coordinator's start/completion/failure notifications for returned sync results.
+
+Adapters normalize submissions and contests before the shared persistence layer.
+LeetCode keeps provider submission IDs, with a `slug:timestamp` fallback when an
+ID is absent; the problem slug remains a separate problem identifier. Imports
+increment problem counts and daily activity only after admitting a new submission
+ID. Codeforces retains its rolling 365-day attempt history and all verdicts;
+LeetCode retains the public recent-accepted limit of 500. CodeChef remains
+stats-only through profile scraping and produces no fabricated submissions or
+fallback statistics. No existing submission IDs are rewritten.
+
+Run mocked-provider tests and adapter coverage from `backend/` with
+`node node_modules/vitest/vitest.mjs run -c vitest.adapters.config.ts --coverage`.
+The sync integration regressions use the disposable MongoDB test setup and mocked
+provider responses; they do not require live platform credentials.
+
 ---
 
 ## Observability
@@ -295,6 +368,24 @@ Optional `GITHUB_TOKEN` raises GitHub API rate limits.
 | `GET /api/v1/ops/*` | Admin/ops | Queues, DLQ, cache, trust, AI audits |
 
 Structured logging via Winston (`backend/src/shared/logger.ts`). Failed jobs route to the dead-letter queue (`dlq.service.ts`).
+
+The full `GET /api/v1/dashboard` response uses a user-scoped Redis key with a
+five-minute TTL. Concurrent misses share one dashboard load per API process;
+individual dashboard subresource endpoints retain their existing read behavior.
+Activity, problem, project, platform connection/sync and mission writes invalidate
+the dashboard after persistence, alongside the existing XP and streak hooks.
+Redis invalidation advances a generation atomically with deletion; conditional
+fills prevent an API load from caching stale data after a worker invalidates it.
+Generation keys are retained so an older in-flight load cannot reuse an expired
+generation. Coalescing is local to a process, rather than a distributed lock.
+
+Cache errors fall back to database reads, and cache commands have a 500ms wait
+limit so connection retries cannot indefinitely block dashboard reads or committed
+writes. During a Redis outage, invalidation is best effort and existing entries
+can remain stale until their five-minute TTL expires. The protected
+`/api/system/request-metrics` response includes process-local `cache` counters:
+`hits`, `misses`, `coalesced`, `loads`, `bypasses`, `errors`, and `inFlight`.
+Misses count requests without a cached value; loads count actual database loads.
 
 ---
 

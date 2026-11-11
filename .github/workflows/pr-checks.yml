@@ -141,6 +141,12 @@ jobs:
         working-directory: ./backend
         run: npm ci
 
+      - name: Verify registered Readiness and Resume consumers
+        working-directory: ./backend
+        env:
+          WORKER_TEST_REDIS_URL: redis://127.0.0.1:6379
+        run: node node_modules/vitest/vitest.mjs run -c vitest.worker-queues.config.ts
+
       - name: Run Integration Tests
         working-directory: ./backend
         run: npm run test:integration --if-present

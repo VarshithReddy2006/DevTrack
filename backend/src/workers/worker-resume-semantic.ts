@@ -10,10 +10,10 @@ import { semanticAnalysisZodSchema } from '../modules/resume/ai/semanticAnalysis
 
 let worker: Worker | null = null;
 
-export async function startResumeSemanticWorker(): Promise<void> {
+export async function startResumeSemanticWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[ResumeSemanticWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[ResumeSemanticWorker] Starting resume semantic worker');
@@ -152,6 +152,7 @@ ${text}`;
   });
 
   logger.info('[ResumeSemanticWorker] Resume semantic worker started');
+  return worker;
 }
 
 export async function stopResumeSemanticWorker(): Promise<void> {

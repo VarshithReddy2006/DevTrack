@@ -1,14 +1,17 @@
 // src/modules/platform-sync/adapters/types.ts — Canonical internal types
 // Adapters normalize provider-specific responses into these shapes.
-// Core sync logic NEVER touches raw provider API shapes directly.
+// Persistence consumes normalized submissions; rawData preserves dashboard compatibility.
 
 // ---------------------------------------------------------------------------
 // Normalized submission from any provider
 // ---------------------------------------------------------------------------
 
 export interface PlatformSubmission {
-  /** Provider-specific unique ID (e.g., LeetCode slug, GH commit sha) */
+  /** Provider-specific unique ID (e.g., LeetCode submission ID, GH commit sha) */
   externalId: string;
+  problemExternalId?: string;
+  problemUrl?: string;
+  category?: string;
   /** Canonical platform name */
   platform: 'leetcode' | 'github' | 'codeforces' | 'codechef';
   /** Problem/contribution title */
@@ -16,7 +19,7 @@ export interface PlatformSubmission {
   /** Difficulty classification (normalized) */
   difficulty: 'easy' | 'medium' | 'hard' | 'unknown';
   /** Submission status */
-  status: 'accepted' | 'wrong_answer' | 'time_limit' | 'runtime_error' | 'other';
+  status: 'accepted' | 'wrong_answer' | 'time_limit' | 'runtime_error' | 'compilation_error' | 'other';
   /** When the submission was made */
   submittedAt: Date;
   /** Optional: language used */
@@ -54,7 +57,9 @@ export interface PlatformStats {
   mediumSolved: number;
   hardSolved: number;
   /** Codeforces/LeetCode rating (undefined for GitHub) */
-  rating?: number;
+  rating?: number | null;
+  rank?: string | null;
+  rawData?: Record<string, unknown>;
   /** Total contests participated */
   totalContests?: number;
   /** GitHub-specific: total contributions */
@@ -72,7 +77,8 @@ export interface AdapterSyncResult {
   submissions: PlatformSubmission[];
   stats: PlatformStats;
   profile?: PlatformProfile;
-  /** Number of new submissions not seen before */
+  contests?: PlatformContest[];
+  /** Number of fetched submissions; persistence decides which IDs are new. */
   newCount: number;
   /** Error message if success is false */
   error?: string;
@@ -97,6 +103,32 @@ export interface PlatformAdapter {
   /** Fetch user profile from the provider */
   fetchProfile(username: string): Promise<PlatformProfile>;
 
+  fetchContests?(username: string, stats: PlatformStats): Promise<PlatformContest[]>;
+
   /** Full sync: fetch everything and return normalized result */
   sync(username: string, since?: Date): Promise<AdapterSyncResult>;
+}
+
+export interface FetchedPlatformStats {
+  username: string;
+  totalSolved: number;
+  easySolved: number;
+  mediumSolved: number;
+  hardSolved: number;
+  rating: number | null;
+  rank: string | null;
+  totalContests: number;
+  rawData: Record<string, unknown>;
+}
+
+
+export interface PlatformContest {
+  title: string;
+  participatedAt: Date;
+  rank: number | null;
+  totalParticipants: number | null;
+  ratingBefore: number | null;
+  ratingAfter: number | null;
+  ratingChange: number | null;
+  url?: string;
 }

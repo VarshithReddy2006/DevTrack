@@ -4,7 +4,7 @@ import { getSubmissions } from '../../../modules/dsa/dsa.service.js';
 import { ingestLeetCodeSubmissions, syncPlatform } from '../../../modules/platform-sync/sync.service.js';
 
 vi.mock('../../../shared/sse/index.js', () => ({
-  eventBus: { emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn() },
+  eventBus: { emitSyncStarted: vi.fn(), emitSyncCompleted: vi.fn(), emitSyncFailed: vi.fn() },
 }));
 vi.mock('../../../shared/redis/syncLock.service.js', () => ({
   acquireSyncLockWithRetry: vi.fn().mockResolvedValue(true),

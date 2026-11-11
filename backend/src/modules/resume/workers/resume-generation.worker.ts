@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/workers/resume-generation.worker.ts
+import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
@@ -17,15 +18,15 @@ let worker: Worker | null = null;
 /**
  * Start resume generation worker
  */
-export function startResumeGenerationWorker(): void {
+export function startResumeGenerationWorker(): Worker {
   if (worker) {
     logger.warn('[ResumeGenerationWorker] Worker already running');
-    return;
+    return worker;
   }
 
   const service = new ResumeIntelligenceService();
 
-  worker = new Worker<IResumeGenerationJob>(
+  worker = createDlqWorker<IResumeGenerationJob>(
     RESUME_GENERATION_QUEUE,
     async (job: Job<IResumeGenerationJob>) => {
       logger.info(`[ResumeGenerationWorker] Processing job ${job.id}`);
@@ -68,6 +69,8 @@ export function startResumeGenerationWorker(): void {
   });
 
   logger.info('[ResumeGenerationWorker] Started');
+
+  return worker;
 }
 
 /**

@@ -2,11 +2,11 @@
 // Processes notification jobs: streak_at_risk reminders, streak milestones.
 // Delivers via the notification service (in-app + SSE).
 
+import { createDlqWorker } from './dlq.service.js';
 import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../redis/index.js';
 import { logger } from '../logger.js';
 import { QueueNames, JobRetryConfig } from './types.js';
-import { dlqService } from './dlq.service.js';
 import { notificationService } from '../../modules/notifications/notification.service.js';
 
 export interface NotificationJobData {
@@ -31,7 +31,7 @@ export function startNotificationWorker(): Worker<NotificationJobData> {
 
   const redis = getRedisClient();
 
-  _worker = new Worker<NotificationJobData>(
+  _worker = createDlqWorker<NotificationJobData>(
     QueueNames.NOTIFICATIONS,
     async (job: Job<NotificationJobData>) => {
       const { type, userId, data, requestId } = job.data;
@@ -125,23 +125,6 @@ export function startNotificationWorker(): Worker<NotificationJobData> {
       jobId: job?.id,
       userId: job?.data.userId,
     });
-
-    if (job && job.attemptsMade >= JobRetryConfig.standard.attempts) {
-      dlqService
-        .quarantineJob(
-          QueueNames.NOTIFICATIONS,
-          job as unknown as import('bullmq').Job,
-          err.message,
-          job.attemptsMade,
-          JobRetryConfig.standard.attempts
-        )
-        .catch((dlqErr) => {
-          logger.error('[notification-worker] Failed to quarantine job in DLQ', dlqErr, {
-            event: 'dlq_quarantine_failed',
-            jobId: job?.id,
-          });
-        });
-    }
   });
 
   _worker.on('error', (err: Error) => {

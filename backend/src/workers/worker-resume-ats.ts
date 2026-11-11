@@ -12,10 +12,10 @@ import type { Types } from 'mongoose';
 let worker: Worker | null = null;
 const atsEngine = new ATSCompatibilityEngine();
 
-export async function startResumeATSWorker(): Promise<void> {
+export async function startResumeATSWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[ResumeATSWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[ResumeATSWorker] Starting resume ATS worker');
@@ -81,6 +81,8 @@ export async function startResumeATSWorker(): Promise<void> {
   });
 
   logger.info('[ResumeATSWorker] Resume ATS worker started');
+
+  return worker;
 }
 
 export async function stopResumeATSWorker(): Promise<void> {
