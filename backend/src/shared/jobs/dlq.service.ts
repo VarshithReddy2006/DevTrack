@@ -1,317 +1,207 @@
-// src/shared/jobs/dlq.service.ts — True Dead Letter Queue Architecture
-// Phase-B: Production Evolution Layer
-
-import { Queue, Job } from 'bullmq';
+import { createHash } from 'node:crypto';
+import { Queue, Job, Worker, UnrecoverableError, type JobsOptions, type WorkerOptions } from 'bullmq';
 import { getRedisClient } from '../redis/client.js';
 import { logger } from '../logger.js';
 import { QueueNames } from './types.js';
+import { NonRetryableError } from '../../infrastructure/queues/ErrorClassifier.js';
 
-// DLQ job persistence schema
+export const DLQ_QUEUE_NAMES: readonly string[] = [...new Set([
+  ...Object.values(QueueNames), 'ats-analysis', 'credibility-recalculation',
+  'resume-generation', 'variant-generation', 'evidence-graph', 'embedding-generation', 'github-analysis',
+])];
+
+export type FailureCategory = 'transient' | 'validation' | 'dependency' | 'data_corruption' | 'quarantine' | 'timeout';
 export interface DlqEntry {
   id: string;
   originalQueue: string;
   originalJobId: string;
+  originalJobName?: string;
+  originalOptions?: JobsOptions;
   jobData: Record<string, unknown>;
   failureReason: string;
   failureStack?: string;
   attemptCount: number;
   maxAttempts: number;
-  failedAt: Date;
+  failedAt: Date | string;
   categorizedAs: FailureCategory;
   recoverable: boolean;
-  lastRetryAt?: Date;
+  lastRetryAt?: Date | string;
   customMetadata?: Record<string, unknown>;
 }
 
-export type FailureCategory =
-  | 'transient'        // Network, temp failures - auto-retry
-  | 'validation'       // Invalid payload - requires fix
-  | 'dependency'       // External service down - backoff
-  | 'data_corruption' // Bad data, requires intervention
-  | 'quarantine'       // Poison job - manual review
-  | 'timeout';        // Took too long - may retry
-
-// DLQ Manager for each queue type
 class DlqManager {
-  private dlq: Queue;
-  private parentQueue: string;
-  private maxRetainDays = 7;
-
-  constructor(parentQueue: string) {
-    this.parentQueue = parentQueue;
-    this.dlq = new Queue(`${parentQueue}:dlq`, {
-      connection: getRedisClient(),
-      defaultJobOptions: {
-        removeOnComplete: { count: 1000, age: 86400 * 3 }, // 3 days
-        removeOnFail: { count: 5000, age: 86400 * 7 },    // 7 days
-      },
-    });
+  readonly queue: Queue<DlqEntry>;
+  constructor(private parentQueue: string) {
+    // BullMQ rejects ':' in queue names. These entries wait for admin action;
+    // there is intentionally no consumer for this queue.
+    this.queue = new Queue<DlqEntry>(`${parentQueue}-dlq`, { connection: getRedisClient() });
   }
 
-  async addFailedJob(
-    originalJob: Job,
-    failureReason: string,
-    attemptCount: number,
-    maxAttempts: number
-  ): Promise<DlqEntry> {
-    const categorized = this.categorizeFailure(failureReason, attemptCount, maxAttempts);
-    const recoverable = this.isRecoverable(categorized);
-
+  async addFailedJob(job: Job, reason: string, attempts: number, maxAttempts: number, error?: Error): Promise<DlqEntry> {
+    const category = categorizeFailure(reason, attempts, maxAttempts);
+    const id = createHash('sha256').update(`${this.parentQueue}/${job.id}/${job.timestamp}/${attempts}`).digest('hex');
     const entry: DlqEntry = {
-      id: `${originalJob.id}-${Date.now()}`,
-      originalQueue: this.parentQueue,
-      originalJobId: originalJob.id || 'unknown',
-      jobData: originalJob.data,
-      failureReason,
-      failureStack: (originalJob as unknown as { failedReason?: string }).failedReason,
-      attemptCount,
-      maxAttempts,
-      failedAt: new Date(),
-      categorizedAs: categorized,
-      recoverable,
-      customMetadata: {
-        priority: originalJob.priority,
-        timestamp: originalJob.timestamp,
+      id, originalQueue: this.parentQueue, originalJobId: job.id || 'unknown',
+      originalJobName: job.name,
+      originalOptions: {
+        attempts: job.opts.attempts, backoff: job.opts.backoff, priority: job.opts.priority,
       },
+      jobData: job.data, failureReason: reason,
+      failureStack: error?.stack || job.stacktrace?.join('\n'),
+      attemptCount: attempts, maxAttempts, failedAt: new Date(), categorizedAs: category,
+      recoverable: ['transient', 'dependency', 'timeout'].includes(category),
+      customMetadata: { timestamp: job.timestamp },
     };
-
-    await this.dlq.add('dead-letter', entry, {
-      jobId: entry.id,
-    });
-
-    logger.warn('[dlq] Job moved to DLQ', {
-      queue: this.parentQueue,
-      jobId: originalJob.id,
-      category: categorized,
-      recoverable,
-      attempts: attemptCount,
-    });
-
+    await this.queue.add('dead-letter', entry, { jobId: id });
+    logger.warn('[dlq] Job quarantined', { queue: this.parentQueue, jobId: job.id, category });
     return entry;
   }
 
-  async replayJob(dlqEntryId: string): Promise<void> {
-    const job = await this.dlq.getJob(dlqEntryId);
-    if (!job) {
-      throw new Error('DLQ job not found');
-    }
+  async list(start = 0, end = 49): Promise<DlqEntry[]> {
+    return (await this.queue.getJobs(['wait', 'paused'], start, end)).map(job => job.data);
+  }
 
-    const data = job.data as DlqEntry;
-
-    // Import parent queue and add job
+  async replayJob(id: string): Promise<void> {
+    const job = await this.queue.getJob(id);
+    if (!job) throw new DlqNotFoundError();
+    const data = job.data;
     const { getOrCreateQueue } = await import('./queueFactory.js');
-    const parentQueue = getOrCreateQueue(data.originalQueue);
-
-    await parentQueue.add('replay', data.jobData);
-
-    // Mark as replayed
-    await job.updateData({
-      ...data,
-      lastRetryAt: new Date(),
+    // Deterministic replay IDs coalesce simultaneous admin requests. Preserve
+    // the processor's job name and retry policy, never its old dedup/repeat ID.
+    await getOrCreateQueue(this.parentQueue).add(data.originalJobName || 'replay', data.jobData, {
+      ...data.originalOptions, jobId: `dlq-replay-${id}`,
     });
-
-    logger.info('[dlq] Job replayed', {
-      dlqEntryId,
-      originalQueue: data.originalQueue,
-    });
+    await job.remove(); // Failed enqueue leaves the dead letter available.
   }
 
-  async getDlqMetrics(): Promise<{
-    total: number;
-    byCategory: Record<FailureCategory, number>;
-    recoverable: number;
-    oldestEntry: Date | null;
-  }> {
-    const counts = await this.dlq.getJobCounts();
+  async remove(id: string): Promise<void> {
+    const job = await this.queue.getJob(id);
+    if (!job) throw new DlqNotFoundError();
+    await job.remove();
+  }
 
-    // Get all failed jobs to categorize
-    const failedJobs = await this.dlq.getFailed(0, 100);
-
+  async getDlqMetrics() {
+    const entries = await this.list(0, -1);
     const byCategory: Record<FailureCategory, number> = {
-      transient: 0,
-      validation: 0,
-      dependency: 0,
-      data_corruption: 0,
-      quarantine: 0,
-      timeout: 0,
+      transient: 0, validation: 0, dependency: 0, data_corruption: 0, quarantine: 0, timeout: 0,
     };
-
     let recoverable = 0;
-    let oldest: Date | null = null;
-
-    for (const job of failedJobs) {
-      const data = job.data as DlqEntry;
-      byCategory[data.categorizedAs]++;
-      if (data.recoverable) recoverable++;
-      if (!oldest || data.failedAt < oldest) {
-        oldest = data.failedAt;
-      }
+    let oldestEntry: Date | null = null;
+    for (const entry of entries) {
+      byCategory[entry.categorizedAs]++;
+      if (entry.recoverable) recoverable++;
+      const failedAt = new Date(entry.failedAt);
+      if (!oldestEntry || failedAt < oldestEntry) oldestEntry = failedAt;
     }
-
-    return {
-      total: counts.failed || 0,
-      byCategory,
-      recoverable,
-      oldestEntry: oldest,
-    };
+    return { total: entries.length, byCategory, recoverable, oldestEntry };
   }
 
-  private categorizeFailure(
-    failureReason: string,
-    attemptCount: number,
-    maxAttempts: number
-  ): FailureCategory {
-    const reason = failureReason.toLowerCase();
-
-    // Validation errors
-    if (reason.includes('validation') || reason.includes('invalid') || reason.includes('schema')) {
-      return 'validation';
-    }
-
-    // Timeout
-    if (reason.includes('timeout') || reason.includes('timed out')) {
-      return 'timeout';
-    }
-
-    // Dependency failures
-    if (reason.includes('connection') || reason.includes('econnrefused') || reason.includes('enosys')) {
-      return 'dependency';
-    }
-
-    // Data corruption
-    if (reason.includes('corrupt') || reason.includes('parse') || reason.includes('cast')) {
-      return 'data_corruption';
-    }
-
-    // Check for poison job (max retries exhausted)
-    if (attemptCount >= maxAttempts) {
-      return 'quarantine';
-    }
-
-    // Default to transient
-    return 'transient';
-  }
-
-  private isRecoverable(category: FailureCategory): boolean {
-    return ['transient', 'dependency', 'timeout'].includes(category);
-  }
-
-  async close(): Promise<void> {
-    await this.dlq.close();
-  }
+  async close(): Promise<void> { await this.queue.close(); }
 }
 
-// DLQ registry
-const dlqManagers = new Map<string, DlqManager>();
+export class DlqNotFoundError extends Error {
+  constructor() { super('DLQ job not found'); }
+}
 
+function categorizeFailure(reason: string, attempts: number, maxAttempts: number): FailureCategory {
+  const text = reason.toLowerCase();
+  if (/validation|invalid|schema/.test(text)) return 'validation';
+  if (/timeout|timed out/.test(text)) return 'timeout';
+  if (/connection|econn|enosys|network|rate limit|429|503/.test(text)) return 'dependency';
+  if (/corrupt|parse|cast/.test(text)) return 'data_corruption';
+  return attempts >= maxAttempts ? 'quarantine' : 'transient';
+}
+
+const managers = new Map<string, DlqManager>();
 export function getDlqManager(queueName: string): DlqManager {
-  const existing = dlqManagers.get(queueName);
-  if (existing) return existing;
-
-  const manager = new DlqManager(queueName);
-  dlqManagers.set(queueName, manager);
+  let manager = managers.get(queueName);
+  if (!manager) {
+    manager = new DlqManager(queueName);
+    managers.set(queueName, manager);
+  }
   return manager;
 }
 
-// Global DLQ operations
+const attached = new WeakSet<Worker>();
+export function attachWorkerDlq(worker: Worker, queueName: string): void {
+  if (attached.has(worker)) return;
+  attached.add(worker);
+  const pending = new Set<Promise<unknown>>();
+  worker.on('failed', (job, error) => {
+    if (!job) return;
+    // BullMQ increments attemptsMade before emitting failed; absent attempts
+    // means one execution, regardless of queue defaults elsewhere.
+    const maxAttempts = Math.max(1, job.opts.attempts || 1);
+    if (!(error instanceof NonRetryableError) && !(error instanceof UnrecoverableError)
+        && job.attemptsMade < maxAttempts) return;
+    const capture = dlqService.quarantineJob(queueName, job, error.message, job.attemptsMade, maxAttempts, error)
+      .catch(err => logger.error('[dlq] Capture failed; original job remains failed in its source queue', err))
+      .finally(() => pending.delete(capture));
+    pending.add(capture);
+  });
+  // EventEmitter does not await async listeners. Drain their writes before the
+  // worker owner closes Redis during shutdown.
+  const close = worker.close.bind(worker);
+  worker.close = async (...args) => {
+    await close(...args);
+    await Promise.all([...pending]);
+  };
+}
+
+/** Add terminal routing without changing an existing worker's retry classification. */
+export function createDlqWorker<T = any>(
+  queueName: string, processor: (job: Job<T>) => Promise<unknown>, options: WorkerOptions,
+): Worker<T> {
+  const worker = new Worker<T>(queueName, async job => {
+    try { return await processor(job); }
+    catch (error) {
+      if (error instanceof NonRetryableError || error instanceof UnrecoverableError) job.discard();
+      throw error;
+    }
+  }, options);
+  attachWorkerDlq(worker, queueName);
+  return worker;
+}
+
 export const dlqService = {
-  // Move job to appropriate DLQ
-  async quarantineJob(
-    parentQueue: string,
-    job: Job,
-    failureReason: string,
-    attemptCount: number,
-    maxAttempts: number
-  ): Promise<DlqEntry> {
-    const manager = getDlqManager(parentQueue);
-    return manager.addFailedJob(job, failureReason, attemptCount, maxAttempts);
+  async quarantineJob(queue: string, job: Job, reason: string, attempts: number, maxAttempts: number, error?: Error) {
+    return getDlqManager(queue).addFailedJob(job, reason, attempts, maxAttempts, error);
   },
-
-  // Replay from DLQ
-  async replayFromDlq(queueName: string, dlqJobId: string): Promise<void> {
-    const manager = getDlqManager(queueName);
-    await manager.replayJob(dlqJobId);
-  },
-
-  // Bulk replay with throttling
-  async bulkReplay(queueName: string, limit = 10): Promise<{ succeeded: number; failed: number }> {
-    const manager = getDlqManager(queueName);
-    const metrics = await manager.getDlqMetrics();
-
-    // Get only recoverable jobs
-    const dlq = new Queue(`${queueName}:dlq`, { connection: getRedisClient() });
-    const jobs = await dlq.getFailed(0, limit);
-
+  async replayFromDlq(queue: string, id: string) { await getDlqManager(queue).replayJob(id); },
+  async remove(queue: string, id: string) { await getDlqManager(queue).remove(id); },
+  async list(queue: string, start = 0, end = 49) { return getDlqManager(queue).list(start, end); },
+  async bulkReplay(queue: string, limit = 10) {
+    const entries = await getDlqManager(queue).list(0, limit - 1);
     let succeeded = 0;
     let failed = 0;
-
-    for (const job of jobs) {
-      const data = job.data as DlqEntry;
-      if (data.recoverable) {
-        try {
-          await manager.replayJob(job.id || '');
-          succeeded++;
-        } catch (err) {
-          logger.warn('[dlq] Failed to replay job', { queueName, jobId: job.id, error: err instanceof Error ? err.message : String(err) });
-          failed++;
-        }
-      }
+    for (const entry of entries) {
+      if (!entry.recoverable) continue;
+      try { await getDlqManager(queue).replayJob(entry.id); succeeded++; }
+      catch (err) { failed++; logger.warn('[dlq] Replay failed', { queue, id: entry.id, error: String(err) }); }
     }
-
     return { succeeded, failed };
   },
-
-  // Get all DLQ metrics
-  async getAllDlqMetrics(): Promise<Record<string, Awaited<ReturnType<DlqManager['getDlqMetrics']>>>> {
-    const queues = [QueueNames.XP_PROCESSING, QueueNames.STREAK_RECALC, QueueNames.NOTIFICATIONS];
-
+  async getAllDlqMetrics() {
     const metrics: Record<string, Awaited<ReturnType<DlqManager['getDlqMetrics']>>> = {};
-
-    for (const queue of queues) {
-      const manager = getDlqManager(queue);
-      metrics[queue] = await manager.getDlqMetrics();
-    }
-
+    for (const queue of DLQ_QUEUE_NAMES) metrics[queue] = await getDlqManager(queue).getDlqMetrics();
     return metrics;
   },
-
-  // Cleanup old DLQ entries
-  async cleanupDlq(queueName: string, olderThanDays = 7): Promise<number> {
-    const manager = getDlqManager(queueName);
-    const dlq = new Queue(`${queueName}:dlq`, { connection: getRedisClient() });
-
-    const jobs = await dlq.getFailed(0, 1000);
+  async cleanupDlq(queue: string, olderThanDays = 7) {
+    const manager = getDlqManager(queue);
+    const cutoff = Date.now() - olderThanDays * 86400000;
     let cleaned = 0;
-    const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
-
-    for (const job of jobs) {
-      const data = job.data as DlqEntry;
-      if (data.failedAt.getTime() < cutoff) {
-        await job.remove();
-        cleaned++;
-      }
+    for (const entry of await manager.list(0, -1)) {
+      if (new Date(entry.failedAt).getTime() < cutoff) { await manager.remove(entry.id); cleaned++; }
     }
-
-    logger.info('[dlq] Cleanup completed', { queue: queueName, cleaned });
     return cleaned;
   },
-
-  /**
-   * Acquire a lightweight Redis-based distributed lock
-   */
-  async acquireLock(lockKey: string, ttlMs = 10000): Promise<boolean> {
-    const redis = getRedisClient();
-    const result = await redis.set(`lock:${lockKey}`, '1', 'PX', ttlMs, 'NX');
-    return result === 'OK';
+  async close() {
+    await Promise.all([...managers.values()].map(manager => manager.close()));
+    managers.clear();
   },
-
-  /**
-   * Release a lightweight Redis-based distributed lock
-   */
-  async releaseLock(lockKey: string): Promise<void> {
-    const redis = getRedisClient();
-    await redis.del(`lock:${lockKey}`);
+  async acquireLock(key: string, ttlMs = 10000) {
+    return await getRedisClient().set(`lock:${key}`, '1', 'PX', ttlMs, 'NX') === 'OK';
   },
+  async releaseLock(key: string) { await getRedisClient().del(`lock:${key}`); },
 };
-
 export default dlqService;

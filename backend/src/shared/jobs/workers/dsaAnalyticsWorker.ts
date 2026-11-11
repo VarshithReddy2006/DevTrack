@@ -1,3 +1,4 @@
+import { createDlqWorker } from '../dlq.service.js';
 import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../../redis/index.js';
 import { QueueNames } from '../types.js';
@@ -5,7 +6,7 @@ import { logger } from '../../logger.js';
 import { DsaIntelligenceEngine } from '../../../modules/readiness/intelligence/DsaIntelligenceEngine.js';
 
 export function startDsaAnalyticsWorker(): Worker {
-  const worker = new Worker(
+  const worker = createDlqWorker(
     QueueNames.READINESS_DSA,
     async (job: Job) => {
       const { userId } = job.data;

@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/workers/ats-analysis.worker.ts
+import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
@@ -20,7 +21,7 @@ export function startATSAnalysisWorker(): void {
 
   const service = new ResumeIntelligenceService();
 
-  worker = new Worker<IATSAnalysisJob>(
+  worker = createDlqWorker<IATSAnalysisJob>(
     ATS_ANALYSIS_QUEUE,
     async (job: Job<IATSAnalysisJob>) => {
       logger.info(`[ATSAnalysisWorker] Processing job ${job.id}`);

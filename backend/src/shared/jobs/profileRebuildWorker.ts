@@ -1,3 +1,4 @@
+import { createDlqWorker } from './dlq.service.js';
 import { Queue, Worker, Job } from 'bullmq';
 import { logger } from '../logger.js';
 import { PublicProfileService } from '../../modules/profile/publicProfile.service.js';
@@ -39,7 +40,7 @@ let worker: Worker | null = null;
 export function startProfileRebuildWorker() {
   if (worker) return worker;
 
-  worker = new Worker(
+  worker = createDlqWorker(
     'profile-rebuild',
     async (job: Job) => {
       const { userId, reason } = job.data;

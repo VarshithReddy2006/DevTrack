@@ -166,6 +166,30 @@ registered consumers and exit nonzero; cleanup continues if one close fails.
 
 Platform sync is **idempotent**: each external submission maps to `platform + externalId` to prevent duplicates.
 
+Terminal worker failures are captured by `attachWorkerDlq` in `shared/jobs/dlq.service.ts`.
+Factory workers install it automatically; other workers use `createDlqWorker`, which
+preserves their retry behavior and discards explicit `NonRetryableError` jobs.
+The hook uses each job's configured attempts and captures early unrecoverable failures.
+Dead letters wait in `<source-queue>-dlq` (BullMQ forbids colons in queue names),
+including payload, processor name, retry settings, stack, attempt counts and category.
+Capture IDs deduplicate repeated events; worker shutdown drains pending captures.
+Factory workers also retain their existing MongoDB failure audit.
+
+Admin-only recovery endpoints are `GET /api/system/dlq?queue=<source-queue>`
+(with optional `offset` and `limit`, capped at 100),
+`POST /api/system/dlq/:id/retry?queue=<source-queue>`, and
+`DELETE /api/system/dlq/:id?queue=<source-queue>`. Queue names are allowlisted.
+Replay preserves the original processor name and retry settings, coalesces concurrent
+requests with a deterministic replay ID, and removes the dead letter only after enqueue.
+The existing six-hour maintenance task removes entries older than seven days across
+all known queues. DLQ storage depends on Redis persistence; a failed capture is logged
+and the original source job remains subject to its configured failed-job retention.
+
+Run isolated queue-boundary and HTTP recovery tests from `backend/` with
+`node node_modules/vitest/vitest.mjs run -c vitest.dlq.config.ts`.
+These mock Redis/BullMQ; live Redis capture and replay remain a separate validation.
+
+
 ---
 
 ## Backend Modules
