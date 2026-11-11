@@ -19,9 +19,7 @@ export class KeywordSemanticMatcher {
     let resumeVector: number[] | null = null;
     try {
       if (process.env.OPENAI_API_KEY) {
-        const resumeId = `resume_${createHash('md5').update(resumeText).digest('hex')}`;
-        await this.pipeline.processAndStore(resumeId, resumeText);
-        resumeVector = await this.pipeline.getEmbeddingForId(resumeId);
+        resumeVector = (await this.pipeline.embedText(resumeText)).vector;
       }
     } catch (e) {
       // ignore fallback
@@ -42,16 +40,14 @@ export class KeywordSemanticMatcher {
         let kwVector: number[] | null = null;
         if (process.env.OPENAI_API_KEY) {
           try {
-            const kwId = `kw_${createHash('md5').update(kw).digest('hex')}`;
-            await this.pipeline.processAndStore(kwId, kw);
-            kwVector = await this.pipeline.getEmbeddingForId(kwId);
+            kwVector = (await this.pipeline.embedText(kw)).vector;
           } catch (e) {
             // ignore
           }
         }
 
         if (!kwVector) {
-          kwVector = this.generatePseudoVector(kw);
+          kwVector = this.generatePseudoVector(kw, resumeVector.length);
         }
 
         const sim = this.similarity.calculate(resumeVector, kwVector);

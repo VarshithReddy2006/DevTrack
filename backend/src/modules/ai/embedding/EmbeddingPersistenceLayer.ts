@@ -1,140 +1,76 @@
-import { Embedding } from '../../../db/models/embedding.model.js';
-import { logger } from '../../../shared/logger.js';
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
+import { Embedding, type IEmbedding } from '../../../db/models/embedding.model.js';
+import { EMBEDDING_VERSION, embeddingScopeFilter, type EmbeddingScope } from './embeddingScope.js';
 
 export class EmbeddingPersistenceLayer {
-  /**
-   * Save embedding to MongoDB with metadata
-   */
   async saveEmbedding(
+    scope: EmbeddingScope,
     sessionId: string,
     chunkIndex: number,
     vector: number[],
-    provider: 'openai' | 'gemini',
+    provider: IEmbedding['provider'],
     providerModel: string,
     content: string,
-    contentType: 'resume' | 'project' | 'skill' | 'other' = 'resume',
-    userId?: string,
-    contentId?: string
+    contentType: IEmbedding['contentType'],
+    contentId?: string,
   ): Promise<void> {
-    const contentHash = this.generateContentHash(content);
-    const embeddingVersion = '1.0.0';
+    const owner = embeddingScopeFilter(scope);
+    if (owner.scope === 'global' && (contentType === 'resume' || contentType === 'project')) {
+      throw new Error('Resume and project embeddings require a user owner');
+    }
+    if (!vector.length || !vector.every(Number.isFinite)) throw new Error('Invalid embedding vector');
 
+    // Keep the existing unique index while giving each owner and chunk its own hash.
+    const contentHash = createHash('sha256').update(JSON.stringify([
+      EMBEDDING_VERSION, owner.scope, owner.userId?.toHexString(), sessionId, chunkIndex, contentType, content,
+    ])).digest('hex');
+    const filter = { ...owner, contentHash };
+    const update = {
+      $set: {
+        sessionId, chunkIndex, vector, dimensions: vector.length, provider, providerModel,
+        content, contentType, contentId, embeddingVersion: EMBEDDING_VERSION, generatedAt: new Date(),
+      },
+      $setOnInsert: owner,
+      $inc: { accessCount: 1 },
+    };
     try {
-      await Embedding.findOneAndUpdate(
-        { contentHash },
-        {
-          $set: {
-            sessionId,
-            chunkIndex,
-            userId,
-            vector,
-            dimensions: vector.length,
-            provider,
-            providerModel,
-            content,
-            contentType,
-            contentId,
-            embeddingVersion,
-            generatedAt: new Date(),
-          },
-          $inc: { accessCount: 1 },
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-
-      logger.info(`[EmbeddingPersistence] Saved embedding for session: ${sessionId}`);
+      await Embedding.updateOne(filter, update, { upsert: true, runValidators: true });
     } catch (error) {
-      logger.error('[EmbeddingPersistence] Error saving embedding:', error);
-      throw error;
+      if ((error as { code?: number }).code !== 11000) throw error;
+      const result = await Embedding.updateOne(filter, update, { runValidators: true });
+      if (!result.matchedCount) throw error;
     }
   }
 
-  /**
-   * Get embedding by session ID
-   */
-  async getEmbedding(sessionId: string): Promise<number[] | null> {
-    try {
-      const embedding = await Embedding.findOne({ sessionId });
-      
-      if (!embedding) {
-        return null;
-      }
-
-      // Update access metadata
-      embedding.lastAccessedAt = new Date();
-      embedding.accessCount += 1;
-      await embedding.save();
-
-      return embedding.vector;
-    } catch (error) {
-      logger.error('[EmbeddingPersistence] Error getting embedding:', error);
-      throw error;
-    }
+  async getEmbedding(scope: EmbeddingScope, sessionId: string): Promise<number[] | null> {
+    const embedding = await Embedding.findOneAndUpdate(
+      { ...embeddingScopeFilter(scope), sessionId },
+      { $set: { lastAccessedAt: new Date() }, $inc: { accessCount: 1 } },
+      { sort: { chunkIndex: 1, updatedAt: -1 } },
+    ).select('vector').lean();
+    return embedding?.vector ?? null;
   }
 
-  /**
-   * Get all embeddings
-   */
-  async getAllEmbeddings(): Promise<Map<string, number[]>> {
-    try {
-      const embeddings = await Embedding.find({});
-      const map = new Map<string, number[]>();
-
-      for (const embedding of embeddings) {
-        map.set(embedding.sessionId, embedding.vector);
-      }
-
-      return map;
-    } catch (error) {
-      logger.error('[EmbeddingPersistence] Error getting all embeddings:', error);
-      throw error;
+  async getAllEmbeddings(scope: EmbeddingScope, dimensions: number): Promise<Map<string, number[]>> {
+    const embeddings = await Embedding.find({ ...embeddingScopeFilter(scope), dimensions })
+      .sort({ chunkIndex: 1, updatedAt: -1 }).select('sessionId vector').lean();
+    const vectors = new Map<string, number[]>();
+    for (const { sessionId, vector } of embeddings) {
+      if (!vectors.has(sessionId)) vectors.set(sessionId, vector);
     }
+    return vectors;
   }
 
-  /**
-   * Delete embedding by session ID
-   */
-  async deleteEmbedding(sessionId: string): Promise<void> {
-    try {
-      await Embedding.deleteOne({ sessionId });
-      logger.info(`[EmbeddingPersistence] Deleted embedding for session: ${sessionId}`);
-    } catch (error) {
-      logger.error('[EmbeddingPersistence] Error deleting embedding:', error);
-      throw error;
-    }
+  async deleteEmbedding(scope: EmbeddingScope, sessionId: string): Promise<void> {
+    await Embedding.deleteMany({ ...embeddingScopeFilter(scope), sessionId });
   }
 
-  /**
-   * Clear all embeddings (use with caution)
-   */
-  async clear(): Promise<void> {
-    try {
-      await Embedding.deleteMany({});
-      logger.warn('[EmbeddingPersistence] Cleared all embeddings');
-    } catch (error) {
-      logger.error('[EmbeddingPersistence] Error clearing embeddings:', error);
-      throw error;
-    }
+  async clear(scope: EmbeddingScope): Promise<void> {
+    await Embedding.deleteMany(embeddingScopeFilter(scope));
   }
 
-  /**
-   * Get embedding metadata
-   */
-  async getEmbeddingMetadata(sessionId: string): Promise<any> {
-    try {
-      const embedding = await Embedding.findOne({ sessionId });
-      return embedding;
-    } catch (error) {
-      logger.error('[EmbeddingPersistence] Error getting embedding metadata:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Generate content hash for deduplication
-   */
-  private generateContentHash(content: string): string {
-    return createHash('sha256').update(content).digest('hex');
+  async getEmbeddingMetadata(scope: EmbeddingScope, sessionId: string) {
+    return Embedding.findOne({ ...embeddingScopeFilter(scope), sessionId })
+      .sort({ chunkIndex: 1, updatedAt: -1 }).lean();
   }
 }

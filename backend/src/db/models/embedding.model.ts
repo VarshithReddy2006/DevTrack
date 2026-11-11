@@ -1,10 +1,11 @@
 // src/db/models/embedding.model.ts
-import { Schema, model, type Document } from 'mongoose';
+import { Schema, model, type Document, type Types } from 'mongoose';
 
 export interface IEmbedding extends Document {
   sessionId: string;
   chunkIndex: number;
-  userId?: Schema.Types.ObjectId;
+  scope: 'user' | 'global';
+  userId?: Types.ObjectId | null;
   
   // Vector data
   vector: number[];
@@ -16,7 +17,7 @@ export interface IEmbedding extends Document {
   
   // Content metadata
   content: string;
-  contentHash: string; // SHA-256 hash of the content for deduplication
+  contentHash: string; // SHA-256 of the owner, chunk identity, and content
   contentType: 'resume' | 'project' | 'skill' | 'other';
   contentId?: string;
   
@@ -45,9 +46,17 @@ const embeddingSchema = new Schema<IEmbedding>(
       type: Number,
       required: true,
     },
+    scope: { type: String, enum: ['user', 'global'], required: true },
     userId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
+      required: function (this: IEmbedding) { return this.scope === 'user'; },
+      validate: {
+        validator: function (this: IEmbedding, owner: Types.ObjectId | null) {
+          return this.scope !== 'global' || owner == null;
+        },
+        message: 'Global embeddings cannot have a user owner',
+      },
     },
     
     vector: {
@@ -86,6 +95,12 @@ const embeddingSchema = new Schema<IEmbedding>(
       type: String,
       required: true,
       enum: ['resume', 'project', 'skill', 'other'],
+      validate: {
+        validator: function (this: IEmbedding, type: IEmbedding['contentType']) {
+          return this.scope !== 'global' || (type !== 'resume' && type !== 'project');
+        },
+        message: 'Resume and project embeddings require a user owner',
+      },
     },
     
     contentId: {
@@ -130,6 +145,8 @@ const embeddingSchema = new Schema<IEmbedding>(
 );
 
 // Indexes
+embeddingSchema.index({ scope: 1, userId: 1, sessionId: 1, chunkIndex: 1, updatedAt: -1 });
+embeddingSchema.index({ scope: 1, userId: 1, contentType: 1, createdAt: -1 });
 embeddingSchema.index({ sessionId: 1 });
 embeddingSchema.index({ sessionId: 1, chunkIndex: 1 });
 embeddingSchema.index({ userId: 1 });

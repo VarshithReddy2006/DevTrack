@@ -6,8 +6,7 @@ import { DocumentParsingPipeline } from '../parsing/document-parsing-pipeline.js
 import { ATSCompatibilityEngine } from '../ats/ATSCompatibilityEngine.js';
 import { logger } from '../../../shared/logger.js';
 import { eventBus } from '../../../shared/sse/index.js';
-import { createHash } from 'crypto';
-import { Embedding } from '../../../db/models/embedding.model.js';
+import { EMBEDDING_VERSION } from '../../ai/embedding/embeddingScope.js';
 import { RealEmbeddingPipeline } from '../../ai/embedding/RealEmbeddingPipeline.js';
 import { SemanticSimilarityService } from '../../ai/retrieval/SemanticSimilarityService.js';
 import { RecommendationIntelligenceService } from '../../recommendations/recommendation.service.js';
@@ -402,42 +401,20 @@ export class ResumeProcessingOrchestrator {
         session.parsedContent.parsingDiagnostics.warnings.push('Potential prompt injection wording detected in resume content.');
       }
 
-      await this.embeddingPipeline.processAndStore(session.sessionId, text, session.userId?.toString());
-      
-      const vector = await this.embeddingPipeline.getEmbeddingForId(session.sessionId);
-      if (vector) {
-        session.embeddingState = {
-          generated: true,
-          vector,
-          provider: 'openai',
-          dimensions: vector.length,
-          embeddingVersion: '3-small',
-          generatedAt: new Date(),
-        };
+      const scope = session.userId ? { scope: 'user' as const, userId: session.userId.toString() } : undefined;
+      const embedding = scope
+        ? await this.embeddingPipeline.processAndStore(session.sessionId, text, scope)
+        : await this.embeddingPipeline.embedText(text);
 
-        const contentHash = createHash('sha256').update(text).digest('hex');
-        
-        // Save to general Embedding collection for SemanticGapAnalyzer
-        await Embedding.findOneAndUpdate(
-          { contentHash },
-          {
-            sessionId: session.sessionId,
-            userId: session.userId,
-            vector,
-            dimensions: vector.length,
-            provider: 'openai',
-            providerModel: 'text-embedding-3-small',
-            contentHash,
-            contentType: 'resume',
-            embeddingVersion: '1.0.0',
-            generatedAt: new Date(),
-            accessCount: 1,
-          },
-          { upsert: true, new: true }
-        );
-
-        await session.save();
-      }
+      session.embeddingState = {
+        generated: true,
+        vector: embedding.vector,
+        provider: embedding.provider,
+        dimensions: embedding.dimensions,
+        embeddingVersion: EMBEDDING_VERSION,
+        generatedAt: new Date(),
+      };
+      await session.save();
     });
   }
 
@@ -447,8 +424,11 @@ export class ResumeProcessingOrchestrator {
   private async executeSemanticAnalysis(session: typeof ResumeSession.prototype): Promise<void> {
     logger.info(`[ProcessingOrchestrator] Executing SEMANTIC_ANALYZING for session: ${session.sessionId}`);
     
-    const resumeEmbedding = await Embedding.findOne({ userId: session.userId, contentType: 'resume' }).sort({ createdAt: -1 });
-    if (resumeEmbedding) {
+    const scope = session.userId ? { scope: 'user' as const, userId: session.userId.toString() } : undefined;
+    const resumeVector = session.embeddingState.embeddingVersion === EMBEDDING_VERSION
+      ? session.embeddingState.vector
+      : scope ? await this.embeddingPipeline.getEmbeddingForId(scope, session.sessionId) : null;
+    if (resumeVector) {
       const similarityService = new SemanticSimilarityService();
       
       // Determine the target role based on the profile or filename fallback
@@ -461,21 +441,23 @@ export class ResumeProcessingOrchestrator {
       
       let expectationVector: number[] = [];
       try {
-        const { EmbeddingProviderAdapter } = await import('../../ai/embedding/EmbeddingProviderAdapter.js');
-        const adapter = new EmbeddingProviderAdapter();
-        const embeddingRes = await adapter.generateEmbedding(roleExpectationsPrompt);
+        const embeddingRes = await this.embeddingPipeline.embedText(roleExpectationsPrompt, scope);
+        if (embeddingRes.dimensions !== resumeVector.length
+          || (session.embeddingState.provider && embeddingRes.provider !== session.embeddingState.provider)) {
+          throw new Error('Resume and expectation use different embedding models');
+        }
         expectationVector = embeddingRes.vector;
       } catch (err) {
         logger.warn(`[ProcessingOrchestrator] Error generating semantic expectation vector, falling back to layout-stable template: ${err}`);
         // Stable layout-aware template fallback to protect operations
-        expectationVector = Array.from({ length: 1536 }, (_, i) => Math.sin(i + targetRole.length) * 0.1);
+        expectationVector = Array.from({ length: resumeVector.length }, (_, i) => Math.sin(i + targetRole.length) * 0.1);
       }
       
-      const score = similarityService.calculate(resumeEmbedding.vector, expectationVector);
+      const score = similarityService.calculate(resumeVector, expectationVector);
       
       session.semanticState = {
         analyzed: true,
-        retrievalResults: [{ id: resumeEmbedding.sessionId || session.sessionId, score: parseFloat(score.toFixed(2)) }],
+        retrievalResults: [{ id: session.sessionId, score: parseFloat(score.toFixed(2)) }],
         semanticSimilarity: parseFloat(score.toFixed(2)),
         analyzedAt: new Date(),
       };

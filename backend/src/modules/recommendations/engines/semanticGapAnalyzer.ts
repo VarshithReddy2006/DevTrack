@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
+import { embeddingScopeFilter } from '../../ai/embedding/embeddingScope.js';
 import { Embedding } from '../../../db/models/embedding.model.js';
 import { SemanticSimilarityService } from '../../ai/retrieval/SemanticSimilarityService.js';
 import { createHash } from 'crypto';
@@ -18,7 +19,8 @@ const ROLE_PROFILES: Record<string, any[]> = {
 export class SemanticGapAnalyzer {
   
   static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId, targetRole: string): Promise<void> {
-    const resumeEmbedding = await Embedding.findOne({ userId, contentType: 'resume' }).sort({ createdAt: -1 });
+    const owner = embeddingScopeFilter({ scope: 'user', userId: String(userId) });
+    const resumeEmbedding = await Embedding.findOne({ ...owner, contentType: 'resume', chunkIndex: 0 }).sort({ createdAt: -1 });
     
     // Phase 1: Real Retrieval Logic
     const missingConcepts = this.executeSemanticRetrieval(targetRole, resumeEmbedding?.vector);
