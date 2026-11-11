@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import type { ApiUser } from '../types/api.types';
 import axiosClient from '../utils/axiosClient';
+import { queryClient } from '../lib/queryClient';
 
 interface UserState {
   user: ApiUser | null;
@@ -44,33 +45,62 @@ export const useUserStore = create<UserState>((set, get) => ({
   },
 
   logoutCleanup: async () => {
-    // Clear all per-user data stores to prevent stale data leaking to next user
-    const { useDashboardStore } = await import('./dashboardStore');
-    const { useDsaStore } = await import('./dsaStore');
-    const { useProjectsStore } = await import('./projectsStore');
-    useDashboardStore.getState().reset();
-    useDsaStore.getState().reset();
-    useProjectsStore.getState().reset();
-
-    // Disconnect and clear SSE connections to avoid cross-user event leakage
+    // The account boundary reload also unloads the account-scoped persisted stores.
     try {
-      const { useSseStore } = await import('../lib/realtime/sse-manager');
-      useSseStore.getState().disconnect();
-      useSseStore.getState().clearHistory();
-    } catch {
-      // ignore
+      const [
+        { useDashboardStore }, { useDsaStore }, { useProjectsStore },
+        { useProfileStore }, { useSettingsStore }, { useCoachingStore },
+        { useUploadState }, { useSessionState }, { useReplayState }, { useIntelligenceState },
+        { useAppStateStore, setNotificationAccount },
+      ] = await Promise.all([
+        import('./dashboardStore'), import('./dsaStore'), import('./projectsStore'),
+        import('./profileStore'), import('./settingsStore'), import('./coachingStore'),
+        import('../features/resume-tracker/state/useUploadState'),
+        import('../features/resume-tracker/state/useSessionState'),
+        import('../features/resume-tracker/state/useReplayState'),
+        import('../features/resume-tracker/state/useIntelligenceState'),
+        import('./appStateStore'),
+      ]);
+
+      useDashboardStore.getState().reset();
+      useDsaStore.getState().reset();
+      useProjectsStore.getState().reset();
+      useProfileStore.setState(useProfileStore.getInitialState(), true);
+      useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+      useCoachingStore.setState(useCoachingStore.getInitialState(), true);
+      useUploadState.getState().reset();
+      useSessionState.setState(useSessionState.getInitialState(), true);
+      useReplayState.getState().resetReplay();
+      useIntelligenceState.getState().reset();
+      setNotificationAccount(null);
+      useAppStateStore.getState().closeDrawer();
+      useAppStateStore.getState().clearQueue();
+      useAppStateStore.getState().closeModal();
+      useAppStateStore.getState().clearToasts();
+      useAppStateStore.getState().setLastSseEvent(null);
+
+      // Disconnect and clear SSE connections to avoid cross-user event leakage
+      try {
+        const { useSseStore } = await import('../lib/realtime/sse-manager');
+        useSseStore.getState().disconnect();
+        useSseStore.setState({ eventHistory: [], lastEventId: null, lastSequence: null, snapshot: null });
+      } catch {
+        // ignore
+      }
+
+      try {
+        const { disconnectGlobalSse } = await import('../hooks/useSse');
+        disconnectGlobalSse();
+      } catch {
+        // ignore
+      }
+    } finally {
+      queryClient.clear();
+      try {
+        localStorage.removeItem('devtrack-profile');
+      } finally {
+        get().clearUser();
+      }
     }
-
-    try {
-      const { disconnectGlobalSse } = await import('../hooks/useSse');
-      disconnectGlobalSse();
-    } catch {
-      // ignore
-    }
-
-    // Clear profile editing data from localStorage
-    localStorage.removeItem('devtrack-profile');
-
-    get().clearUser();
   },
 }));

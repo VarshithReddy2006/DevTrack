@@ -12,12 +12,14 @@ import { SETTINGS_SCHEMA } from './schemas';
 import { useSettingsStore } from '../../store/settingsStore';
 import { SettingsFieldRenderer } from './components/SettingsFieldRenderer';
 import { isEditableSetting } from './settingsContract';
+import { useLogout } from '../../hooks/useLogout';
 import { useUIStore } from '../../store/uiStore';
 import { CommandPalette } from './components/CommandPalette';
 import { SystemHealthBar } from './components/SystemHealthBar';
 import { generateRecommendations, getSettingHint } from './types/recommendations';
 
 export const SettingsWorkspace: React.FC = () => {
+  const { logout, isLoggingOut } = useLogout('/login');
   const settings = useSettingsStore((s) => s.settings);
   const fetchSettings = useSettingsStore((s) => s.fetchSettings);
   const addToast = useUIStore((s) => s.addToast);
@@ -65,13 +67,13 @@ export const SettingsWorkspace: React.FC = () => {
 
   // Auto-save after 2 seconds of inactivity
   useEffect(() => {
-    if (hasChanges && !isSaving && !saveError) {
+    if (hasChanges && !isSaving && !saveError && !isLoggingOut) {
       saveTimeoutRef.current = setTimeout(handleAutoSave, 2000);
     }
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-  }, [hasChanges, isSaving, saveError, values, handleAutoSave]);
+  }, [hasChanges, isSaving, saveError, values, handleAutoSave, isLoggingOut]);
 
   // Keyboard shortcut for command palette (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -89,8 +91,8 @@ export const SettingsWorkspace: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!settings && !isLoading && !error) void fetchSettings();
-  }, [settings, isLoading, error, fetchSettings]);
+    if (!settings && !isLoading && !error && !isLoggingOut) void fetchSettings();
+  }, [settings, isLoading, error, fetchSettings, isLoggingOut]);
 
   // Filter sections based on search
   const filteredSections = useMemo(() => {
@@ -155,6 +157,17 @@ export const SettingsWorkspace: React.FC = () => {
         <div>
           <h1 className="text-3xl font-black text-dt-text tracking-tight">Settings</h1>
           <p className="text-sm font-medium text-dt-textSecondary/70 mt-1">Manage your developer workspace</p>
+          <button
+            type="button"
+            disabled={isLoggingOut}
+            aria-busy={isLoggingOut}
+            onClick={() => {
+              if (!isLoggingOut && window.confirm('Terminate your current session and sign out?')) void logout();
+            }}
+            className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 focus-visible:ring-2 focus-visible:ring-red-500 disabled:opacity-50"
+          >
+            {isLoggingOut ? 'Signing out…' : 'Terminate Session'}
+          </button>
         </div>
 
         <div className="flex items-center gap-4">

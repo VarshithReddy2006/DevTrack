@@ -1,8 +1,10 @@
 let pending: Promise<void> | null = null;
 let release: (() => void) | null = null;
 
-export function beginSignOut() {
+export function beginSignOut(): boolean {
+  if (pending) return false;
   pending = new Promise<void>(resolve => { release = resolve; });
+  return true;
 }
 
 export function finishSignOut() {

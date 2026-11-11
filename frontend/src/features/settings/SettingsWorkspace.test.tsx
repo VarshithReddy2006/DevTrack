@@ -5,6 +5,7 @@ import { useSettingsStore } from '../../store/settingsStore';
 import { useUIStore } from '../../store/uiStore';
 import { getSettings, updateSettings, type UserSettingsResponse } from '../../services/settingsService';
 
+vi.mock('@clerk/clerk-react', () => ({ useClerk: () => ({ signOut: vi.fn() }) }));
 vi.mock('../../services/settingsService', () => ({ getSettings: vi.fn(), updateSettings: vi.fn() }));
 vi.mock('./components/SystemHealthBar', () => ({ SystemHealthBar: () => null }));
 // Exercise the real controls/save flow without waiting on exit animation frames.

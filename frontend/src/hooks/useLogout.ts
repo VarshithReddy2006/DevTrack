@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useClerk } from '@clerk/clerk-react';
 import { useUserStore } from '../store/userStore';
 import { useUIStore } from '../store/uiStore';
@@ -8,14 +8,11 @@ export function useLogout(redirectTo: '/' | '/login') {
   const { signOut } = useClerk();
   const logoutCleanup = useUserStore(s => s.logoutCleanup);
   const addToast = useUIStore(s => s.addToast);
-  const pending = useRef(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const logout = async () => {
-    if (pending.current) return;
-    pending.current = true;
+    if (!beginSignOut()) return;
     setIsLoggingOut(true);
-    beginSignOut();
 
     try {
       // The callback replaces Clerk's default redirect, so cleanup finishes
@@ -41,7 +38,6 @@ export function useLogout(redirectTo: '/' | '/login') {
       });
     } finally {
       finishSignOut();
-      pending.current = false;
       setIsLoggingOut(false);
     }
   };
