@@ -4,6 +4,7 @@ import { Worker, type Job } from 'bullmq';
 import { getRedisConnection } from '../../../shared/redis/index.js';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
 import { logger } from '../../../shared/logger.js';
+import type { ExportResumeDTO } from '../dto/index.js';
 import type { Types } from 'mongoose';
 
 export const RESUME_EXPORT_QUEUE = 'resume-export';
@@ -11,7 +12,7 @@ export const RESUME_EXPORT_QUEUE = 'resume-export';
 interface IResumeExportJob {
   userId: string;
   variantId?: string;
-  exportType: 'pdf' | 'docx' | 'txt';
+  exportType: ExportResumeDTO['exportType'];
   includeATSAnalysis?: boolean;
 }
 

@@ -32,7 +32,7 @@ export const GenerateVariantSchema = z.object({
 // Resume Export DTOs
 export const ExportResumeSchema = z.object({
   variantId: z.string().optional(),
-  exportType: z.enum(['pdf', 'docx', 'txt']).default('pdf'),
+  exportType: z.enum(['pdf', 'docx', 'txt', 'json', 'md']).default('pdf'),
   includeATSAnalysis: z.boolean().default(true),
 });
 
