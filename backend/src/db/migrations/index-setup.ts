@@ -1,5 +1,8 @@
 import mongoose from 'mongoose';
 import { logger } from '../../shared/logger.js';
+import { ResumeSession } from '../models/resumeSession.model.js';
+import { DatasetIngestionState } from '../models/datasetIngestion.model.js';
+import { ActivityEvent } from '../models/activityEvent.model.js';
 
 /**
  * Setup production optimized database indexes.
@@ -7,34 +10,67 @@ import { logger } from '../../shared/logger.js';
  */
 export async function setupProductionIndexes(): Promise<void> {
   logger.info('[DatabaseMigration] Setting up optimized production indexes...');
-  
+
   try {
-    const db = mongoose.connection;
-    
     // 1. Optimized queries for resume session retrievals (userId + sessionId)
-    logger.info('[DatabaseMigration] Registering compound index on resume_sessions (userId, sessionId)');
-    await db.collection('resume_sessions').createIndex(
+    const resumeColl = ResumeSession.collection;
+    logger.info(`[DatabaseMigration] Registering compound index on ${resumeColl.collectionName} (userId, sessionId)`);
+    await safelyCreateIndex(
+      resumeColl,
       { userId: 1, sessionId: 1 },
       { name: 'idx_userId_sessionId', background: true }
     );
-    
+
     // 2. High-speed lookup for ingestion monitoring
-    logger.info('[DatabaseMigration] Registering index on dataset_ingestion_states (status)');
-    await db.collection('dataset_ingestion_states').createIndex(
+    const datasetColl = DatasetIngestionState.collection;
+    logger.info(`[DatabaseMigration] Registering index on ${datasetColl.collectionName} (status)`);
+    await safelyCreateIndex(
+      datasetColl,
       { status: 1 },
       { name: 'idx_ingestion_status', background: true }
     );
-    
+
     // 3. Fast indexing of activity telemetry
-    logger.info('[DatabaseMigration] Registering compound index on activity_logs (userId, createdAt)');
-    await db.collection('activity_logs').createIndex(
+    const activityColl = ActivityEvent.collection;
+    logger.info(`[DatabaseMigration] Registering compound index on ${activityColl.collectionName} (userId, createdAt)`);
+    await safelyCreateIndex(
+      activityColl,
       { userId: 1, createdAt: -1 },
       { name: 'idx_userId_createdAt', background: true }
     );
-    
+
     logger.info('[DatabaseMigration] Production optimized indexes successfully registered.');
   } catch (error) {
     logger.error('[DatabaseMigration] Failed to setup production indexes', error);
     // Do not crash the gateway if indexing encountered a network timeout
+  }
+}
+
+async function safelyCreateIndex(
+  collection: mongoose.Collection,
+  spec: Record<string, 1 | -1>,
+  options: mongoose.mongo.CreateIndexesOptions
+): Promise<void> {
+  try {
+    const existing = await collection.indexes().catch(() => []);
+    const specKeys = Object.keys(spec);
+    const isExisting = existing.some((idx) => {
+      if (options.name && idx.name === options.name) return true;
+      const idxKeys = Object.keys(idx.key || {});
+      if (idxKeys.length === specKeys.length && specKeys.every((k) => (idx.key as any)?.[k] === spec[k])) {
+        return true;
+      }
+      return false;
+    });
+
+    if (!isExisting) {
+      await collection.createIndex(spec, options);
+    }
+  } catch (err: any) {
+    if (err?.code === 85 || err?.codeName === 'IndexOptionsConflict') {
+      logger.warn(`[DatabaseMigration] Index already exists with conflicting options on ${collection.collectionName}`, { spec, options });
+    } else {
+      throw err;
+    }
   }
 }
