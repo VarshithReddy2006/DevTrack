@@ -119,6 +119,23 @@ services:
           memory: 256M
           cpus: '0.5'
 
+  # Readiness intelligence consumers
+  worker-readiness:
+    <<: *backend-base
+    command: ["node", "dist/worker-entrypoint.js"]
+    environment:
+      - WORKER_TYPE=readiness
+      - NODE_ENV=production
+      - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_USER:-devtrack}:${MONGO_PASS:-devtrack}@mongo:27017/devtrack?authSource=admin}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
   # ─── Resume Intelligence Workers ────────────────────────────────────────
   worker-resume:
     <<: *backend-base

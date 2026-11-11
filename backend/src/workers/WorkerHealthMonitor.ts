@@ -17,6 +17,7 @@ export interface WorkerHealthStatus {
 export class WorkerHealthMonitor {
   private healthStatus: Map<string, WorkerHealthStatus> = new Map();
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  private healthCheckInterval: NodeJS.Timeout | null = null;
   private workerType: string;
 
   constructor(workerType: string) {
@@ -24,6 +25,7 @@ export class WorkerHealthMonitor {
   }
 
   start(): void {
+    if (this.heartbeatInterval) return;
     logger.info(`[WorkerHealthMonitor] Starting health monitor for ${this.workerType}`, {
       workerType: this.workerType,
     });
@@ -46,7 +48,7 @@ export class WorkerHealthMonitor {
     }, 30000);
 
     // Start health check interval (every 60 seconds)
-    setInterval(() => {
+    this.healthCheckInterval = setInterval(() => {
       this.performHealthCheck();
     }, 60000);
   }
@@ -55,6 +57,10 @@ export class WorkerHealthMonitor {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
     }
     logger.info(`[WorkerHealthMonitor] Stopped health monitor for ${this.workerType}`, {
       workerType: this.workerType,

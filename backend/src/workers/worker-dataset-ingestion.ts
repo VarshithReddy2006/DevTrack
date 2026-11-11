@@ -14,10 +14,10 @@ import { DatasetLoader } from '../core/datasets/DatasetLoader.js';
 
 let worker: Worker | null = null;
 
-export async function startDatasetIngestionWorker(): Promise<void> {
+export async function startDatasetIngestionWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[DatasetIngestionWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[DatasetIngestionWorker] Starting dataset ingestion worker');
@@ -149,6 +149,7 @@ export async function startDatasetIngestionWorker(): Promise<void> {
   worker.on('failed', (job, err) => {
     logger.error(`[DatasetIngestionWorker] Job failed: ${job?.id}`, err);
   });
+  return worker;
 }
 
 async function processBatch(datasetId: string, batch: any[], checkpointIndex: number) {

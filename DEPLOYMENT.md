@@ -45,6 +45,7 @@ Separate the HTTP server from background workers so each scales independently.
 |---------|---------|-------------|
 | API | `node dist/index.js` | `ENABLE_WORKERS=false` |
 | Sync worker | `node dist/worker-entrypoint.js` | `WORKER_TYPE=sync` |
+| Readiness intelligence | `node dist/worker-entrypoint.js` | `WORKER_TYPE=readiness` |
 | XP worker | `node dist/worker-entrypoint.js` | `WORKER_TYPE=xp` |
 | Maintenance worker | `node dist/worker-entrypoint.js` | `WORKER_TYPE=maintenance` |
 | Resume intelligence | `node dist/worker-entrypoint.js` | `WORKER_TYPE=resume-intelligence` |
@@ -57,6 +58,13 @@ Use explicit roles in production.
 `all` starts the union once and is intended for local development. There is no
 separate orchestration-compensation consumer; `orch` and `orchestration` are
 unsupported. The resume role runs the existing resume consumers and profile rebuild.
+The `readiness` role runs all six Readiness consumers. The `xp` role also runs
+streak recalculation and notifications. The Resume role includes both legacy
+feature queues and session-based upload, ATS, embedding, semantic and recommendation
+queues. Start all six roles in production with API `ENABLE_WORKERS=false`.
+Shutdown allows nine seconds for startup/drain/disconnect, then exits nonzero on a
+deadline failure; unfinished work is recovered through BullMQ stalled-job handling.
+
 The dataset role runs dataset ingestion independently. Backend `npm run worker:*`
 commands use the same dispatcher; their positional role overrides `WORKER_TYPE`.
 On SIGINT/SIGTERM, registered workers drain before MongoDB/shared Redis disconnect.
@@ -144,7 +152,7 @@ Services: `mongo` (7), `redis` (7-alpine), `backend`, `frontend` (Nginx).
 
 - `api` - Express only, `ENABLE_WORKERS=false`
 - `frontend` - Nginx serving the built app on host port 80 (`FRONTEND_PORT`); `/api` is proxied to the `api` service
-- `worker-sync` (2 replicas), `worker-xp`, `worker-resume`, `worker-dataset`, `worker-maint`
+- `worker-sync` (2 replicas), `worker-xp`, `worker-readiness`, `worker-resume`, `worker-dataset`, `worker-maint`
 - `mongo`, `redis` with health checks
 
 Use `docker compose --env-file .env.production -f docker-compose.prod.yml ...`
@@ -205,6 +213,7 @@ Create one Render service per worker type:
 | Service Name | `WORKER_TYPE` | Start Command |
 |---------------|---------------|---------------|
 | `devtrack-sync` | `sync` | `node dist/worker-entrypoint.js` |
+| `devtrack-readiness` | `readiness` | `node dist/worker-entrypoint.js` |
 | `devtrack-xp` | `xp` | `node dist/worker-entrypoint.js` |
 | `devtrack-resume` | `resume-intelligence` | `node dist/worker-entrypoint.js` |
 | `devtrack-dataset` | `dataset` | `node dist/worker-entrypoint.js` |

@@ -12,8 +12,8 @@ let evidenceGraphWorker: Worker | undefined;
 let embeddingWorker: Worker | undefined;
 let githubAnalysisWorker: Worker | undefined;
 
-export function startEvidenceGraphWorker(): void {
-  if (evidenceGraphWorker) return;
+export function startEvidenceGraphWorker(): Worker {
+  if (evidenceGraphWorker) return evidenceGraphWorker;
   const engine = new EvidenceGraphEngine();
 
   evidenceGraphWorker = createDlqWorker(
@@ -24,12 +24,14 @@ export function startEvidenceGraphWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return evidenceGraphWorker;
 }
 
 // src/modules/resume-intelligence/workers/embedding-generation.worker.ts
 export const EMBEDDING_GENERATION_QUEUE = 'embedding-generation';
-export function startEmbeddingWorker(): void {
-  if (embeddingWorker) return;
+export function startEmbeddingWorker(): Worker {
+  if (embeddingWorker) return embeddingWorker;
   embeddingWorker = createDlqWorker(
     EMBEDDING_GENERATION_QUEUE,
     async (job: Job) => {
@@ -37,13 +39,15 @@ export function startEmbeddingWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return embeddingWorker;
 }
 
 // src/modules/resume-intelligence/workers/github-analysis.worker.ts
 import { RepositoryIntelligenceEngine } from '../github/RepositoryIntelligenceEngine.js';
 export const GITHUB_ANALYSIS_QUEUE = 'github-analysis';
-export function startGithubAnalysisWorker(): void {
-  if (githubAnalysisWorker) return;
+export function startGithubAnalysisWorker(): Worker {
+  if (githubAnalysisWorker) return githubAnalysisWorker;
   const engine = new RepositoryIntelligenceEngine();
   githubAnalysisWorker = createDlqWorker(
     GITHUB_ANALYSIS_QUEUE,
@@ -53,6 +57,8 @@ export function startGithubAnalysisWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return githubAnalysisWorker;
 }
 
 export async function stopEvidenceGraphWorker(): Promise<void> {

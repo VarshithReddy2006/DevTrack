@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createWorkerRuntime, parseWorkerType, WORKER_TYPES, workerDefinitions } from './worker-runtime.js';
 
 const mocks = vi.hoisted(() => {
-  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset'];
+  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation'];
   return {
     workers: Object.fromEntries(names.map(name => [name, { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }])),
     schedule: vi.fn().mockResolvedValue(undefined),
@@ -28,6 +28,19 @@ vi.mock('./worker-resume-upload.js', () => ({ startResumeUploadWorker: mocks.wor
 vi.mock('../shared/jobs/profileRebuildWorker.js', () => ({ startProfileRebuildWorker: mocks.workers.profile.start, stopProfileRebuildWorker: mocks.workers.profile.stop, profileRebuildQueue: { close: mocks.closeQueue } }));
 vi.mock('./worker-dataset-ingestion.js', () => ({ startDatasetIngestionWorker: mocks.workers.dataset.start, stopDatasetIngestionWorker: mocks.workers.dataset.stop }));
 
+vi.mock('../shared/jobs/streakRecalcWorker.js', () => ({ startStreakRecalcWorker: mocks.workers.streak.start, stopStreakRecalcWorker: mocks.workers.streak.stop }));
+vi.mock('../shared/jobs/notificationWorker.js', () => ({ startNotificationWorker: mocks.workers.notifications.start, stopNotificationWorker: mocks.workers.notifications.stop }));
+vi.mock('./worker-resume-ats.js', () => ({ startResumeATSWorker: mocks.workers.sessionAts.start, stopResumeATSWorker: mocks.workers.sessionAts.stop }));
+vi.mock('./worker-resume-embedding.js', () => ({ startResumeEmbeddingWorker: mocks.workers.sessionEmbedding.start, stopResumeEmbeddingWorker: mocks.workers.sessionEmbedding.stop }));
+vi.mock('./worker-resume-semantic.js', () => ({ startResumeSemanticWorker: mocks.workers.sessionSemantic.start, stopResumeSemanticWorker: mocks.workers.sessionSemantic.stop }));
+vi.mock('./worker-resume-recommendation.js', () => ({ startResumeRecommendationWorker: mocks.workers.recommendation.start, stopResumeRecommendationWorker: mocks.workers.recommendation.stop }));
+vi.mock('../shared/jobs/workers/dsaAnalyticsWorker.js', () => ({ startDsaAnalyticsWorker: () => { mocks.workers.dsa.start(); return { close: mocks.workers.dsa.stop }; } }));
+vi.mock('../shared/jobs/workers/projectIntelligenceWorker.js', () => ({ startProjectIntelligenceWorker: () => { mocks.workers.projects.start(); return { close: mocks.workers.projects.stop }; } }));
+vi.mock('../shared/jobs/workers/skillIntelligenceWorker.js', () => ({ startSkillIntelligenceWorker: () => { mocks.workers.skills.start(); return { close: mocks.workers.skills.stop }; } }));
+vi.mock('../shared/jobs/workers/benchmarkWorker.js', () => ({ startBenchmarkWorker: () => { mocks.workers.benchmarks.start(); return { close: mocks.workers.benchmarks.stop }; } }));
+vi.mock('../shared/jobs/workers/roadmapRecommendationWorker.js', () => ({ startRoadmapRecommendationWorker: () => { mocks.workers.roadmap.start(); return { close: mocks.workers.roadmap.stop }; } }));
+vi.mock('../shared/jobs/workers/readinessAggregationWorker.js', () => ({ startReadinessAggregationWorker: () => { mocks.workers.aggregation.start(); return { close: mocks.workers.aggregation.stop }; } }));
+
 function services() {
   return { validate: vi.fn().mockResolvedValue(undefined), connect: vi.fn().mockResolvedValue(undefined), disconnect: vi.fn().mockResolvedValue(undefined) };
 }
@@ -39,9 +52,10 @@ function deferred() {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('standalone worker selection and lifecycle', () => {
-  const resume = ['generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile'];
+  const resume = ['generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation'];
   const cases: [string | undefined, string[]][] = [
-    ['sync', ['sync']], ['xp', ['xp']], ['maintenance', ['maintenance']],
+    ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications']], ['maintenance', ['maintenance']],
+    ['readiness', ['dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
     ['resume-intelligence', resume], ['dataset', ['dataset']],
     ['all', Object.keys(mocks.workers)], [undefined, Object.keys(mocks.workers)], ['', Object.keys(mocks.workers)],
   ];
@@ -167,7 +181,7 @@ describe('standalone worker selection and lifecycle', () => {
   it('keeps production Compose, deployment tables and package commands within the supported contract', () => {
     const compose = readFileSync('../docker-compose.prod.yml', 'utf8');
     const selectors = [...compose.matchAll(/- WORKER_TYPE=([^\s]+)/g)].map(match => match[1]);
-    expect(selectors.sort()).toEqual(['sync', 'xp', 'maintenance', 'resume-intelligence', 'dataset'].sort());
+    expect(selectors.sort()).toEqual(['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset'].sort());
     selectors.forEach(value => expect(parseWorkerType(value)).toBe(value));
     const deployment = readFileSync('../DEPLOYMENT.md', 'utf8');
     for (const match of deployment.matchAll(/WORKER_TYPE=([^`\s]+)/g)) expect(() => parseWorkerType(match[1])).not.toThrow();
@@ -176,4 +190,49 @@ describe('standalone worker selection and lifecycle', () => {
       expect(pkg.scripts[`worker:${role}`]).toBe(`tsx src/worker-entrypoint.ts ${role}`);
     }
   });
+  it('waits for consumer readiness before advancing', async () => {
+    const pending = deferred();
+    const close = vi.fn().mockResolvedValue(undefined);
+    const later = vi.fn();
+    const runtime = createWorkerRuntime('all', services(), [
+      { role: 'readiness', load: async () => ({ start: () => ({ waitUntilReady: () => pending.promise }), stop: close }) },
+      { role: 'xp', load: async () => ({ start: later, stop: close }) },
+    ]);
+    const starting = runtime.start();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(later).not.toHaveBeenCalled();
+    pending.resolve(); await starting;
+    expect(later).toHaveBeenCalledOnce(); await runtime.stop();
+  });
+
+  it.each(['start', 'stop'] as const)('bounds shutdown even when %s never settles', async stage => {
+    vi.useFakeTimers();
+    try {
+      const blocked = new Promise<void>(() => {});
+      const entered = deferred();
+      const runtime = createWorkerRuntime('all', services(), [{ role: 'sync', load: async () => ({
+        start: () => { entered.resolve(); return stage === 'start' ? blocked : undefined; },
+        stop: () => stage === 'stop' ? blocked : Promise.resolve(),
+      }) }]);
+      const starting = runtime.start();
+      if (stage === 'stop') await starting;
+      else { void starting.catch(() => undefined); await entered.promise; }
+      const stopped = runtime.stop(100);
+      const rejected = expect(stopped).rejects.toThrow('shutdown exceeded 100ms');
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('drains a consumer whose readiness check fails before loading later consumers', async () => {
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const later = vi.fn();
+    const runtime = createWorkerRuntime('all', services(), [
+      { role: 'sync', load: async () => ({ start: () => ({ waitUntilReady: async () => { throw new Error('not ready'); } }), stop }) },
+      { role: 'xp', load: later },
+    ]);
+    await expect(runtime.start()).rejects.toThrow('not ready');
+    await runtime.stop(); expect(stop).toHaveBeenCalledOnce(); expect(later).not.toHaveBeenCalled();
+  });
+
 });

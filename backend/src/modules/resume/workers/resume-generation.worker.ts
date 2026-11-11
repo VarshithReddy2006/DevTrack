@@ -18,10 +18,10 @@ let worker: Worker | null = null;
 /**
  * Start resume generation worker
  */
-export function startResumeGenerationWorker(): void {
+export function startResumeGenerationWorker(): Worker {
   if (worker) {
     logger.warn('[ResumeGenerationWorker] Worker already running');
-    return;
+    return worker;
   }
 
   const service = new ResumeIntelligenceService();
@@ -69,6 +69,8 @@ export function startResumeGenerationWorker(): void {
   });
 
   logger.info('[ResumeGenerationWorker] Started');
+
+  return worker;
 }
 
 /**

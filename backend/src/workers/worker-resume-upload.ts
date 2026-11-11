@@ -11,10 +11,10 @@ import { ResumeSession } from '../db/models/resumeSession.model.js';
 let worker: Worker | null = null;
 const orchestrator = new ResumeProcessingOrchestrator();
 
-export async function startResumeUploadWorker(): Promise<void> {
+export async function startResumeUploadWorker(): Promise<Worker> {
   if (worker) {
     logger.warn('[ResumeUploadWorker] Worker already running');
-    return;
+    return worker;
   }
 
   logger.info('[ResumeUploadWorker] Starting resume upload worker');
@@ -92,6 +92,8 @@ export async function startResumeUploadWorker(): Promise<void> {
   });
 
   logger.info('[ResumeUploadWorker] Resume upload worker started');
+
+  return worker;
 }
 
 export async function stopResumeUploadWorker(): Promise<void> {

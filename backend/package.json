@@ -11,6 +11,7 @@
     "dev:all": "tsx watch src/index.ts & tsx watch src/worker-entrypoint.ts",
     "worker": "tsx src/worker-entrypoint.ts",
     "worker:sync": "tsx src/worker-entrypoint.ts sync",
+    "worker:readiness": "tsx src/worker-entrypoint.ts readiness",
     "worker:xp": "tsx src/worker-entrypoint.ts xp",
     "worker:maintenance": "tsx src/worker-entrypoint.ts maintenance",
     "worker:resume-intelligence": "tsx src/worker-entrypoint.ts resume-intelligence",

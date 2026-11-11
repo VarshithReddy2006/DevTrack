@@ -14,8 +14,8 @@ interface ICredibilityJob {
 
 let worker: Worker | null = null;
 
-export function startCredibilityWorker(): void {
-  if (worker) return;
+export function startCredibilityWorker(): Worker {
+  if (worker) return worker;
 
   const service = new ResumeIntelligenceService();
 
@@ -33,6 +33,8 @@ export function startCredibilityWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return worker;
 }
 
 export async function stopCredibilityWorker(): Promise<void> {

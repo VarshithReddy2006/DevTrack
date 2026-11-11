@@ -16,8 +16,8 @@ interface IATSAnalysisJob {
 
 let worker: Worker | null = null;
 
-export function startATSAnalysisWorker(): void {
-  if (worker) return;
+export function startATSAnalysisWorker(): Worker {
+  if (worker) return worker;
 
   const service = new ResumeIntelligenceService();
 
@@ -38,6 +38,8 @@ export function startATSAnalysisWorker(): void {
     },
     { connection: getRedisConnection() }
   );
+
+  return worker;
 }
 
 export async function stopATSAnalysisWorker(): Promise<void> {

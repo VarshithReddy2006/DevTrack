@@ -145,24 +145,50 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 |-----------|---------------|------|
 | `api` | — (`ENABLE_WORKERS=false`) | HTTP + SSE only |
 | `worker-sync` | `sync` | Platform crawlers |
-| `worker-xp` | `xp` | Gamification |
+| `worker-xp` | `xp` | XP, streaks and notifications |
+| `worker-readiness` | `readiness` | Six Readiness intelligence consumers |
 | `worker-resume` | `resume-intelligence` | Resume consumers and profile rebuild |
 | `worker-dataset` | `dataset` | Dataset ingestion |
 | `worker-maint` | `maintenance` | Maintenance |
 
-The standalone dispatcher accepts exactly `sync`, `xp`, `maintenance`,
+The standalone dispatcher accepts exactly `sync`, `xp`, `readiness`, `maintenance`,
 `resume-intelligence`, `dataset`, and `all`. An unset or empty selector defaults to
 `all` for local development; production services must select an explicit role.
 Unknown values fail before loading service modules or connecting to databases.
 There is no standalone orchestration-compensation consumer: `orch` and
 `orchestration` are invalid selectors. The resume role groups existing consumers;
-it does not add a new orchestration engine. `all` is the union of the five roles.
+it does not add a new orchestration engine. `all` is the union of the six roles.
 
 Backend `worker:*` scripts use the same dispatcher with a positional selector.
 An explicit positional selector takes precedence over `WORKER_TYPE`. Shutdown
-waits for startup to settle, drains registered consumers (including XP and Phase 4),
-then disconnects MongoDB and shared Redis. Partial startup failures also drain
+waits for startup to settle, drains registered consumers concurrently,
+then disconnects MongoDB and shared Redis. A nine-second deadline bounds pending
+startup, drain and service cleanup; timeout exits nonzero and unfinished jobs rely
+on BullMQ stalled-job recovery. The API retains its ten-second process exit cap. Partial startup failures also drain
 registered consumers and exit nonzero; cleanup continues if one close fails.
+
+API startup uses the same lazy registry as the standalone dispatcher when
+`ENABLE_WORKERS` is unset or anything other than `false`. Set `ENABLE_WORKERS=false`
+on API processes when using standalone workers, including local `dev:all` alongside
+`dev:workers`, to choose one execution topology. The registry covers all existing
+worker constructors: six Readiness consumers, the legacy Resume feature queues,
+and session-based `resume-upload`, `resume-ats`, `resume-embedding`, `resume-semantic`
+and `resume-recommendation` consumers. Queue constants without an existing consumer
+(such as `resume-replay`) do not imply a registered worker.
+
+The admin-only `/api/system/queue-status` endpoint includes every registered queue
+and role, job counts and the number of Redis-observed consumers. This includes
+standalone consumers in other processes. Missing consumers and unavailable Redis
+are explicit statuses; failed queries return null counts rather than healthy zeros.
+Health queries have a one-second deadline.
+
+Run registry, startup, deadline and health tests from `backend/` with
+`node node_modules/vitest/vitest.mjs run -c vitest.worker-lifecycle.config.ts`.
+The live queue suite uses real BullMQ plus an owned MongoDB instance and a unique
+Redis namespace: set `WORKER_TEST_REDIS_URL` to a disposable Redis URL and run
+`node node_modules/vitest/vitest.mjs run -c vitest.worker-queues.config.ts` with
+`MONGODB_URI` unset. CI runs this suite against its Redis service. It verifies saved
+results from `readiness-dsa` and `resume-ats`; without the explicit URL it is skipped.
 
 Platform sync is **idempotent**: each external submission maps to `platform + externalId` to prevent duplicates.
 
