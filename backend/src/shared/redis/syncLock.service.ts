@@ -10,6 +10,46 @@ const LOCK_TIMEOUT_MS = 30_000; // 30 second lock timeout
 const LOCK_RETRY_DELAY_MS = 500; // 500ms between retry attempts
 const MAX_LOCK_RETRIES = 10; // Max 5 seconds total wait
 
+const SCHEDULER_LOCK_KEY = 'sse:sync:scheduler:leader';
+const SCHEDULER_LOCK_TIMEOUT_MS = 60_000; // 60s TTL for scheduler sweep
+
+/**
+ * Attempts to acquire the distributed scheduler leader lock.
+ * Ensures only one replica executes the scheduled sync sweep.
+ */
+export async function acquireSchedulerLock(ttlMs: number = SCHEDULER_LOCK_TIMEOUT_MS): Promise<boolean> {
+  const redis = getRedisClient();
+  if (redis.status !== 'ready') {
+    return true; // Graceful degradation in non-redis test envs
+  }
+  try {
+    const result = await redis.set(SCHEDULER_LOCK_KEY, '1', 'PX', ttlMs, 'NX');
+    return result === 'OK';
+  } catch (err) {
+    logger.warn('[syncLock] Error acquiring scheduler lock', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/**
+ * Releases the distributed scheduler leader lock.
+ */
+export async function releaseSchedulerLock(): Promise<boolean> {
+  const redis = getRedisClient();
+  if (redis.status !== 'ready') return true;
+  try {
+    const deleted = await redis.del(SCHEDULER_LOCK_KEY);
+    return deleted > 0;
+  } catch (err) {
+    logger.warn('[syncLock] Error releasing scheduler lock', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
 /**
  * Generates a unique lock key for a user-platform pair
  */

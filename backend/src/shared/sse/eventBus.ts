@@ -591,8 +591,9 @@ class EventBus extends EventEmitter {
   // Broadcast helpers (convenience wrappers)
   // ---------------------------------------------------------------------------
 
-  emitSyncStarted(userId: string, platform?: string): void {
+  emitSyncStarted(userId: string, platform?: string, syncJobId?: string): void {
     const defaultPlatform = platform || 'leetcode';
+    const syncId = syncJobId || `sync_${defaultPlatform}_${Date.now()}`;
     this.publish(
       {
         type: 'sync_started',
@@ -601,7 +602,7 @@ class EventBus extends EventEmitter {
         platform: defaultPlatform,
         payload: {
           platform: defaultPlatform,
-          syncId: `sync_${defaultPlatform}_${Date.now()}`,
+          syncId,
           startedAt: new Date().toISOString(),
         },
         stats: { totalSolved: 0 },
@@ -610,7 +611,8 @@ class EventBus extends EventEmitter {
     );
   }
 
-  emitSyncCompleted(userId: string, platform: string, stats?: SseEvent['stats'], durationMs?: number): void {
+  emitSyncCompleted(userId: string, platform: string, stats?: SseEvent['stats'], durationMs?: number, syncJobId?: string): void {
+    const syncId = syncJobId || `sync_${platform}_${Date.now()}`;
     this.publish(
       {
         type: 'sync_completed',
@@ -620,7 +622,7 @@ class EventBus extends EventEmitter {
         stats,
         payload: {
           platform,
-          syncId: `sync_${platform}_${Date.now()}`,
+          syncId,
           duration: durationMs ?? 0,
           stats: {
             ingested: stats?.ingested ?? 0,
@@ -634,7 +636,8 @@ class EventBus extends EventEmitter {
     );
   }
 
-  emitSyncFailed(userId: string, platform: string, error: string): void {
+  emitSyncFailed(userId: string, platform: string, error: string, syncJobId?: string): void {
+    const syncId = syncJobId || `sync_${platform}_${Date.now()}`;
     this.publish(
       {
         type: 'sync_failed',
@@ -644,7 +647,7 @@ class EventBus extends EventEmitter {
         stats: { error },
         payload: {
           platform,
-          syncId: `sync_${platform}_${Date.now()}`,
+          syncId,
           error,
           retryable: true,
           failedAt: new Date().toISOString(),
