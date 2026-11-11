@@ -85,8 +85,11 @@ export interface DatasetIngestionJobData {
   datasetId: string;
   sourceFilePath: string;
   batchSize?: number;
+  maxFailedRows?: number;
   requestId?: string;
 }
+
+export const MAX_DATASET_INGESTION_BATCH_SIZE = 5000;
 
 export interface DatasetValidationJobData {
   datasetId: string;
