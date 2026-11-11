@@ -1,7 +1,7 @@
 // src/modules/projects/projects.routes.ts
 import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
-import { validateParams, objectIdSchema } from '../../middleware/validation.js';
+import { validateParams, validateQuery, objectIdSchema } from '../../middleware/validation.js';
 import * as controller from './projects.controller.js';
 import { z } from 'zod';
 
@@ -55,6 +55,12 @@ const taskUpdateSchema = z.object({
 
 const projectIdParamsSchema = z.object({ id: objectIdSchema });
 const taskParamsSchema = z.object({ id: objectIdSchema, taskId: objectIdSchema });
+const taskQuerySchema = z.object({
+  priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+  status: z.enum(['todo', 'in_progress', 'review', 'done']).optional(),
+  milestoneId: z.string().min(1).optional(),
+  overdueOnly: z.enum(['true', 'false']).optional(),
+});
 
 router.get('/', authMiddleware, asyncHandler(controller.getProjects));
 router.get('/stats', authMiddleware, asyncHandler(controller.getProjectStats));
@@ -62,7 +68,7 @@ router.post('/', authMiddleware, validateBody(projectCreateSchema), asyncHandler
 router.get('/:id', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getProjectById));
 router.patch('/:id', authMiddleware, validateParams(projectIdParamsSchema), validateBody(projectUpdateSchema), asyncHandler(controller.updateProject));
 router.delete('/:id', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.deleteProject));
-router.get('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getProjectTasks));
+router.get('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), validateQuery(taskQuerySchema), asyncHandler(controller.getProjectTasks));
 router.get('/:id/tasks/overdue', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getOverdueTasks));
 router.post('/:id/tasks', authMiddleware, validateParams(projectIdParamsSchema), validateBody(taskCreateSchema), asyncHandler(controller.createProjectTask));
 router.patch('/:id/tasks/:taskId', authMiddleware, validateParams(taskParamsSchema), validateBody(taskUpdateSchema), asyncHandler(controller.updateProjectTask));

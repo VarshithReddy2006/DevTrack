@@ -262,14 +262,14 @@ export async function getProjectTasks(
   userId: string,
   projectId: string,
   filters?: ProjectTaskFilters
-): Promise<ApiProjectTask[]> {
+): Promise<ApiProjectTask[] | null> {
   // Verify project exists and belongs to user
   const project = await Project.findOne({
     _id: new Types.ObjectId(projectId),
     userId: new Types.ObjectId(userId),
   });
 
-  if (!project) return [];
+  if (!project) return null;
 
   const query: Record<string, unknown> = {
     projectId: new Types.ObjectId(projectId),
@@ -278,15 +278,15 @@ export async function getProjectTasks(
   if (filters?.priority) {
     query.priority = filters.priority;
   }
-  if (filters?.status) {
-    query.status = filters.status;
-  }
   if (filters?.milestoneId) {
     query.milestoneId = filters.milestoneId;
   }
   if (filters?.overdueOnly) {
+    if (filters.status === 'done') return [];
     query.dueDate = { $lt: new Date() };
-    query.status = { $ne: 'done' };
+    query.status = filters.status ?? { $ne: 'done' };
+  } else if (filters?.status) {
+    query.status = filters.status;
   }
 
   const tasks = await ProjectTask.find(query).sort({ rank: 1, createdAt: -1, _id: 1 });
@@ -314,7 +314,7 @@ export async function getProjectTasks(
   });
 }
 
-export async function getOverdueTasks(userId: string, projectId: string): Promise<ApiProjectTask[]> {
+export async function getOverdueTasks(userId: string, projectId: string): Promise<ApiProjectTask[] | null> {
   return getProjectTasks(userId, projectId, { overdueOnly: true });
 }
 

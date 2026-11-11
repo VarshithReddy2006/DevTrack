@@ -65,13 +65,15 @@ describe('Project Task Priority & Overdue Detection', () => {
     ]);
 
     const highTasks = await getProjectTasks(userId, projectId, { priority: 'high' });
-    expect(highTasks).toHaveLength(1);
-    expect(highTasks[0].title).toBe('High priority task');
-    expect(highTasks[0].priority).toBe('high');
+    expect(highTasks).not.toBeNull();
+    expect(highTasks!).toHaveLength(1);
+    expect(highTasks![0].title).toBe('High priority task');
+    expect(highTasks![0].priority).toBe('high');
 
     const lowTasks = await getProjectTasks(userId, projectId, { priority: 'low' });
-    expect(lowTasks).toHaveLength(1);
-    expect(lowTasks[0].title).toBe('Low priority task');
+    expect(lowTasks).not.toBeNull();
+    expect(lowTasks!).toHaveLength(1);
+    expect(lowTasks![0].title).toBe('Low priority task');
 
     const allTasks = await getProjectTasks(userId, projectId);
     expect(allTasks).toHaveLength(3);
@@ -110,16 +112,17 @@ describe('Project Task Priority & Overdue Detection', () => {
     ]);
 
     const tasks = await getProjectTasks(userId, projectId);
-    expect(tasks).toHaveLength(3);
+    expect(tasks).not.toBeNull();
+    expect(tasks!).toHaveLength(3);
 
-    const overdueTodo = tasks.find((t) => t.title === 'Overdue Todo Task');
+    const overdueTodo = tasks!.find((t) => t.title === 'Overdue Todo Task');
     expect(overdueTodo?.isOverdue).toBe(true);
 
-    const futureTask = tasks.find((t) => t.title === 'Future In-Progress Task');
+    const futureTask = tasks!.find((t) => t.title === 'Future In-Progress Task');
     expect(futureTask?.isOverdue).toBe(false);
 
     // Completed task should not be overdue even if dueDate is past
-    const doneTask = tasks.find((t) => t.title === 'Done Task Past Due');
+    const doneTask = tasks!.find((t) => t.title === 'Done Task Past Due');
     expect(doneTask?.isOverdue).toBe(false);
   });
 
@@ -155,16 +158,55 @@ describe('Project Task Priority & Overdue Detection', () => {
     ]);
 
     const overdue = await getOverdueTasks(userId, projectId);
-    expect(overdue).toHaveLength(1);
-    expect(overdue[0].title).toBe('Overdue Task 1');
-    expect(overdue[0].isOverdue).toBe(true);
+    expect(overdue).not.toBeNull();
+    expect(overdue!).toHaveLength(1);
+    expect(overdue![0].title).toBe('Overdue Task 1');
+    expect(overdue![0].isOverdue).toBe(true);
+  });
+
+  it('preserves status filter when combined with overdueOnly', async () => {
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    await ProjectTask.create([
+      {
+        projectId: new Types.ObjectId(projectId),
+        title: 'Overdue Todo',
+        description: 'Todo past due',
+        status: 'todo',
+        priority: 'high',
+        dueDate: past,
+      },
+      {
+        projectId: new Types.ObjectId(projectId),
+        title: 'Overdue In-Progress',
+        description: 'WIP past due',
+        status: 'in_progress',
+        priority: 'high',
+        dueDate: past,
+      },
+      {
+        projectId: new Types.ObjectId(projectId),
+        title: 'Done Past Due',
+        description: 'Completed',
+        status: 'done',
+        priority: 'high',
+        dueDate: past,
+      },
+    ]);
+
+    const overdueTodo = await getProjectTasks(userId, projectId, { status: 'todo', overdueOnly: true });
+    expect(overdueTodo).not.toBeNull();
+    expect(overdueTodo!).toHaveLength(1);
+    expect(overdueTodo![0].title).toBe('Overdue Todo');
+
+    const overdueDone = await getProjectTasks(userId, projectId, { status: 'done', overdueOnly: true });
+    expect(overdueDone).toEqual([]);
   });
 
   it('enforces ownership check on project tasks', async () => {
     const tasks = await getProjectTasks(userId, foreignProjectId);
-    expect(tasks).toEqual([]);
+    expect(tasks).toBeNull();
 
     const overdue = await getOverdueTasks(userId, foreignProjectId);
-    expect(overdue).toEqual([]);
+    expect(overdue).toBeNull();
   });
 });
