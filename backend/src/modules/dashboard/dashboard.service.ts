@@ -23,7 +23,8 @@ import type {
   ApiAchievementsResponse,
   ApiWeeklyXpDay,
 } from '../../types/api.types.js';
-import { getStartOfDay, formatISODate, isSameDay } from '../../shared/date.js';
+import { getStartOfDay, formatISODate } from '../../shared/date.js';
+import { getCanonicalStreakData } from '../streak/streak.service.js';
 
 // GitHub-specific dashboard stats (separate from DSA metrics)
 export interface GithubDashboardStatsData {
@@ -109,8 +110,8 @@ export async function getDashboardStats(userId: string, platformStats?: ApiPlatf
   // Calculate total problems from all platforms
   const totalPlatformProblems = resolvedPlatformStats.reduce((sum, p) => sum + p.totalSolved, 0);
 
-  // Calculate streak
-  const streakData = await calculateStreak(userId);
+  // Calculate streak using canonical StreakService
+  const streakData = await getCanonicalStreakData(userId);
 
   // Fetch weekly XP history from UserAnalytics
   const { weeklyXPHistory, weeklyConsistencyScore } = await getWeeklyXpHistory(userId);
@@ -213,88 +214,12 @@ async function getWeeklyXpHistory(userId: string): Promise<{
 }
 
 export async function getStreakData(userId: string): Promise<ApiStreakData> {
-  const streak = await calculateStreak(userId);
+  const streak = await getCanonicalStreakData(userId);
   const history = await getStreakHistory(userId);
 
   return {
     ...streak,
     streakHistory: history,
-  };
-}
-
-async function calculateStreak(userId: string): Promise<Omit<ApiStreakData, 'streakHistory'>> {
-  const today = getStartOfDay();
-  const activities = await DailyActivity.find({
-    userId: new Types.ObjectId(userId),
-    count: { $gt: 0 },
-  }).sort({ date: -1 });
-
-  let currentStreak = 0;
-  let longestStreak = 0;
-  let streakStartDate = '';
-  let lastActiveDate = '';
-  let isActiveToday = false;
-
-  if (activities.length > 0) {
-    lastActiveDate = formatISODate(activities[0].date);
-    isActiveToday = isSameDay(activities[0].date, today);
-
-    // Calculate current streak
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    const isStreakAlive = isActiveToday || isSameDay(activities[0].date, yesterday);
-
-    if (isStreakAlive) {
-      let checkDate = isActiveToday ? new Date(today) : new Date(activities[0].date);
-
-      for (const activity of activities) {
-        const activityDate = getStartOfDay(activity.date);
-        const expectedDate = getStartOfDay(checkDate);
-
-        if (formatISODate(activityDate) === formatISODate(expectedDate)) {
-          currentStreak++;
-          checkDate.setDate(checkDate.getDate() - 1);
-        } else {
-          break;
-        }
-      }
-    } else {
-      currentStreak = 0;
-    }
-
-    // Calculate longest streak
-    let tempStreak = 0;
-    let prevDate: Date | null = null;
-    for (let i = activities.length - 1; i >= 0; i--) {
-      const activity = activities[i];
-      if (prevDate === null) {
-        tempStreak = 1;
-      } else {
-        const dayDiff = Math.abs(activity.date.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24);
-        if (dayDiff === 1) {
-          tempStreak++;
-        } else {
-          longestStreak = Math.max(longestStreak, tempStreak);
-          tempStreak = 1;
-        }
-      }
-      prevDate = activity.date;
-    }
-    longestStreak = Math.max(longestStreak, tempStreak, currentStreak);
-
-    // Find streak start
-    if (activities.length > 0) {
-      streakStartDate = formatISODate(activities[activities.length - 1].date);
-    }
-  }
-
-  return {
-    currentStreak,
-    longestStreak,
-    lastActiveDate,
-    streakStartDate,
-    isActiveToday,
   };
 }
 

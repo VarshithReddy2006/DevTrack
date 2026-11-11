@@ -176,14 +176,7 @@ export async function createActivity(
   // Update daily activity
   const dateKey = getStartOfDay(occurredAt);
   try {
-    await DailyActivity.findOneAndUpdate(
-      { userId: new Types.ObjectId(userId), date: dateKey },
-      {
-        $inc: { count: 1 },
-        $push: { activities: { type: payload.type, count: 1 } },
-      },
-      { upsert: true, new: true }
-    );
+    await upsertDailyActivityAtomic(new Types.ObjectId(userId), dateKey, payload.type);
   } finally {
     // The activity event already exists even if updating the daily count fails.
     await cacheManager.invalidateDashboard(userId);
@@ -214,15 +207,86 @@ export async function incrementDailyActivity(
   type: string = 'submission'
 ): Promise<void> {
   const dateKey = getStartOfDay(date);
-  await DailyActivity.findOneAndUpdate(
-    { userId: new Types.ObjectId(userId), date: dateKey },
-    {
-      $inc: { count: 1 },
-      $push: { activities: { type, count: 1 } },
-    },
-    { upsert: true, new: true }
-  );
+  await upsertDailyActivityAtomic(new Types.ObjectId(userId), dateKey, type);
   await cacheManager.invalidateDashboard(userId);
+}
+
+/**
+ * Atomically increments daily activity and bounds the activities array size to O(1)
+ * per day by aggregating counts per activity type rather than appending duplicate rows.
+ */
+async function upsertDailyActivityAtomic(
+  userId: Types.ObjectId,
+  dateKey: Date,
+  activityType: string
+): Promise<void> {
+  const filter = { userId, date: dateKey };
+  const updatePipeline = [
+    {
+      $set: {
+        userId,
+        date: dateKey,
+        count: { $add: [{ $ifNull: ['$count', 0] }, 1] },
+        activities: {
+          $let: {
+            vars: {
+              existing: {
+                $filter: {
+                  input: { $ifNull: ['$activities', []] },
+                  cond: { $eq: ['$$this.type', activityType] },
+                },
+              },
+              others: {
+                $filter: {
+                  input: { $ifNull: ['$activities', []] },
+                  cond: { $ne: ['$$this.type', activityType] },
+                },
+              },
+            },
+            in: {
+              $concatArrays: [
+                '$$others',
+                [
+                  {
+                    type: activityType,
+                    count: {
+                      $add: [
+                        {
+                          $reduce: {
+                            input: '$$existing',
+                            initialValue: 0,
+                            in: { $add: ['$$value', '$$this.count'] },
+                          },
+                        },
+                        1,
+                      ],
+                    },
+                  },
+                ],
+              ],
+            },
+          },
+        },
+      },
+    },
+  ];
+
+  let attempts = 0;
+  while (attempts < 3) {
+    try {
+      await DailyActivity.findOneAndUpdate(filter, updatePipeline, {
+        upsert: true,
+        new: true,
+      });
+      break;
+    } catch (err: any) {
+      if (err?.code === 11000 && attempts < 2) {
+        attempts++;
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 export async function deleteActivity(userId: string, activityId: string): Promise<boolean> {

@@ -7,7 +7,9 @@ export {
   activateStreakFreeze,
   getUnifiedStreak,
   recalculateStreak,
+  getCanonicalStreakData,
   type StreakStatus,
   type RecordActivityPayload,
+  type CanonicalStreakData,
 } from './streak.service.js';
 export type { StreakType } from '../../db/models/index.js';
