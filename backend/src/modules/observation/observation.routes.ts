@@ -2,7 +2,11 @@
 import { Router, Response } from 'express';
 import mongoose from 'mongoose';
 import { authMiddleware, AuthenticatedRequest } from '../../middleware/auth.js';
-import { sessionReplay } from './sessionReplay.service.js';
+import {
+  sessionReplay,
+  SessionNotFoundError,
+  SessionForbiddenError,
+} from './sessionReplay.service.js';
 import { insightsService } from './insights.service.js';
 import { momentumEngine } from './momentumEngine.service.js';
 import { retentionEngine } from './retentionEngine.service.js';
@@ -35,6 +39,10 @@ router.post(
 
       res.status(200).json({ success: true });
     } catch (err: any) {
+      if (err instanceof SessionForbiddenError) {
+        res.status(403).json({ error: err.message });
+        return;
+      }
       logger.error('[observation] Failed to start session', { error: err.message });
       res.status(500).json({ error: 'Failed to start session' });
     }
@@ -53,9 +61,17 @@ router.post(
         return;
       }
 
-      await sessionReplay.endSession(sessionId);
+      await sessionReplay.endSession(sessionId, req.user!.id);
       res.status(200).json({ success: true });
     } catch (err: any) {
+      if (err instanceof SessionForbiddenError) {
+        res.status(403).json({ error: err.message });
+        return;
+      }
+      if (err instanceof SessionNotFoundError) {
+        res.status(404).json({ error: err.message });
+        return;
+      }
       logger.error('[observation] Failed to end session', { error: err.message });
       res.status(500).json({ error: 'Failed to end session' });
     }
@@ -74,43 +90,54 @@ router.post(
         return;
       }
 
-      for (const event of events) {
-        const timestamp = event.timestamp ? new Date(event.timestamp) : new Date();
-
-        if (event.event === 'page_view') {
-          await sessionReplay.recordPageView(sessionId, event.properties?.page || '/');
-        } else if (
-          ['hesitation', 'abandonment', 'confusion', 'error_occurred'].includes(event.event)
-        ) {
-          let mappedType: 'hesitation' | 'abandonment' | 'confusion' | 'error' = 'confusion';
-          if (event.event === 'hesitation') mappedType = 'hesitation';
-          if (event.event === 'abandonment') mappedType = 'abandonment';
-          if (event.event === 'error_occurred') mappedType = 'error';
-
-          await sessionReplay.recordFrictionEvent({
-            sessionId,
-            element: event.properties?.element || 'app',
-            type: mappedType,
-            severity: event.properties?.severity || 'low',
-            timestamp,
-            context: event.properties,
-          });
-        } else {
-          // Standard interaction
-          await sessionReplay.recordInteraction({
-            sessionId,
-            element: event.properties?.element || 'app',
-            action: event.event,
-            timestamp,
-            context: event.properties,
-          });
-        }
-      }
-
+      await sessionReplay.recordEventsBatch(sessionId, req.user!.id, events);
       res.status(200).json({ success: true });
     } catch (err: any) {
+      if (err instanceof SessionForbiddenError) {
+        res.status(403).json({ error: err.message });
+        return;
+      }
+      if (err instanceof SessionNotFoundError) {
+        res.status(404).json({ error: err.message });
+        return;
+      }
       logger.error('[observation] Failed to ingest telemetry events', { error: err.message });
       res.status(500).json({ error: 'Failed to ingest telemetry' });
+    }
+  }
+);
+
+// Get single session replay by ID
+router.get(
+  '/session/:sessionId',
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const paramId = req.params.sessionId;
+      const sessionId = Array.isArray(paramId) ? paramId[0] : paramId;
+      if (!sessionId) {
+        res.status(400).json({ error: 'sessionId is required' });
+        return;
+      }
+
+      const replay = await sessionReplay.getSessionReplay(sessionId, req.user!.id);
+      if (!replay) {
+        res.status(404).json({ error: 'Session not found' });
+        return;
+      }
+
+      res.status(200).json({ success: true, data: replay });
+    } catch (err: any) {
+      if (err instanceof SessionForbiddenError) {
+        res.status(403).json({ error: err.message });
+        return;
+      }
+      if (err instanceof SessionNotFoundError) {
+        res.status(404).json({ error: err.message });
+        return;
+      }
+      logger.error('[observation] Failed to get session replay', { error: err.message });
+      res.status(500).json({ error: 'Failed to get session replay' });
     }
   }
 );
@@ -151,7 +178,6 @@ router.get(
   authMiddleware,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      // Optionally compute momentum first for context-aware retention
       let momentumScore;
       try {
         const momentum = await momentumEngine.calculateMomentumScore(req.user!.id);
@@ -170,4 +196,3 @@ router.get(
 );
 
 export const observationRoutes = router;
-

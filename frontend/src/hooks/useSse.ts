@@ -6,12 +6,14 @@ import { useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { queryKeys } from '../lib/queryClient';
 import { useUIStore } from '../store/uiStore';
+import { useUserStore } from '../store/userStore';
 
 const SSE_PATH = '/events';
 const RECONNECT_DELAY_MS = 3_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 5;
+const MAX_SEEN_ENVELOPE_IDS = 1000;
 
 // ---------------------------------------------------------------------------
 // Event types taxonomy
@@ -158,9 +160,18 @@ const store: StoreState = {
 
 const MAX_HISTORY = 50;
 const seenEventIds = new Set<string>();
+const seenEnvelopeIds = new Set<string>();
 
 function eventKey(event: SseEvent): string {
   return `${event.type}:${event.timestamp}:${JSON.stringify(event.stats || event.payload || '')}`;
+}
+
+function rememberEnvelopeId(id: string): void {
+  seenEnvelopeIds.add(id);
+  if (seenEnvelopeIds.size > MAX_SEEN_ENVELOPE_IDS) {
+    const first = seenEnvelopeIds.values().next().value;
+    if (first !== undefined) seenEnvelopeIds.delete(first);
+  }
 }
 
 type Listener = () => void;
@@ -188,44 +199,88 @@ let globalHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let globalLastMessage = 0;
 let globalConsecutiveFailures = 0;
 let globalDisconnectedAt: number | null = null;
+let userStoreSubscribed = false;
+let previousAuth = false;
 
 const STALE_STATE_THRESHOLD_MS = 30_000;
 
-async function connectGlobalSse(
+async function resolveAuthToken(): Promise<string | null> {
+  if (typeof window !== 'undefined' && window.Clerk && window.Clerk.session) {
+    try {
+      const token = await window.Clerk.session.getToken();
+      if (token) return token;
+    } catch {
+      // ignore
+    }
+  }
+  if (typeof localStorage !== 'undefined') {
+    const localToken = localStorage.getItem('devtrack_access_token');
+    if (localToken) return localToken;
+  }
+  return null;
+}
+
+function attachUserStoreAuthListener(
   setSseStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void,
   setInfrastructureDegraded: (degraded: boolean) => void
 ) {
+  if (userStoreSubscribed || typeof window === 'undefined') return;
+  userStoreSubscribed = true;
+  previousAuth = useUserStore.getState().isAuthenticated;
+
+  useUserStore.subscribe((state) => {
+    const wasAuthed = previousAuth;
+    const isNowAuthed = state.isAuthenticated;
+    previousAuth = isNowAuthed;
+
+    if (isNowAuthed && !wasAuthed) {
+      if (activeCallbacks.size > 0 && globalEventSource === null) {
+        void connectGlobalSse(setSseStatus, setInfrastructureDegraded);
+      }
+    } else if (!isNowAuthed && wasAuthed) {
+      disconnectGlobalSse(setSseStatus);
+    }
+  });
+}
+
+export async function connectGlobalSse(
+  setSseStatus?: (status: 'connected' | 'reconnecting' | 'disconnected') => void,
+  setInfrastructureDegraded?: (degraded: boolean) => void
+) {
+  const updateStatus = setSseStatus || ((status) => useUIStore.getState().setSseStatus(status));
+  const updateDegraded = setInfrastructureDegraded || ((deg) => useUIStore.getState().setInfrastructureDegraded(deg));
+
+  attachUserStoreAuthListener(updateStatus, updateDegraded);
+
   if (globalEventSource !== null) return;
 
-  let token = null;
-  if (window.Clerk && window.Clerk.session) {
-    token = await window.Clerk.session.getToken();
-  }
+  const token = await resolveAuthToken();
+  const isAuthed = useUserStore.getState().isAuthenticated;
 
-  if (!token) {
+  if (!token && !isAuthed) {
     store.connectionStatus = 'disconnected';
     emitChange();
-    setSseStatus('disconnected');
+    updateStatus('disconnected');
     return;
   }
 
   store.connectionStatus = 'connecting';
   emitChange();
-  setSseStatus('reconnecting');
+  updateStatus('reconnecting');
 
   let ticket: string | null = null;
   try {
     const { default: axiosClient } = await import('../utils/axiosClient');
     const { data } = await axiosClient.post<{ data: { ticket: string } }>('/auth/sse-handshake');
     ticket = data.data.ticket;
-  } catch (err) {
+  } catch {
     console.warn('[SSE] Failed to obtain secure SSE handshake ticket, fallback to JWT.');
   }
 
   const urlParams = new URLSearchParams();
   if (ticket) {
     urlParams.set('ticket', ticket);
-  } else {
+  } else if (token) {
     urlParams.set('token', token);
   }
   
@@ -246,18 +301,18 @@ async function connectGlobalSse(
     store.consecutiveFailures = 0;
     store.connectionStatus = 'connected';
     emitChange();
-    setSseStatus('connected');
+    updateStatus('connected');
 
     if (globalDisconnectedAt !== null) {
       const disconnectDuration = now - globalDisconnectedAt;
       if (disconnectDuration > STALE_STATE_THRESHOLD_MS) {
         console.info('[SSE] Hardened re-establishment, triggering reactive query refresh.');
-        setSseStatus('reconnecting');
+        updateStatus('reconnecting');
         for (const cb of activeCallbacks) {
           cb.queryClient.refetchQueries();
         }
         setTimeout(() => {
-          setSseStatus('connected');
+          updateStatus('connected');
         }, 1000);
       }
       globalDisconnectedAt = null;
@@ -270,7 +325,7 @@ async function connectGlobalSse(
         console.warn('[SSE] Heartbeat dead, initiating reconnect.', { elapsed });
         es.close();
         globalEventSource = null;
-        scheduleReconnect(true, setSseStatus, setInfrastructureDegraded);
+        scheduleReconnect(true, updateStatus, updateDegraded);
       }
     }, HEARTBEAT_INTERVAL_MS);
   };
@@ -280,13 +335,25 @@ async function connectGlobalSse(
     if (ev.data?.startsWith(':')) return;
 
     let event: SseEvent;
+    let envelopeId: string | null = null;
+
     try {
       const parsedRaw = JSON.parse(ev.data);
+      envelopeId = ev.lastEventId || parsedRaw?.id || null;
+
+      // Deduplicate by envelope ID before parsing or dispatching mutations
+      if (envelopeId && seenEnvelopeIds.has(envelopeId)) {
+        return;
+      }
       
-      // Perform Zod validation on event envelop structure to prevent UI corruption
+      // Perform Zod validation on event envelope structure
       const parsedEnvelope = SseEventEnvelopeSchema.safeParse(parsedRaw);
       if (parsedEnvelope.success) {
         const data = parsedEnvelope.data;
+        envelopeId = data.id;
+        if (seenEnvelopeIds.has(envelopeId)) {
+          return;
+        }
         event = {
           type: data.type as SseEventType,
           timestamp: data.timestamp,
@@ -296,12 +363,15 @@ async function connectGlobalSse(
         };
         store.lastEventId = data.id;
       } else {
-        // Fallback fallback raw parsing for lightweight compatibility
         event = parsedRaw as SseEvent;
       }
     } catch (err) {
       console.error('[SSE] Structured payload corrupted, discarding parsing event', err);
       return;
+    }
+
+    if (envelopeId) {
+      rememberEnvelopeId(envelopeId);
     }
 
     const key = eventKey(event);
@@ -323,8 +393,8 @@ async function connectGlobalSse(
       try {
         cb.onEvent?.(event);
         invalidateOnSyncEvent(cb.queryClient, event);
-        for (const key of cb.extraInvalidateKeys) {
-          cb.queryClient.invalidateQueries({ queryKey: key });
+        for (const k of cb.extraInvalidateKeys) {
+          cb.queryClient.invalidateQueries({ queryKey: k });
         }
       } catch (e) {
         console.error('[SSE] Broadcast dispatch failure: ', e);
@@ -344,8 +414,8 @@ async function connectGlobalSse(
       console.error('[SSE] Max consecutive failures hit, degradation protocol activated');
       store.connectionStatus = 'disconnected';
       emitChange();
-      setSseStatus('disconnected');
-      setInfrastructureDegraded(true);
+      updateStatus('disconnected');
+      updateDegraded(true);
       es.close();
       globalEventSource = null;
       return;
@@ -353,11 +423,15 @@ async function connectGlobalSse(
 
     es.close();
     globalEventSource = null;
-    scheduleReconnect(false, setSseStatus, setInfrastructureDegraded);
+    scheduleReconnect(false, updateStatus, updateDegraded);
   };
 }
 
-function disconnectGlobalSse(setSseStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void) {
+export function disconnectGlobalSse(
+  setSseStatus?: (status: 'connected' | 'reconnecting' | 'disconnected') => void
+) {
+  const updateStatus = setSseStatus || ((status) => useUIStore.getState().setSseStatus(status));
+
   if (globalHeartbeatTimer !== null) {
     clearInterval(globalHeartbeatTimer);
     globalHeartbeatTimer = null;
@@ -377,7 +451,7 @@ function disconnectGlobalSse(setSseStatus: (status: 'connected' | 'reconnecting'
   store.lastEventId = null;
   globalDisconnectedAt = null;
   emitChange();
-  setSseStatus('disconnected');
+  updateStatus('disconnected');
 }
 
 function scheduleReconnect(
@@ -408,6 +482,7 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
   const { onEvent, extraInvalidateKeys = [], enabled = true } = options;
 
   const queryClient = useQueryClient();
+  const isAuthenticated = useUserStore((s) => s.isAuthenticated);
   const setSseStatus = (status: any) => useUIStore.getState().setSseStatus(status);
   const setInfrastructureDegraded = (degraded: boolean) => useUIStore.getState().setInfrastructureDegraded(degraded);
 
@@ -435,7 +510,7 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
     const cb = callbackRef.current;
     activeCallbacks.add(cb);
 
-    if (activeCallbacks.size === 1) {
+    if (activeCallbacks.size === 1 || (isAuthenticated && globalEventSource === null)) {
       connectGlobalSse(setSseStatus, setInfrastructureDegraded);
     }
 
@@ -445,7 +520,7 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
         disconnectGlobalSse(setSseStatus);
       }
     };
-  }, [enabled]);
+  }, [enabled, isAuthenticated]);
 
   const avgDelay = store.reconnectDelays.length > 0
     ? store.reconnectDelays.reduce((a, b) => a + b, 0) / store.reconnectDelays.length
@@ -466,6 +541,25 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
     },
     eventHistory: store.eventHistory,
   };
+}
+
+export function __resetSseForTests(): void {
+  disconnectGlobalSse();
+  seenEnvelopeIds.clear();
+  seenEventIds.clear();
+  userStoreSubscribed = false;
+  previousAuth = false;
+  store.connectionStatus = 'disconnected';
+  store.lastEvent = null;
+  store.reconnectAttempt = 0;
+  store.connectedAt = null;
+  store.lastEventAt = null;
+  store.totalEventsReceived = 0;
+  store.totalReconnects = 0;
+  store.consecutiveFailures = 0;
+  store.eventHistory = [];
+  store.lastEventId = null;
+  activeCallbacks.clear();
 }
 
 export const useXpUpdates = () => {
