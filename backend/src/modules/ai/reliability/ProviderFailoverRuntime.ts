@@ -1,14 +1,12 @@
 import { logger } from '../../../shared/logger.js';
-import { AIProviderAdapter } from '../provider/AIProviderAdapter.js';
 
 export class ProviderFailoverRuntime {
   async executeWithFailover(operation: () => Promise<any>): Promise<any> {
     try {
       return await operation();
     } catch (error) {
-      logger.warn('[ProviderFailover] Primary operation failed, failing over.', { error });
-      // In a real system, we might switch provider configuration in AIProviderAdapter here
-      AIProviderAdapter.setCurrentProvider('gemini'); // e.g. switch from openai to gemini
+      // Provider selection and circuit admission belong to the adapter used by the operation.
+      logger.warn('[ProviderFailover] Operation failed, retrying.', { error });
       try {
         return await operation();
       } catch (fallbackError) {

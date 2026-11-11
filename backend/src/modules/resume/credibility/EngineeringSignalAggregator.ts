@@ -75,6 +75,8 @@ Skills: ${JSON.stringify(semanticAnalysis?.extractedSkills || {}, null, 2)}
     try {
       const aiResponse = await AIProviderAdapter.generateResponse({
         prompt: userPrompt,
+        tenantScope: userId?.toString() ?? (sessionId ? `session:${sessionId}` : undefined),
+        cache: Boolean(userId || sessionId),
         systemPrompt,
         model: 'gemini-1.5-flash',
         providerPreference: 'gemini',

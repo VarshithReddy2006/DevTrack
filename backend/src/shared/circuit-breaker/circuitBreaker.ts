@@ -13,6 +13,8 @@ export interface CircuitBreakerOptions {
   failureThreshold: number;
   /** How long (ms) to stay open before trying a probe request */
   resetTimeoutMs: number;
+  /** Optional: maximum extra cooldown to spread recovery across processes */
+  resetJitterMs?: number;
   /** Optional: number of successes in half-open before closing again */
   successThreshold?: number;
   /** Optional: called when state changes */
@@ -36,6 +38,9 @@ export class CircuitBreaker {
   private failureCount = 0;
   private successCount = 0;
   private lastFailureTime = 0;
+  private openUntil = 0;
+  private generation = 0;
+  private probeInFlight = false;
   private readonly options: Required<CircuitBreakerOptions>;
 
   // Metrics
@@ -47,6 +52,7 @@ export class CircuitBreaker {
   constructor(opts: CircuitBreakerOptions) {
     this.options = {
       successThreshold: 2,
+      resetJitterMs: 0,
       onStateChange: () => {},
       ...opts,
     };
@@ -54,38 +60,39 @@ export class CircuitBreaker {
 
   // ─── Execute a function through the circuit breaker ────────────────────
 
-  async execute<T>(fn: () => Promise<T>, fallback?: () => T): Promise<T> {
+  async execute<T>(fn: (state: CircuitState) => Promise<T>, fallback?: () => T): Promise<T> {
     this.totalCalls++;
 
-    if (this.state === 'open') {
-      // Check if reset timeout has elapsed — transition to half-open
-      if (Date.now() - this.lastFailureTime >= this.options.resetTimeoutMs) {
-        this.transitionTo('half_open');
-      } else {
-        this.totalRejected++;
-        if (fallback) return fallback();
-        throw new CircuitOpenError(
-          this.options.name,
-          this.options.resetTimeoutMs - (Date.now() - this.lastFailureTime)
-        );
-      }
+    const retryAfterMs = Math.max(0, this.openUntil - Date.now());
+    if (this.state === 'open' && retryAfterMs === 0) {
+      this.transitionTo('half_open');
+    }
+    if (this.state === 'open' || this.probeInFlight) {
+      this.totalRejected++;
+      if (fallback) return fallback();
+      throw new CircuitOpenError(this.options.name, retryAfterMs);
     }
 
+    const generation = this.generation;
+    const state = this.state;
+    if (state === 'half_open') this.probeInFlight = true;
     try {
-      const result = await fn();
-      this.onSuccess();
+      const result = await fn(state);
+      this.totalSuccesses++;
+      if (generation === this.generation) this.onSuccess();
       return result;
     } catch (err) {
-      this.onFailure();
+      this.totalFailures++;
+      if (generation === this.generation) this.onFailure();
       throw err;
+    } finally {
+      if (generation === this.generation && state === 'half_open') this.probeInFlight = false;
     }
   }
 
   // ─── State transitions ─────────────────────────────────────────────────
 
   private onSuccess(): void {
-    this.totalSuccesses++;
-
     if (this.state === 'half_open') {
       this.successCount++;
       if (this.successCount >= this.options.successThreshold) {
@@ -100,7 +107,6 @@ export class CircuitBreaker {
   }
 
   private onFailure(): void {
-    this.totalFailures++;
     this.failureCount++;
     this.lastFailureTime = Date.now();
 
@@ -120,7 +126,13 @@ export class CircuitBreaker {
     if (oldState === newState) return;
 
     this.state = newState;
-    this.failureCount = 0;
+    this.generation++;
+    this.probeInFlight = false;
+    if (newState === 'open') {
+      const jitter = this.options.resetJitterMs ? Math.floor(Math.random() * this.options.resetJitterMs) : 0;
+      this.openUntil = Date.now() + this.options.resetTimeoutMs + jitter;
+    }
+    if (newState === 'closed') this.failureCount = 0;
     this.successCount = 0;
 
     logger.warn(`[circuit-breaker] ${this.options.name}: ${oldState} → ${newState}`, {
@@ -158,6 +170,7 @@ export class CircuitBreaker {
   /** Force reset — for operational recovery */
   reset(): void {
     this.transitionTo('closed');
+    this.generation++;
     this.failureCount = 0;
     this.successCount = 0;
   }

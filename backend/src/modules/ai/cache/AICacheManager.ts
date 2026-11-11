@@ -1,4 +1,17 @@
+import { createHash } from 'node:crypto';
 import { logger } from '../../../shared/logger.js';
+
+export interface PromptCacheKey {
+  provider: string;
+  model: string;
+  userPrompt: string;
+  systemPrompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+  responseFormat?: string;
+  responseSchemaVersion?: string;
+  tenantScope?: string;
+}
 
 export interface CacheEntry {
   key: string;
@@ -87,8 +100,22 @@ class AICacheManagerClass {
    * Generate cache key from prompt and context
    */
   generateKey(prompt: string, contextVersion: string, model: string, provider: string): string {
-    const keyData = `${prompt}-${contextVersion}-${model}-${provider}`;
-    return Buffer.from(keyData).toString('base64');
+    return this.generatePromptKey({ userPrompt: prompt, responseSchemaVersion: contextVersion, model, provider });
+  }
+
+  generatePromptKey(input: PromptCacheKey): string {
+    const keyData = JSON.stringify({
+      provider: input.provider,
+      model: input.model,
+      systemPrompt: input.systemPrompt ?? '',
+      userPrompt: input.userPrompt,
+      temperature: input.temperature ?? null,
+      maxTokens: input.maxTokens ?? null,
+      responseFormat: input.responseFormat ?? null,
+      responseSchemaVersion: input.responseSchemaVersion ?? null,
+      tenantScope: input.tenantScope ?? null,
+    });
+    return createHash('sha256').update(keyData).digest('hex');
   }
 
   /**

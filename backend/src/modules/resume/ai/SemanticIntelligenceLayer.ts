@@ -32,7 +32,9 @@ Return your response strictly as JSON with this schema:
       const response = await AIProviderAdapter.generateResponse({
         prompt,
         systemPrompt: 'You are a precise technical matcher. Always output valid raw JSON matching the requested schema. Do not output markdown.',
+        providerPreference: 'gemini',
         model: 'gemini-1.5-flash',
+        cache: false,
         temperature: 0.1,
       });
 
@@ -66,7 +68,9 @@ Return your response strictly as JSON with this schema:
       const response = await AIProviderAdapter.generateResponse({
         prompt,
         systemPrompt: 'You are a precise skill extractor. Always output valid raw JSON matching the requested schema. Do not output markdown.',
+        providerPreference: 'gemini',
         model: 'gemini-1.5-flash',
+        cache: false,
         temperature: 0.1,
       });
 
@@ -106,7 +110,9 @@ Return your response strictly as JSON with this schema:
       const response = await AIProviderAdapter.generateResponse({
         prompt,
         systemPrompt: 'You are an expert resume reviewer. Always output valid raw JSON matching the requested schema. Do not output markdown.',
+        providerPreference: 'gemini',
         model: 'gemini-1.5-flash',
+        cache: false,
         temperature: 0.2,
       });
 
