@@ -1,4 +1,5 @@
 // src/modules/resume-intelligence/failure/FailureHandler.ts
+import { artifactStorage } from '../upload/artifact-storage.js';
 import type { Types } from 'mongoose';
 import { ResumeSession, type ProcessingStage } from '../../../db/models/resumeSession.model.js';
 import { logger } from '../../../shared/logger.js';
@@ -266,15 +267,8 @@ export class FailureHandler {
    */
   private async moveToFailed(filePath: string, reason: string): Promise<void> {
     try {
-      const fs = await import('fs/promises');
-      const path = await import('path');
-
-      const filename = path.basename(filePath);
-      const failedDir = path.join(process.cwd(), 'uploads', 'failed');
-      const destination = path.join(failedDir, filename);
-
-      await fs.rename(filePath, destination);
-      logger.error(`[FailureHandler] Moved file to failed: ${filename} - ${reason}`);
+      await artifactStorage.move(filePath, 'failed');
+      logger.error(`[FailureHandler] Quarantined failed upload: ${reason}`);
     } catch (error) {
       logger.error('[FailureHandler] Error moving file to failed directory:', error);
     }

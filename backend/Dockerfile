@@ -42,7 +42,7 @@ RUN npm install --omit=dev && npm cache clean --force
 COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 
 # Change ownership of the app directory to the non-root user
-RUN chown -R nodejs:nodejs /app
+RUN mkdir -m 700 /app/uploads && chown -R nodejs:nodejs /app
 
 # Switch to the non-root user
 USER nodejs

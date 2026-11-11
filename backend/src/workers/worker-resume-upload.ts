@@ -1,10 +1,9 @@
 // src/workers/worker-resume-upload.ts
 import { Job, Worker } from 'bullmq';
 import { WorkerFactory } from '../infrastructure/queues/WorkerFactory.js';
-import { getRedisClient } from '../shared/redis/index.js';
 import { logger } from '../shared/logger.js';
 import { QueueNames, type ResumeUploadJobData } from '../shared/jobs/types.js';
-import { getResumeUploadQueue } from '../shared/jobs/queueFactory.js';
+import { artifactStorage } from '../modules/resume/upload/artifact-storage.js';
 import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
 import { ResumeSession } from '../db/models/resumeSession.model.js';
 
@@ -71,8 +70,14 @@ export async function startResumeUploadWorker(): Promise<Worker> {
           });
         }
 
-        // Start processing orchestration
-        await orchestrator.startProcessing(sessionId);
+        // A redelivery after completion can retry cleanup without re-parsing.
+        if (session.currentStage !== 'COMPLETED') {
+          await orchestrator.startProcessing(sessionId);
+          session = await ResumeSession.findOne({ sessionId });
+        }
+        if (session?.currentStage === 'COMPLETED') {
+          await artifactStorage.remove(session.uploadMetadata.uploadPath);
+        }
 
         logger.info(`[ResumeUploadWorker] Upload job completed: ${sessionId}`);
       } catch (error) {

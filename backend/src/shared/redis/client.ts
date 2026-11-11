@@ -42,6 +42,20 @@ export function createRedisConnection(overrides: Record<string, unknown> = {}): 
   });
 }
 
+export async function checkRedisEvictionPolicy(redis: Pick<Redis, 'config'>): Promise<void> {
+  try {
+    const config = await redis.config('GET', 'maxmemory-policy');
+    const policy = Array.isArray(config) && config[0] === 'maxmemory-policy' ? config[1] : undefined;
+    if (typeof policy !== 'string') {
+      logger.warn('[redis] Could not verify maxmemory-policy; configure noeviction for BullMQ');
+    } else if (policy !== 'noeviction') {
+      logger.warn('[redis] BullMQ requires maxmemory-policy=noeviction', { policy });
+    }
+  } catch {
+    logger.warn('[redis] CONFIG GET unavailable; verify that maxmemory-policy is noeviction for BullMQ');
+  }
+}
+
 export function getRedisClient(): Redis {
   // If Redis is not configured at all, return a mock client that doesn't connect
   if (!isRedisConfigured()) {
@@ -115,6 +129,11 @@ export function getRedisClient(): Redis {
     });
     _connecting = false;
   });
+
+  const client = _client;
+  if (env.NODE_ENV === 'production') {
+    client.once('ready', () => void checkRedisEvictionPolicy(client));
+  }
 
   _client.on('ready', () => {
     logger.info('[redis] Ready', {
