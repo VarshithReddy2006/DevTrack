@@ -3,16 +3,14 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { randomBytes } from 'crypto';
+import { artifactStorage } from './artifact-storage.js';
 import { logger } from '../../../shared/logger.js';
 
 // Configure storage
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(process.cwd(), 'uploads', 'raw');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
+  destination: (_req, _file, cb) => {
+    const staging = path.join(artifactStorage.root, 'tmp');
+    fs.mkdir(staging, { recursive: true, mode: 0o700 }, error => cb(error, staging));
   },
   filename: (req, file, cb) => {
     // Generate unique filename

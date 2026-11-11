@@ -47,6 +47,9 @@ services:
       - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_USER:-devtrack}:${MONGO_PASS:-devtrack}@mongo:27017/devtrack?authSource=admin}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - resume_artifacts:/app/uploads
     networks:
       devtrack:
         aliases:
@@ -146,6 +149,9 @@ services:
       - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_USER:-devtrack}:${MONGO_PASS:-devtrack}@mongo:27017/devtrack?authSource=admin}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - resume_artifacts:/app/uploads
     deploy:
       replicas: 1
       resources:
@@ -196,7 +202,7 @@ services:
       redis-server
         --appendonly yes
         --maxmemory 256mb
-        --maxmemory-policy allkeys-lru
+        --maxmemory-policy noeviction
         --save 60 1000
     volumes:
       - redis_data:/data
@@ -237,6 +243,7 @@ services:
       - devtrack
 
 volumes:
+  resume_artifacts:
   redis_data:
   mongo_data:
 
