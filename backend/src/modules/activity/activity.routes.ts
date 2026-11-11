@@ -28,6 +28,8 @@ const activityIdParamsSchema = z.object({ id: objectIdSchema });
 router.get('/', authMiddleware, asyncHandler(controller.getAll));
 
 // Focus Sessions
+router.get('/focus/history', authMiddleware, asyncHandler(controller.getFocusHistory));
+router.get('/focus/summary', authMiddleware, asyncHandler(controller.getFocusSummary));
 router.post('/focus/start', authMiddleware, validateBody(focusSessionSchema), asyncHandler(controller.startFocusSession));
 router.post('/focus/heartbeat', authMiddleware, asyncHandler(controller.heartbeatFocusSession));
 router.post('/focus/pause', authMiddleware, asyncHandler(controller.pauseFocusSession));

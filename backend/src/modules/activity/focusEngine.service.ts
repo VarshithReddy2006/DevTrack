@@ -20,6 +20,42 @@ export interface FocusTiming {
   lastResumedAt: Date | null;
 }
 
+export interface FocusHistoryOptions {
+  status?: 'running' | 'paused' | 'completed' | 'abandoned' | 'all';
+  mode?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface FocusHistoryItem {
+  id: string;
+  mode: string;
+  status: string;
+  plannedDurationMinutes: number;
+  actualDurationMinutes: number;
+  activeDurationMs: number;
+  focusQualityScore: number | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  heartbeatCount: number;
+}
+
+export interface FocusHistoryResult {
+  sessions: FocusHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface FocusSummaryResult {
+  totalSessions: number;
+  completedSessions: number;
+  abandonedSessions: number;
+  totalDurationMinutes: number;
+  averageQualityScore: number;
+  modeBreakdown: Record<string, { sessions: number; totalMinutes: number }>;
+}
+
 export class FocusEngine {
   /**
    * Starts a new focus session and persists it.
@@ -146,6 +182,114 @@ export class FocusEngine {
       .sort({ startedAt: -1 })
       .limit(limit)
       .lean();
+  }
+
+  /**
+   * Gets paginated focus session history with optional status and mode filters.
+   */
+  async getUserFocusHistory(
+    userId: string,
+    options: FocusHistoryOptions = {}
+  ): Promise<FocusHistoryResult> {
+    const userObjId = new Types.ObjectId(userId);
+    const limit = Math.min(100, Math.max(1, options.limit ?? 20));
+    const offset = Math.max(0, options.offset ?? 0);
+
+    const query: Record<string, unknown> = {
+      userId: userObjId,
+    };
+
+    if (options.status && options.status !== 'all') {
+      query.status = options.status;
+    }
+
+    if (options.mode) {
+      query.mode = options.mode;
+    }
+
+    const [total, sessions] = await Promise.all([
+      FocusSession.countDocuments(query),
+      FocusSession.find(query)
+        .sort({ startedAt: -1, _id: -1 })
+        .skip(offset)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    return {
+      sessions: sessions.map((s) => ({
+        id: s._id.toString(),
+        mode: s.mode,
+        status: s.status,
+        plannedDurationMinutes: s.plannedDurationMinutes,
+        actualDurationMinutes: s.actualDurationMinutes ?? 0,
+        activeDurationMs: s.activeDurationMs ?? 0,
+        focusQualityScore: s.focusQualityScore ?? null,
+        startedAt: s.startedAt,
+        completedAt: s.completedAt ?? null,
+        heartbeatCount: s.heartbeatCount ?? 0,
+      })),
+      total,
+      limit,
+      offset,
+    };
+  }
+
+  /**
+   * Calculates aggregated focus session statistics for the user over the given lookback days.
+   */
+  async getUserFocusSummary(userId: string, days = 30): Promise<FocusSummaryResult> {
+    const userObjId = new Types.ObjectId(userId);
+    const query: Record<string, unknown> = {
+      userId: userObjId,
+    };
+
+    if (days > 0) {
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      query.startedAt = { $gte: since };
+    }
+
+    const sessions = await FocusSession.find(query).lean();
+
+    let completedSessions = 0;
+    let abandonedSessions = 0;
+    let totalDurationMinutes = 0;
+    let qualityScoreSum = 0;
+    let qualityScoreCount = 0;
+    const modeBreakdown: Record<string, { sessions: number; totalMinutes: number }> = {};
+
+    for (const session of sessions) {
+      const modeKey = session.mode || 'default';
+      if (!modeBreakdown[modeKey]) {
+        modeBreakdown[modeKey] = { sessions: 0, totalMinutes: 0 };
+      }
+      modeBreakdown[modeKey].sessions += 1;
+
+      if (session.status === 'completed') {
+        completedSessions += 1;
+        const duration = session.actualDurationMinutes ?? Math.round((session.activeDurationMs ?? 0) / 60000);
+        totalDurationMinutes += duration;
+        modeBreakdown[modeKey].totalMinutes += duration;
+
+        if (typeof session.focusQualityScore === 'number') {
+          qualityScoreSum += session.focusQualityScore;
+          qualityScoreCount += 1;
+        }
+      } else if (session.status === 'abandoned') {
+        abandonedSessions += 1;
+      }
+    }
+
+    const averageQualityScore = qualityScoreCount > 0 ? Math.round(qualityScoreSum / qualityScoreCount) : 0;
+
+    return {
+      totalSessions: sessions.length,
+      completedSessions,
+      abandonedSessions,
+      totalDurationMinutes,
+      averageQualityScore,
+      modeBreakdown,
+    };
   }
 }
 

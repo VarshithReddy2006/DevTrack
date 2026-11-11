@@ -2,6 +2,7 @@
 import type { Response } from 'express';
 import type { AuthenticatedRequest } from '../../middleware/auth.js';
 import * as service from './activity.service.js';
+import { focusEngine, type FocusHistoryOptions } from './focusEngine.service.js';
 import { successResponse, commonErrors, deleteResponse, mutationResponse } from '../../shared/response.js';
 
 /**
@@ -71,6 +72,23 @@ export async function deleteActivity(req: AuthenticatedRequest, res: Response): 
 }
 
 // ─── Focus Session Endpoints ────────────────────────────────────────────────
+
+export async function getFocusHistory(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const options: FocusHistoryOptions = {
+    status: req.query.status as FocusHistoryOptions['status'],
+    mode: req.query.mode as string,
+    limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 20,
+    offset: req.query.offset ? parseInt(req.query.offset as string, 10) : 0,
+  };
+  const data = await focusEngine.getUserFocusHistory(req.user!.id, options);
+  successResponse(res, data, 'Focus session history retrieved successfully');
+}
+
+export async function getFocusSummary(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const days = req.query.days ? parseInt(req.query.days as string, 10) : 30;
+  const data = await focusEngine.getUserFocusSummary(req.user!.id, days);
+  successResponse(res, data, 'Focus session summary retrieved successfully');
+}
 
 export async function startFocusSession(req: AuthenticatedRequest, res: Response): Promise<void> {
   const { duration, mode } = req.body;
