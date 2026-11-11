@@ -2,7 +2,7 @@
 import { Job, Worker } from 'bullmq';
 import { WorkerFactory } from '../infrastructure/queues/WorkerFactory.js';
 import { logger } from '../shared/logger.js';
-import { QueueNames, type ResumeUploadJobData } from '../shared/jobs/types.js';
+import { QueueNames, type ResumeCheckpointJobData, type ResumeUploadJobData } from '../shared/jobs/types.js';
 import { artifactStorage } from '../modules/resume/upload/artifact-storage.js';
 import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
 import { ResumeSession } from '../db/models/resumeSession.model.js';
@@ -18,10 +18,25 @@ export async function startResumeUploadWorker(): Promise<Worker> {
 
   logger.info('[ResumeUploadWorker] Starting resume upload worker');
 
-  worker = WorkerFactory.createWorker<ResumeUploadJobData>(
+  worker = WorkerFactory.createWorker<ResumeUploadJobData | ResumeCheckpointJobData>(
     QueueNames.RESUME_UPLOAD,
-    async (job: Job<ResumeUploadJobData>) => {
-      const { sessionId, userId, filePath, originalFilename } = job.data;
+    async (job: Job<ResumeUploadJobData | ResumeCheckpointJobData>) => {
+      const { sessionId, userId } = job.data;
+
+      if ('recoveryRetryCount' in job.data) {
+        let session = await ResumeSession.findOne({ sessionId, userId });
+        if (session?.currentStage === 'FAILED' && session.failureState?.failed && session.checkpointState?.stage
+          && (session.failureState.retryCount ?? 0) === job.data.recoveryRetryCount) {
+          await orchestrator.resumeFromCheckpoint(sessionId);
+          session = await ResumeSession.findOne({ sessionId });
+          if (session?.currentStage === 'COMPLETED' && session.uploadMetadata?.uploadPath) {
+            await artifactStorage.remove(session.uploadMetadata.uploadPath);
+          }
+        }
+        return;
+      }
+
+      const { filePath, originalFilename } = job.data;
 
       logger.info(`[ResumeUploadWorker] Processing upload job: ${sessionId}`);
 

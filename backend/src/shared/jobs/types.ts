@@ -51,6 +51,12 @@ export interface ResumeUploadJobData {
   requestId?: string;
 }
 
+export interface ResumeCheckpointJobData {
+  sessionId: string;
+  userId: string;
+  recoveryRetryCount: number;
+}
+
 export interface ResumeATSJobData {
   sessionId: string;
   userId?: string;
@@ -97,7 +103,7 @@ export interface DatasetValidationJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData;
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',

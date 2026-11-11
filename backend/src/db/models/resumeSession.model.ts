@@ -61,6 +61,12 @@ export interface IResumeSession extends Document {
     status: 'success' | 'failed' | 'degraded';
     error?: string;
   }[];
+
+  checkpointState: {
+    stage: ProcessingStage;
+    savedAt: Date;
+    snapshot: Record<string, unknown>;
+  };
   
   // ATS state
   atsState: {
@@ -240,6 +246,12 @@ const resumeSessionSchema = new Schema<IResumeSession>(
       status: { type: String, required: true, enum: ['success', 'failed', 'degraded'] },
       error: { type: String },
     }],
+
+    checkpointState: {
+      stage: { type: String, enum: ['UPLOADED', 'VALIDATING', 'PARSING', 'EXTRACTING', 'ATS_ANALYZING', 'EMBEDDING', 'SEMANTIC_ANALYZING', 'RECOMMENDING', 'REPLAY_GENERATING', 'REPORT_GENERATING', 'COMPLETED', 'FAILED', 'DEGRADED'] },
+      savedAt: { type: Date },
+      snapshot: { type: Schema.Types.Mixed, default: {} },
+    },
     
     atsState: {
       analyzed: { type: Boolean, default: false },
