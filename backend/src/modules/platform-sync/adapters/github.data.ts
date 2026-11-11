@@ -47,6 +47,7 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
 
   // Lightweight enrichment: fetch repos to get totalStars and topLanguages
   let totalStars = 0;
+  const repositoryUrls: string[] = [];
   const languageCounts: Record<string, number> = {};
 
   try {
@@ -59,6 +60,7 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
       const repos = await reposRes.json() as Array<Record<string, unknown>>;
 
       for (const repo of repos) {
+        if (repo.private === false && typeof repo.html_url === 'string') repositoryUrls.push(repo.html_url);
         const stars = (repo.stargazers_count as number) ?? 0;
         totalStars += stars;
 
@@ -105,6 +107,7 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
       following,
       total_stars: totalStars,
       top_languages: topLanguages,
+      repository_urls: repositoryUrls,
       name: data.name ?? null,
       bio: data.bio ?? null,
       avatar_url: data.avatar_url ?? null,

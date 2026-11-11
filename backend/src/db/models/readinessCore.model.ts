@@ -25,6 +25,8 @@ export interface IReadinessCore extends Document {
   // Degraded Mode Flags
   isDegraded: boolean;
   staleProviders: string[];
+  missingPillars?: string[];
+  completeness?: number;
 
   // Future Architecture
   verifiedPrivateContributionsEnabled: boolean;
@@ -63,6 +65,8 @@ const ReadinessCoreSchema = new Schema<IReadinessCore>(
 
     isDegraded: { type: Boolean, default: false },
     staleProviders: [{ type: String }],
+    missingPillars: [{ type: String }],
+    completeness: { type: Number, min: 0, max: 100 },
     
     verifiedPrivateContributionsEnabled: { type: Boolean, default: false },
   },

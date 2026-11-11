@@ -18,7 +18,7 @@ export const SkillIntelligenceEngine = {
       const { userId } = input;
       
       // Fetch verified projects for dependency extraction
-      const verifiedProjects = await VerifiedProject.find({ userId });
+      const verifiedProjects = await VerifiedProject.find({ userId, 'provenance.source': { $exists: false } });
       
       // Extract dependencies from all projects
       const dependencyMap = this.extractDependencies(verifiedProjects);

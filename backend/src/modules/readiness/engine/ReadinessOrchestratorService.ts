@@ -14,21 +14,42 @@ import { getResourceForSkill } from '../resources/learningResources.js';
 import { NextBestActionEngine } from './NextBestActionEngine.js';
 import { AdaptiveReadinessFeed } from './AdaptiveReadinessFeed.js';
 import { RoleAlignmentEngine } from './RoleAlignmentEngine.js';
+import { READINESS_FRESHNESS_MS, TrustAwareReadinessScoringEngine } from '../scoring/TrustAwareReadinessScoringEngine.js';
 import { ReadinessMomentumEngine } from './ReadinessMomentumEngine.js';
 
 export const ReadinessOrchestratorService = {
   async computeDynamicSnapshot(userId: string) {
     try {
-      let [core, dsa, skills, projects, roadmap, benchmarks] = await Promise.all([
+      const unavailablePillars: string[] = [];
+      const readPillar = async <T>(name: string, query: PromiseLike<T>): Promise<T | null> => {
+        try {
+          return await query;
+        } catch (error) {
+          unavailablePillars.push(name);
+          logger.warn('[ReadinessOrchestratorService] Readiness input unavailable', { userId, name, error });
+          return null;
+        }
+      };
+      const [core, dsa, skills, projects, roadmap, benchmarks] = await Promise.all([
         ReadinessCore.findOne({ userId }).lean(),
-        ReadinessDsa.findOne({ userId }).lean(),
-        ReadinessSkills.findOne({ userId }).lean(),
-        ReadinessProjects.findOne({ userId }).lean(),
-        ReadinessRoadmap.findOne({ userId }).lean(),
-        ReadinessBenchmarks.findOne({ userId }).lean()
+        readPillar('DSA', ReadinessDsa.findOne({ userId }).lean()),
+        readPillar('Skills', ReadinessSkills.findOne({ userId }).lean()),
+        readPillar('Projects', ReadinessProjects.findOne({ userId }).lean()),
+        readPillar('Roadmap', ReadinessRoadmap.findOne({ userId }).lean()),
+        readPillar('Benchmarks', ReadinessBenchmarks.findOne({ userId }).lean()),
       ]);
 
-
+      const freshnessThreshold = Date.now() - READINESS_FRESHNESS_MS;
+      const fragmentsChanged = core && [dsa, skills, projects, roadmap, benchmarks].some(fragment => {
+        if (!fragment?.computedAt) return false;
+        const computedAt = fragment.computedAt.getTime();
+        const coreComputedAt = core.computedAt.getTime();
+        return computedAt > coreComputedAt
+          || (computedAt < freshnessThreshold && computedAt >= coreComputedAt - READINESS_FRESHNESS_MS);
+      });
+      const score = core?.completeness === undefined || unavailablePillars.length || fragmentsChanged
+        ? await TrustAwareReadinessScoringEngine.calculateReadinessScore({ userId, unavailablePillars, persist: false })
+        : null;
 
       // 1. Compute Momentum
       const momentumTrend = await ReadinessMomentumEngine.computeMomentum(userId, dsa, projects);
@@ -40,7 +61,8 @@ export const ReadinessOrchestratorService = {
       const nextBestActions = await NextBestActionEngine.computeActions(userId, dsa, projects);
 
       // 4. Generate Adaptive Feed
-      const feedCoreData = { ...core, momentumTrend };
+      const overallScore = score?.overallScore ?? core?.overallScore ?? 0;
+      const feedCoreData = { ...core, momentumTrend, overallScore };
       const intelligenceFeed = await AdaptiveReadinessFeed.generateFeed(userId, dsa, projects, feedCoreData);
 
       // 5. Determine Progression State (simplified logic)
@@ -57,8 +79,12 @@ export const ReadinessOrchestratorService = {
         progressionState,
         momentumTrend,
         roleAlignment,
-        confidence: core?.confidence || 0,
-        overallScore: core?.overallScore || 0
+        confidence: score?.confidenceLevel ?? core?.confidence ?? 0,
+        overallScore,
+        completeness: score?.completeness ?? core?.completeness,
+        missingPillars: score?.missingPillars ?? core?.missingPillars ?? [],
+        staleProviders: score?.staleProviders ?? core?.staleProviders ?? [],
+        isDegraded: score?.isDegraded ?? core?.isDegraded ?? false,
       };
 
       // Ensure we have an adaptive roadmap payload structure

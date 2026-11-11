@@ -1,4 +1,5 @@
 // src/modules/platform-sync/sync.service.ts
+import { VerifiedProjectIngestionService } from '../readiness/services/VerifiedProjectIngestionService.js';
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { ConnectedPlatform, PlatformStats, SyncJob } from '../../db/models/index.js';
@@ -92,6 +93,7 @@ export async function syncPlatform(userId: string, platformName: string): Promis
 
   try {
     const result = await syncPlatformWithLock(userId, platformName);
+    if (result.success && platformName === 'github') await VerifiedProjectIngestionService.queueRefresh(userId);
     if (result.success && ['leetcode', 'codeforces', 'codechef'].includes(platformName)) {
       try {
         await getReadinessDsaQueue().add('post-sync-readiness', { userId, platform: platformName });

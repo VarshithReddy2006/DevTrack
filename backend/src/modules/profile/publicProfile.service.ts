@@ -42,7 +42,7 @@ export class PublicProfileService {
       await Promise.all([
         VerificationEngine.evaluateTrustScore(userId),
         PlatformStats.find({ userId, platformName: { $in: ['github', 'leetcode', 'codeforces', 'codechef'] } }).lean(),
-        VerifiedProject.find({ userId, 'verification.status': 'verified' }),
+        VerifiedProject.find({ userId, 'verification.status': 'verified', 'provenance.source': { $exists: false } }),
         UserXp.findOne({ userId }).lean(),
         DsaTopicProgress.find({ userId, solvedCount: { $gt: 0 } }).distinct('topicName'),
         DsaContest.aggregate<{ count: number; bestRating: number | null }>([

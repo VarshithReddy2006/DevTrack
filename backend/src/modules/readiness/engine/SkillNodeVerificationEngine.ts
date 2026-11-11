@@ -26,7 +26,7 @@ export const SkillNodeVerificationEngine = {
       const { userId, targetRole } = input;
       
       // Fetch verified projects for evidence extraction
-      const verifiedProjects = await VerifiedProject.find({ userId });
+      const verifiedProjects = await VerifiedProject.find({ userId, 'provenance.source': { $exists: false } });
       const hasProjects = verifiedProjects.length > 0;
       
       // Extract system design signals from projects

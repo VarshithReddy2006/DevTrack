@@ -19,6 +19,8 @@ import type {
 import { parsePaginationParams, createPagination, getSkipCount, buildSortOptions } from '../../shared/pagination.js';
 import { parseGitHubRepositoryUrl, fetchGitHubProjectMetrics } from './project-github-sync.js';
 
+import { VerifiedProjectIngestionService } from '../readiness/services/VerifiedProjectIngestionService.js';
+
 const ALLOWED_SORT_FIELDS = ['name', 'createdAt', 'updatedAt', 'stars', 'lastCommitAt'];
 
 export async function getProjects(userId: string, filters: ApiProjectFilters): Promise<ApiProjectListResponse> {
@@ -78,6 +80,9 @@ export async function createProject(userId: string, payload: ApiProjectCreatePay
     openIssues: 0,
   });
 
+  if (parseGitHubRepositoryUrl(project.repoUrl)) {
+    await VerifiedProjectIngestionService.ingestAfterChange(userId, project._id);
+  }
   await cacheManager.invalidateDashboard(userId);
 
   // Activity logging
@@ -112,6 +117,9 @@ export async function updateProject(
   ).lean();
 
   if (project) {
+    if (payload.repoUrl !== undefined) {
+      await VerifiedProjectIngestionService.ingestAfterChange(userId, project._id);
+    }
     await cacheManager.invalidateDashboard(userId);
     // Build a human-readable description of what changed
     const changes: string[] = [];
@@ -158,6 +166,7 @@ export async function deleteProject(userId: string, projectId: string): Promise<
   });
 
   if (result.deletedCount > 0) {
+    if (parseGitHubRepositoryUrl(project.repoUrl)) await VerifiedProjectIngestionService.queueRefresh(userId);
     await cacheManager.invalidateDashboard(userId);
     createActivity(userId, {
       type: 'project_deleted',
@@ -444,7 +453,10 @@ export async function syncProject(userId: string, projectId: string): Promise<Pr
     { $set: metrics },
     { new: true }
   );
-  if (updated) await cacheManager.invalidateDashboard(userId);
+  if (updated) {
+    await VerifiedProjectIngestionService.ingestAfterChange(userId, updated._id);
+    await cacheManager.invalidateDashboard(userId);
+  }
   return updated ? 'synced' : 'repo_changed';
 }
 

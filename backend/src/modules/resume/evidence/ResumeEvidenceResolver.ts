@@ -28,7 +28,7 @@ export class ResumeEvidenceResolver {
     const results = new Map<string, IEvidenceSource[]>();
     
     // Fetch user's verified projects and normal projects
-    const verifiedProjects = await VerifiedProject.find({ userId });
+    const verifiedProjects = await VerifiedProject.find({ userId, 'provenance.source': { $exists: false } });
     const projects = await Project.find({ userId });
 
     for (const claim of claims) {
