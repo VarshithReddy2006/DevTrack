@@ -75,6 +75,7 @@ ${text}`;
         // Generate response using existing AI Provider Adapter, prioritizing Gemini 1.5 Flash
         const response = await AIProviderAdapter.generateResponse({
           prompt: userPrompt,
+          tenantScope: session.userId?.toString() ?? `session:${sessionId}`,
           systemPrompt,
           model: 'gemini-1.5-flash',
           providerPreference: 'gemini',

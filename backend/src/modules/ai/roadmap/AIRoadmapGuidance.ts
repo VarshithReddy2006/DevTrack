@@ -47,6 +47,7 @@ class AIRoadmapGuidanceClass {
       // Generate AI response
       const aiRequest: AIRequest = {
         prompt: userPrompt,
+        tenantScope: userId,
         systemPrompt,
         temperature: 0.6,
         maxTokens: 400,

@@ -97,6 +97,7 @@ ${JSON.stringify(contextPayload, null, 2)}`;
         // 2. Generate Recommendations via Gemini
         const aiResponse = await AIProviderAdapter.generateResponse({
           prompt: userPrompt,
+          tenantScope: session.userId?.toString() ?? `session:${sessionId}`,
           systemPrompt,
           model: 'gemini-1.5-flash',
           providerPreference: 'gemini',
