@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { DsaProblem, DsaSubmission, DsaContest, DsaTopicProgress } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 import { createActivity, incrementDailyActivity } from '../activity/activity.service.js';
+import { dsaProblemIdentity } from '../dsa/dsa-problem-identity.js';
 import type { PlatformSubmission, PlatformContest, FetchedPlatformStats } from './adapters/types.js';
 
 export async function persistSubmissions(userId: string, submissions: PlatformSubmission[]): Promise<number> {
@@ -16,6 +17,10 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
     try {
       problem = await DsaProblem.findOneAndUpdate(problemKey, { $setOnInsert: {
         ...problemKey, title: sub.title, difficulty: sub.difficulty === 'unknown' ? 'medium' : sub.difficulty,
+        problemKey: sub.platform === 'github' ? undefined : dsaProblemIdentity({
+          platform: sub.platform, externalId: sub.problemExternalId, url: sub.problemUrl,
+        }).key,
+        difficultyKnown: sub.difficulty !== 'unknown',
         url: sub.problemUrl ?? '', tags: [], category: sub.category ?? 'General',
         status: sub.status === 'accepted' ? 'solved' : 'attempted', isFavorite: false, submissionCount: 0,
       } }, { upsert: true, new: true });
@@ -38,6 +43,7 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
     await DsaProblem.updateOne({ _id: problem._id }, [{ $set: {
       submissionCount: { $add: [{ $ifNull: ['$submissionCount', 0] }, 1] },
       lastSubmittedAt: { $max: [{ $ifNull: ['$lastSubmittedAt', sub.submittedAt] }, sub.submittedAt] },
+      ...(sub.difficulty !== 'unknown' ? { difficulty: sub.difficulty, difficultyKnown: true } : {}),
       ...(sub.status === 'accepted' ? { status: 'solved',
         solvedAt: { $min: [{ $ifNull: ['$solvedAt', sub.submittedAt] }, sub.submittedAt] },
       } : {}),

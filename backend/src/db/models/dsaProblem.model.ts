@@ -7,9 +7,11 @@ export type DsaPlatform = DsaProblemPlatform;
 export interface IDsaProblem extends Document {
   userId: Schema.Types.ObjectId;
   externalId: string;
+  problemKey?: string;
   title: string;
   platform: DsaPlatform;
   difficulty: 'easy' | 'medium' | 'hard';
+  difficultyKnown?: boolean;
   url: string;
   tags: string[];
   category: string;
@@ -36,6 +38,8 @@ const dsaProblemSchema = new Schema<IDsaProblem>(
       type: String,
       default: '',
     },
+    problemKey: String,
+    difficultyKnown: Boolean,
     title: {
       type: String,
       required: true,

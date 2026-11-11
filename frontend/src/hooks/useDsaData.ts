@@ -2,7 +2,7 @@
 // useDsaData.ts — DSA Data Hook (TanStack Query)
 // ============================================================================
 // Derives DSA page data from the DSA dashboard endpoint (GET /api/dsa/dashboard)
-// AND the detail endpoints (submissions, contests, topics, platform stats).
+// and the paginated detail endpoints (submissions and contests).
 // Uses TanStack Query for caching, polling, and cache invalidation.
 // ============================================================================
 
@@ -12,10 +12,8 @@ import {
   fetchDsaDashboard,
   fetchDsaSubmissions,
   fetchDsaContests,
-  fetchDsaTopics,
   fetchSchedulerStatus,
 } from '../services/dsaService';
-import { fetchPlatformStats } from '../services/dashboardService';
 import { queryKeys } from '../lib/queryClient';
 import axiosClient from '../utils/axiosClient';
 import { useSse } from './useSse';
@@ -24,10 +22,8 @@ import type {
   DsaData,
   Platform,
   Submission,
-  DsaStat,
-  PlatformOverviewItem,
 } from '../types/dsa';
-import type { ApiPlatformStats } from '../types/api.types';
+import type { ApiDsaDashboardResponse } from '../types/api.types';
 import type { SchedulerStatus } from '../services/dsaService';
 
 const VALID_PLATFORMS: ReadonlySet<string> = new Set<Platform>([
@@ -42,35 +38,11 @@ function isDsaPlatform(name: string): name is Platform {
 }
 
 // ---------------------------------------------------------------------------
-// Types mirroring backend API shapes
-// ---------------------------------------------------------------------------
-
-interface ApiDashboardStatsItem {
-  label: string;
-  value: string;
-  icon?: string;
-}
-
-interface ApiPlatformOverviewItem {
-  platform: string;
-  stat: string;
-  totalSolved?: number;
-  rank?: string | number | null;
-  rating?: number | null;
-}
-
-interface ApiDashboardResponse {
-  stats: ApiDashboardStatsItem[];
-  heatmap: number[];
-  platformOverview: ApiPlatformOverviewItem[];
-}
-
-// ---------------------------------------------------------------------------
 // Sub-queries — each fetches independently; failures are isolated
 // ---------------------------------------------------------------------------
 
 function useDsaDashboard() {
-  return useQuery<ApiDashboardResponse>({
+  return useQuery<ApiDsaDashboardResponse>({
     queryKey: queryKeys.dsa.dashboard,
     queryFn: async ({ signal }) => {
       const res = await fetchDsaDashboard({ signal });
@@ -149,46 +121,6 @@ function useDsaContests() {
   });
 }
 
-function useDsaTopics() {
-  return useQuery({
-    queryKey: queryKeys.dsa.topics,
-    queryFn: async ({ signal }) => {
-      const res = await fetchDsaTopics({ signal });
-      if (!res.success) throw new Error(res.message || 'Failed to load topics');
-      return res.data.topics.map((t) => ({
-        name: t.topicName,
-        progress: t.solveRate,
-      }));
-    },
-    staleTime: 60_000,
-    gcTime: 300_000,
-    refetchInterval: 300_000,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
-    retry: 1,
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
-  });
-}
-
-function usePlatformStats() {
-  return useQuery<ApiPlatformStats[]>({
-    queryKey: queryKeys.dsa.platformStats,
-    queryFn: async () => {
-      const res = await fetchPlatformStats();
-      if (!res.success) throw new Error(res.message || 'Failed to load platform stats');
-      return res.data;
-    },
-    staleTime: 30_000,
-    gcTime: 300_000,
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
-    retry: 1,
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Scheduler status — drives sync state / stale-data indicators (polled)
 // ---------------------------------------------------------------------------
 
@@ -264,8 +196,6 @@ export function useDsaData(): {
   const dashboardQ = useDsaDashboard();
   const submissionsQ = useDsaSubmissions();
   const contestsQ = useDsaContests();
-  const topicsQ = useDsaTopics();
-  const platformStatsQ = usePlatformStats();
   const schedulerStatusQ = useSchedulerStatus();
   const syncMutation = useSyncMutation();
   const sse = useSse();
@@ -274,16 +204,12 @@ export function useDsaData(): {
   const isLoading =
     dashboardQ.isLoading ||
     submissionsQ.isLoading ||
-    contestsQ.isLoading ||
-    topicsQ.isLoading ||
-    platformStatsQ.isLoading;
+    contestsQ.isLoading;
 
   const errorMessage =
     dashboardQ.error?.message ||
     submissionsQ.error?.message ||
     (contestsQ.error instanceof Error ? contestsQ.error.message : null) ||
-    (topicsQ.error instanceof Error ? topicsQ.error.message : null) ||
-    (platformStatsQ.error instanceof Error ? platformStatsQ.error.message : null) ||
     null;
 
   // Stale detection: no successful sync in 5+ minutes and not currently syncing
@@ -295,63 +221,29 @@ export function useDsaData(): {
   const data = useMemo<DsaData | null>(() => {
     if (!dashboardQ.data) return null;
 
-    const exactStats = new Map(
-      (platformStatsQ.data ?? []).map((s) => [s.platformName, s])
-    );
-
-    const submissions = submissionsQ.data ?? [];
-    // Pre-allocate with correct size to avoid repeated map access
-    const solveCountsFromSubs: Record<string, number> = {};
-    for (let i = 0; i < submissions.length; i++) {
-      const sub = submissions[i];
-      if (sub.status === 'accepted') {
-        const key = sub.platform;
-        solveCountsFromSubs[key] = (solveCountsFromSubs[key] || 0) + 1;
-      }
-    }
-
-    const stats: DsaStat[] = dashboardQ.data.stats.map((s) => ({
-      label: s.label,
-      value: s.value,
-      icon: s.icon,
-    }));
-
-    const platformOverview: PlatformOverviewItem[] = dashboardQ.data.platformOverview
-      .filter((p) => isDsaPlatform(p.platform))
-      .map((p) => {
-        const platformKey = p.platform as Platform;
-        const exact = exactStats.get(platformKey);
-        const rankVal = exact?.rank?.toString() ?? (p.rank != null ? String(p.rank) : null);
-        return {
-          platform: platformKey,
-          stat: p.stat,
-          totalSolved: exact
-            ? exact.totalSolved
-            : ((solveCountsFromSubs[platformKey] as number | undefined) ?? p.totalSolved ?? 0),
-          rank: rankVal,
-          rating: exact?.rating ?? p.rating ?? null,
-        };
-      });
-
+    const { stats, heatmap, topics, solvedByDifficulty, platformOverview } = dashboardQ.data;
     return {
       stats,
-      heatmap: dashboardQ.data.heatmap,
-      submissions,
-      contests: (contestsQ.data as Contest[]) ?? [],
-      topics: (topicsQ.data as Topic[]) ?? [],
-      platformOverview,
+      heatmap,
+      topics,
+      solvedByDifficulty,
+      submissions: submissionsQ.data ?? [],
+      contests: contestsQ.data ?? [],
+      platformOverview: platformOverview.flatMap(item =>
+        isDsaPlatform(item.platform)
+          ? [{ ...item, platform: item.platform, rank: item.rank == null ? null : String(item.rank) }]
+          : []
+      ),
     };
-  }, [dashboardQ.data, submissionsQ.data, contestsQ.data, topicsQ.data, platformStatsQ.data]);
+  }, [dashboardQ.data, submissionsQ.data, contestsQ.data]);
 
   // Stable refetch — wrapped in useCallback so it never changes reference
   const refetch = useCallback(() => {
     void dashboardQ.refetch();
     void submissionsQ.refetch();
     void contestsQ.refetch();
-    void topicsQ.refetch();
-    void platformStatsQ.refetch();
     void schedulerStatusQ.refetch();
-  }, [dashboardQ, submissionsQ, contestsQ, topicsQ, platformStatsQ, schedulerStatusQ]);
+  }, [dashboardQ, submissionsQ, contestsQ, schedulerStatusQ]);
 
   const sync = () => syncMutation.mutate(undefined);
 
@@ -375,20 +267,3 @@ export function useDsaData(): {
     },
   };
 }
-
-// Re-export for downstream consumers
-type Contest = {
-  id: string;
-  contestName: string;
-  platform: string;
-  rank: number | null;
-  totalParticipants: number | null;
-  problemsSolved: number;
-  ratingChange: number | null;
-  participatedAt: string;
-};
-
-type Topic = {
-  name: string;
-  progress: number;
-};
