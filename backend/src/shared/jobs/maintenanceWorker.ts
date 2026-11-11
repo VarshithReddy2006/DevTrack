@@ -10,6 +10,7 @@ import { QueueNames, SystemMaintenanceJobData } from './types.js';
 import { generateDailyMissions, generateWeeklyMissions } from '../../modules/missions/missionGenerator.service.js';
 import { cleanupStaleLocks } from '../redis/syncLock.service.js';
 import { UserAnalytics, DailyChallenge } from '../../db/models/index.js';
+import { AntiGamingWorker } from '../../modules/profile/antiGaming.worker.js';
 import { getNotificationQueue } from './queueFactory.js';
 
 let _worker: Worker<SystemMaintenanceJobData> | null = null;
@@ -261,6 +262,9 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
         case 'generate_daily_challenge':
           await runGenerateDailyChallenge();
           break;
+        case 'audit_public_profiles':
+          await AntiGamingWorker.startAuditJob(new Date(job.opts.prevMillis ?? job.timestamp));
+          break;
         default:
           logger.warn('[maintenance] Unknown task type', { task });
       }
@@ -381,6 +385,19 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
     {
       repeat: { pattern: '0 23 * * *' }, // 23:00 UTC daily
       jobId: 'maintenance-daily-challenge',
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
+    }
+  );
+
+  await _queue.add(
+    'audit-public-profiles',
+    { task: 'audit_public_profiles' },
+    {
+      repeat: { pattern: '0 3 * * *', tz: 'UTC' },
+      jobId: 'maintenance-audit-public-profiles',
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 60_000 },
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 10 },
     }

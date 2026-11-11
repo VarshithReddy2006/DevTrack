@@ -66,6 +66,7 @@ export interface IPublicProfile extends Document {
       icon: string;
       rarity: 'common' | 'rare' | 'epic' | 'legendary';
       unlockedAt: Date;
+      category?: string;
     }[];
 
     activityHeatmap: {
@@ -175,6 +176,7 @@ const PublicProfileSchema = new Schema<IPublicProfile>(
           icon: { type: String },
           rarity: { type: String, enum: ['common', 'rare', 'epic', 'legendary'] },
           unlockedAt: { type: Date },
+          category: { type: String },
         },
       ],
 
