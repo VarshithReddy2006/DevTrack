@@ -1,4 +1,5 @@
 // src/index.ts - DevTrack Backend Entry Point
+import { aiCredentialAction } from './config/aiCredentials.js';
 import { createRequire } from 'node:module';
 import express from 'express';
 import cors from 'cors';
@@ -101,18 +102,18 @@ async function bootstrap() {
   // TEMPORARY: Skip validation to get server running without Redis
   // await validateStartup();
 
-  if (env.IS_PROD) {
-    if (!process.env.OPENAI_API_KEY && !env.GEMINI_API_KEY) {
-      logger.error('CRITICAL: At least one AI API key (OPENAI_API_KEY or GEMINI_API_KEY) must be set in production');
-      logger.error('Intelligence features will be degraded without AI API keys');
-      process.exit(1);
-    }
-  } else {
-    // Development mode: warn but allow startup
-    if (!process.env.OPENAI_API_KEY && !env.GEMINI_API_KEY) {
-      logger.warn('WARNING: No AI API keys set. Intelligence features will use mock/fallback responses.');
-      logger.warn('Set OPENAI_API_KEY or GEMINI_API_KEY for full intelligence capabilities.');
-    }
+  const aiAction = aiCredentialAction({
+    isProd: env.IS_PROD,
+    corsOrigin: env.CORS_ORIGIN,
+    hasOpenAi: Boolean(process.env.OPENAI_API_KEY),
+    hasGemini: Boolean(env.GEMINI_API_KEY),
+  });
+  if (aiAction === 'exit') {
+    logger.error('CRITICAL: At least one AI API key (OPENAI_API_KEY or GEMINI_API_KEY) must be set in production');
+    process.exit(1);
+  } else if (aiAction === 'warn') {
+    logger.warn('WARNING: No AI API keys set. Intelligence features will use mock/fallback responses.');
+    logger.warn('Set OPENAI_API_KEY or GEMINI_API_KEY for full intelligence capabilities.');
   }
 
   const app = await createApp();
