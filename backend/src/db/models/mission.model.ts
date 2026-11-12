@@ -14,6 +14,9 @@ export interface IMission extends Document {
   expiresAt: Date;
   completedAt: Date | null;
   createdAt: Date;
+  periodKey?: string;
+  templateKey?: string;
+  generationCalibration?: { averageProblemsPerDay: number; level: number };
 }
 
 const missionSchema = new Schema<IMission>(
@@ -68,6 +71,12 @@ const missionSchema = new Schema<IMission>(
       type: Date,
       default: null,
     },
+    periodKey: String,
+    templateKey: String,
+    generationCalibration: {
+      type: new Schema({ averageProblemsPerDay: Number, level: Number }, { _id: false }),
+      default: undefined,
+    },
   },
   {
     timestamps: { createdAt: true, updatedAt: false },
@@ -76,6 +85,9 @@ const missionSchema = new Schema<IMission>(
         ret.id = ret._id.toString();
         delete (ret as { _id?: unknown })._id;
         delete (ret as { __v?: unknown }).__v;
+        delete ret.periodKey;
+        delete ret.templateKey;
+        delete ret.generationCalibration;
         return ret;
       },
     },
@@ -85,6 +97,10 @@ const missionSchema = new Schema<IMission>(
 // Indexes
 missionSchema.index({ userId: 1, status: 1, expiresAt: 1 });
 missionSchema.index({ userId: 1, type: 1 });
+missionSchema.index(
+  { userId: 1, type: 1, periodKey: 1, templateKey: 1 },
+  { unique: true, partialFilterExpression: { periodKey: { $type: 'string' }, templateKey: { $type: 'string' } } },
+);
 missionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 86400 * 30 }); // Auto-delete after 30 days past expiry
 
 export const Mission = model<IMission>('Mission', missionSchema);
