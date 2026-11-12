@@ -455,10 +455,10 @@ function buildCopilotIntelligence(core: any, dsa: any, projects: any, skills: an
   if (shared.momentumTrend === 'stagnating' || shared.momentumTrend === 'declining') {
     guidance.push({
       id: 'momentum_explanation',
-      question: 'Why is my engineering momentum declining?',
-      answer: `Your momentum is currently "${shared.momentumTrend}". This is based on recent DSA submission frequency (${dsa?.recentSubmissionsCount || 0} recent) and project commit activity (${projects?.recentCommitsCount || 0} recent commits). Consistent daily practice and regular project contributions are the fastest way to reverse this.`,
+      question: 'How is my engineering momentum measured?',
+      answer: `Your momentum is currently "${shared.momentumTrend}". We compare DSA submissions and the latest repository commits on verified projects across two consecutive seven-day windows. If those signals move in opposite directions, we use their consistency scores to resolve the disagreement.`,
       category: 'momentum',
-      evidence: ['DSA submission frequency', 'Project commit activity', 'Streak consistency']
+      evidence: ['DSA submissions', 'Verified repository activity', 'Solve and contribution consistency']
     });
   }
 
