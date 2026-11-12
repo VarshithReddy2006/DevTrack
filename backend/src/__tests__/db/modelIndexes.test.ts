@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 // Importing a model registers it with mongoose. Keep one line per file in src/db/models.
 import '../../db/models/activityEvent.model.js';
+import '../../db/models/aiConversation.model.js';
 import '../../db/models/aiResponseAuditLog.model.js';
 import '../../db/models/analyticsEvent.model.js';
 import '../../db/models/atsAnalysis.model.js';
@@ -37,6 +38,7 @@ import '../../db/models/featureUsageAnalytics.model.js';
 import '../../db/models/focusSession.model.js';
 import '../../db/models/intelligenceRecommendation.model.js';
 import '../../db/models/mission.model.js';
+import '../../db/models/notification.model.js';
 import '../../db/models/onboardingAnalytics.model.js';
 import '../../db/models/platformStats.model.js';
 import '../../db/models/processedEvent.model.js';

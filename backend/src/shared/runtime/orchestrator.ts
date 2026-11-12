@@ -233,6 +233,10 @@ async function performShutdown(): Promise<void> {
   await closeAllQueues();
   setQueuesStatus('stopped');
 
+  try {
+    const { unifiedRuntimeStateService } = await import('../../modules/runtime-state/unifiedRuntimeState.service.js');
+    await unifiedRuntimeStateService.flushPendingEvents();
+  } catch (error) { workerError ??= error; }
   await disconnectRedis();
   setRedisStatus('stopped');
 

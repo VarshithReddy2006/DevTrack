@@ -2,8 +2,9 @@ import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   validate: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), redisClose: vi.fn(),
-  start: vi.fn(), stop: vi.fn(), monitorStart: vi.fn(), monitorStop: vi.fn(),
+  start: vi.fn(), stop: vi.fn(), monitorStart: vi.fn(), monitorStop: vi.fn(), flush: vi.fn(),
 }));
+vi.mock('./modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { flushPendingEvents: state.flush } }));
 vi.mock('./shared/startup-validation.js', () => ({ validateStartup: state.validate }));
 vi.mock('./db/index.js', () => ({ connectDatabase: state.connect, disconnectDatabase: state.disconnect }));
 vi.mock('./shared/redis/index.js', () => ({ disconnectRedis: state.redisClose }));
@@ -45,6 +46,9 @@ it.each(['SIGINT', 'SIGTERM'])('drains once for repeated %s then disconnects and
   handlers[signal](); handlers[signal]();
   await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(0));
   expect(state.stop).toHaveBeenCalledOnce();
+  expect(state.flush).toHaveBeenCalledOnce();
+  expect(state.flush.mock.invocationCallOrder[0]).toBeGreaterThan(state.stop.mock.invocationCallOrder[0]);
+  expect(state.disconnect.mock.invocationCallOrder[0]).toBeGreaterThan(state.flush.mock.invocationCallOrder[0]);
   expect(state.monitorStart).toHaveBeenCalledOnce();
   expect(state.monitorStop).toHaveBeenCalledOnce();
   expect(state.disconnect).toHaveBeenCalledOnce();
@@ -106,4 +110,11 @@ it.each(['unhandledRejection', 'uncaughtException'])('drains consumers and exits
   await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
   expect(state.stop).toHaveBeenCalledOnce();
   expect(state.redisClose).toHaveBeenCalledOnce();
+});
+
+it('reports runtime buffer drain failure but still closes database and Redis', async () => {
+  state.flush.mockRejectedValueOnce(new Error('buffer drain failed'));
+  await ready(); handlers.SIGTERM();
+  await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+  expect(state.disconnect).toHaveBeenCalledOnce(); expect(state.redisClose).toHaveBeenCalledOnce();
 });

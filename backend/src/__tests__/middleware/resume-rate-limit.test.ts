@@ -51,6 +51,7 @@ vi.mock('../../services/auth/ClerkUserSyncService.js', () => ({ syncClerkUser: v
 vi.mock('../../modules/resume/upload/multer.config.js', () => ({ uploadSingle: (_req: unknown, _res: unknown, next: () => void) => next() }));
 vi.mock('../../modules/resume/upload/upload.validation.js', () => ({ validateUpload: (_req: unknown, _res: unknown, next: () => void) => next() }));
 vi.mock('../../modules/resume/upload/upload.controller.js', () => ({
+  resumeSession: (_req: unknown, res: Response) => res.json({ success: true }),
   uploadResume: (_req: unknown, res: Response) => res.json({ success: true }),
   getSession: (_req: unknown, res: Response) => res.json({ success: true }),
   getSessionStatus: (_req: unknown, res: Response) => res.json({ success: true, data: {
