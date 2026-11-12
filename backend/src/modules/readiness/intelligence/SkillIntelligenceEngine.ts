@@ -1,5 +1,5 @@
 import { ReadinessSkills } from '../../../db/models/readinessSkills.model.js';
-import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
+import { getActiveVerifiedProjects } from '../services/activeVerifiedProjects.js';
 import { logger } from '../../../shared/logger.js';
 import { differenceInDays, subDays } from 'date-fns';
 
@@ -18,7 +18,7 @@ export const SkillIntelligenceEngine = {
       const { userId } = input;
       
       // Fetch verified projects for dependency extraction
-      const verifiedProjects = await VerifiedProject.find({ userId, 'provenance.source': { $exists: false } });
+      const verifiedProjects = await getActiveVerifiedProjects(userId);
       
       // Extract dependencies from all projects
       const dependencyMap = this.extractDependencies(verifiedProjects);

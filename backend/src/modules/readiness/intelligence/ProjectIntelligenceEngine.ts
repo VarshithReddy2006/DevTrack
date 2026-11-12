@@ -1,7 +1,5 @@
 import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js';
-import { VerifiedProjectIngestionService } from '../services/VerifiedProjectIngestionService.js';
-import { Project } from '../../../db/models/project.model.js';
-import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
+import { getActiveVerifiedProjects } from '../services/activeVerifiedProjects.js';
 import { SystemDesignSignalExtractor } from './SystemDesignSignalExtractor.js';
 import { logger } from '../../../shared/logger.js';
 import { differenceInDays, subDays } from 'date-fns';
@@ -19,33 +17,7 @@ export const ProjectIntelligenceEngine = {
     try {
       const { userId } = input;
       
-      const contributorId = await VerifiedProjectIngestionService.ingest(userId);
-      const records = await VerifiedProject.find({ userId, 'verification.status': 'verified' }).lean();
-      const linkedIds = records.flatMap(record =>
-        record.provenance?.linkedRepoUrl && record.projectId ? [record.projectId] : []
-      );
-      const links = linkedIds.length
-        ? await Project.find({ userId, _id: { $in: linkedIds } }).select('repoUrl').lean()
-        : [];
-      const repoByProjectId = new Map(links.map(link => [String(link._id), link.repoUrl]));
-      const activeRecords = records.filter(record => {
-        const source = record.provenance;
-        if (!source) return true;
-        return Boolean(contributorId && source.contributorId === contributorId
-          && (source.discoveredBySync || (source.linkedRepoUrl
-            && repoByProjectId.get(String(record.projectId)) === source.linkedRepoUrl)));
-      });
-      const verifiedProjects = activeRecords.map(project => ({
-        ...project,
-        commitCount: project.metrics?.userCommitCount ?? 0,
-        lastCommitAt: project.metrics?.lastCommitAt,
-        isFork: project.provenance?.isFork ?? project.verification.checks?.notFork === false,
-        fileCount: project.provenance?.fileCount ?? 0,
-        files: project.provenance?.files ?? [],
-        fileStructure: project.provenance?.files ?? [],
-        hasDocumentation: project.provenance?.files.some(file => /(^|\/)readme/i.test(file)) ?? false,
-        hasTests: project.provenance?.hasTests ?? false,
-      }));
+      const verifiedProjects = await getActiveVerifiedProjects(userId);
       
       // Detect tutorial projects and cloned repositories
       const projectQualityAnalysis = this.analyzeProjectQuality(verifiedProjects);

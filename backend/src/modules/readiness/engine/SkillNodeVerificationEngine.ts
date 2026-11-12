@@ -1,6 +1,6 @@
 import { ReadinessRoadmap } from '../../../db/models/readinessRoadmap.model.js';
 import { SkillGraphNormalizationLayer, SkillNode } from '../skillGraph/SkillGraphNormalizationLayer.js';
-import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
+import { getActiveVerifiedProjects } from '../services/activeVerifiedProjects.js';
 import { SystemDesignSignalExtractor, SystemDesignSignals } from '../intelligence/SystemDesignSignalExtractor.js';
 import { logger } from '../../../shared/logger.js';
 
@@ -26,7 +26,7 @@ export const SkillNodeVerificationEngine = {
       const { userId, targetRole } = input;
       
       // Fetch verified projects for evidence extraction
-      const verifiedProjects = await VerifiedProject.find({ userId, 'provenance.source': { $exists: false } });
+      const verifiedProjects = await getActiveVerifiedProjects(userId);
       const hasProjects = verifiedProjects.length > 0;
       
       // Extract system design signals from projects
