@@ -1,6 +1,5 @@
 import { AIProviderAdapter } from '../provider/AIProviderAdapter.js';
 import { PromptSafetyLayer } from '../safety/PromptSafetyLayer.js';
-import { AIResponseAuditLog } from '../audit/AIResponseAuditLog.js';
 import { AICacheManager } from '../cache/AICacheManager.js';
 import { logger } from '../../../shared/logger.js';
 

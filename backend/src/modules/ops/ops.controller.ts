@@ -501,6 +501,7 @@ export const opsController = {
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
       
       const logs = await AIResponseAuditLog.find()
+        .select('-prompt -response')
         .sort({ createdAt: -1 })
         .limit(limit)
         .lean();
