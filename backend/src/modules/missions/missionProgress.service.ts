@@ -172,9 +172,16 @@ function shouldCountTowardMission(
 
 // ─── Public API for getting user missions ────────────────────────────────────
 
+export type MissionCategory = 'dsa' | 'project' | 'consistency' | 'learning';
+export type MissionHistoryStatus = 'completed' | 'expired' | 'all';
+
+export const MISSION_CATEGORIES: readonly MissionCategory[] = ['dsa', 'project', 'consistency', 'learning'];
+export const MISSION_HISTORY_STATUSES: readonly MissionHistoryStatus[] = ['completed', 'expired', 'all'];
+const TERMINAL_HISTORY_STATUSES = new Set<string>(['completed', 'expired']);
+
 export interface MissionHistoryOptions {
-  status?: 'completed' | 'expired' | 'all';
-  category?: 'dsa' | 'project' | 'consistency' | 'learning';
+  status?: MissionHistoryStatus;
+  category?: MissionCategory;
   limit?: number;
   offset?: number;
 }
@@ -184,6 +191,27 @@ export interface MissionHistoryResult {
   total: number;
   limit: number;
   offset: number;
+}
+
+function serializeMission(m: any, includeCompletedAt = false) {
+  const progressPercent = m.targetCount > 0
+    ? Math.min(100, Math.round((m.currentCount / m.targetCount) * 100))
+    : 0;
+  return {
+    id: m._id.toString(),
+    title: m.title,
+    description: m.description,
+    type: m.type,
+    category: m.category,
+    status: m.status,
+    currentCount: m.currentCount,
+    targetCount: m.targetCount,
+    xpReward: m.xpReward,
+    progressPercent,
+    ...(includeCompletedAt ? { completedAt: m.completedAt } : {}),
+    expiresAt: m.expiresAt,
+    createdAt: m.createdAt,
+  };
 }
 
 export async function getUserMissions(userId: string, category?: string): Promise<any[]> {
@@ -204,20 +232,7 @@ export async function getUserMissions(userId: string, category?: string): Promis
     .sort({ type: 1, createdAt: -1 }) // Daily first, then weekly
     .lean();
 
-  return missions.map((m) => ({
-    id: m._id.toString(),
-    title: m.title,
-    description: m.description,
-    type: m.type,
-    category: m.category,
-    status: m.status,
-    currentCount: m.currentCount,
-    targetCount: m.targetCount,
-    xpReward: m.xpReward,
-    progressPercent: Math.min(100, Math.round((m.currentCount / m.targetCount) * 100)),
-    expiresAt: m.expiresAt,
-    createdAt: m.createdAt,
-  }));
+  return missions.map((m) => serializeMission(m));
 }
 
 export async function getUserMissionHistory(
@@ -225,14 +240,18 @@ export async function getUserMissionHistory(
   options: MissionHistoryOptions = {}
 ): Promise<MissionHistoryResult> {
   const userObjId = new Types.ObjectId(userId);
-  const limit = Math.min(100, Math.max(1, options.limit ?? 20));
-  const offset = Math.max(0, options.offset ?? 0);
+  const limit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+    ? Math.min(100, Math.max(1, Math.trunc(options.limit)))
+    : 20;
+  const offset = typeof options.offset === 'number' && Number.isFinite(options.offset)
+    ? Math.max(0, Math.trunc(options.offset))
+    : 0;
 
   const query: Record<string, unknown> = {
     userId: userObjId,
   };
 
-  if (options.status && options.status !== 'all') {
+  if (options.status && TERMINAL_HISTORY_STATUSES.has(options.status)) {
     query.status = options.status;
   } else {
     query.status = { $in: ['completed', 'expired'] };
@@ -252,21 +271,7 @@ export async function getUserMissionHistory(
   ]);
 
   return {
-    missions: missions.map((m) => ({
-      id: m._id.toString(),
-      title: m.title,
-      description: m.description,
-      type: m.type,
-      category: m.category,
-      status: m.status,
-      currentCount: m.currentCount,
-      targetCount: m.targetCount,
-      xpReward: m.xpReward,
-      progressPercent: Math.min(100, Math.round((m.currentCount / m.targetCount) * 100)),
-      completedAt: m.completedAt,
-      expiresAt: m.expiresAt,
-      createdAt: m.createdAt,
-    })),
+    missions: missions.map((m) => serializeMission(m, true)),
     total,
     limit,
     offset,
