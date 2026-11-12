@@ -56,8 +56,11 @@ async function main(): Promise<void> {
       monitor.start();
     },
     disconnect: async () => {
-      try { stopHealthMonitor?.(); } finally {
-        try { await disconnectDatabase?.(); } finally { await disconnectRedis?.(); }
+      const { unifiedRuntimeStateService } = await import('./modules/runtime-state/unifiedRuntimeState.service.js');
+      try { await unifiedRuntimeStateService.flushPendingEvents(); } finally {
+        try { stopHealthMonitor?.(); } finally {
+          try { await disconnectDatabase?.(); } finally { await disconnectRedis?.(); }
+        }
       }
     },
   });
