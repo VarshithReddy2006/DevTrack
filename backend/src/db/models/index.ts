@@ -54,3 +54,4 @@ export { VerifiedProject, type IVerifiedProject } from './verifiedProject.model.
 export { ProfileAuditLog, type IProfileAuditLog } from './profileAuditLog.model.js';
 export { ProfileView, type IProfileView } from './profileView.model.js';
 export { ProfileTimelineEvent, type IProfileTimelineEvent } from './profileTimelineEvent.model.js';
+export { AIConversation, type IAIConversation, type IConversationTurn } from './aiConversation.model.js';

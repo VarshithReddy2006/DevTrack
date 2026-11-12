@@ -74,11 +74,12 @@ export async function resumeSession(req: AuthenticatedRequest, res: Response, ne
  */
 export async function getSession(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const userId = (req as any).user?.id;
     const sessionId = req.params.id as string;
-    const session = await uploadService.getSession(sessionId);
+    const session = await uploadService.getSession(sessionId, userId);
 
     if (!session) {
-      errorResponse(res, 'Session not found', 'NOT_FOUND', 404);
+      errorResponse(res, 'Resume session not found', 'NOT_FOUND', 404);
       return;
     }
 
@@ -94,11 +95,12 @@ export async function getSession(req: Request, res: Response, next: NextFunction
  */
 export async function getSessionStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const userId = (req as any).user?.id;
     const sessionId = req.params.id as string;
-    const status = await uploadService.getSessionStatus(sessionId);
+    const status = await uploadService.getSessionStatus(sessionId, userId);
 
     if (!status) {
-      errorResponse(res, 'Session not found', 'NOT_FOUND', 404);
+      errorResponse(res, 'Resume session not found', 'NOT_FOUND', 404);
       return;
     }
 

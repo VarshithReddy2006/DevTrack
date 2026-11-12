@@ -43,6 +43,25 @@ const AIGuidancePage: React.FC = () => {
     scrollToBottom();
   }, [messages, isTyping]);
 
+  // Restore persisted conversation turns on mount
+  useEffect(() => {
+    let active = true;
+    const fetchHistory = async () => {
+      try {
+        const history = await readinessService.getCopilotHistory('career-copilot');
+        if (active && history && history.length > 0) {
+          setMessages(history);
+        }
+      } catch (err) {
+        console.warn('Could not restore AI guidance history', err);
+      }
+    };
+    void fetchHistory();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   if (copilotLoading) {
     return (
       <div className="flex flex-col gap-6 max-w-[1400px] mx-auto w-full pb-16 px-4 animate-pulse">
@@ -132,13 +151,13 @@ const AIGuidancePage: React.FC = () => {
 
     try {
       const history = messages.map(m => ({ role: m.role, content: m.content }));
-      // Call our integration point
-      const aiResponseText = await readinessService.sendCopilotChatRequest(text, context, history);
+      // Call persistent copilot endpoint
+      const aiResponseText = await readinessService.sendCopilotChatRequest(text, context, history, 'career-copilot');
       
-      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: aiResponseText }]);
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'assistant', content: aiResponseText }]);
     } catch (error) {
       setMessages(prev => [...prev, { 
-        id: Date.now().toString(), 
+        id: (Date.now() + 1).toString(),
         role: 'assistant', 
         content: 'Unable to generate guidance. Please try again.', 
         isError: true 
@@ -146,6 +165,11 @@ const AIGuidancePage: React.FC = () => {
     } finally {
       setIsTyping(false);
     }
+  };
+
+  const handleClearHistory = async () => {
+    await readinessService.clearCopilotHistory('career-copilot');
+    setMessages([]);
   };
 
   const handleRetry = (text: string) => {
@@ -167,7 +191,7 @@ const AIGuidancePage: React.FC = () => {
       <div className="absolute top-0 inset-x-0 h-[600px] bg-gradient-to-b from-indigo-50/80 via-white to-transparent pointer-events-none" />
       
       <div className="max-w-[1200px] mx-auto w-full pb-12 px-4 md:px-8 flex flex-col flex-1 relative z-10">
-        <div className="pt-6 pb-6">
+        <div className="pt-6 pb-6 flex justify-between items-center">
           <WorkspaceHeader
             domain="AI Guidance"
             title="AI Career Copilot"
@@ -175,6 +199,16 @@ const AIGuidancePage: React.FC = () => {
             icon={<MessageSquare size={24} />}
             accentColor="#EC4899"
           />
+          {messages.length > 0 && (
+            <button
+              onClick={handleClearHistory}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-slate-500 hover:text-rose-600 bg-white/80 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-xl transition shadow-sm cursor-pointer"
+              title="Reset conversation thread"
+            >
+              <RefreshCcw size={13} />
+              Reset Thread
+            </button>
+          )}
         </div>
 
         {/* ─── Main Chat Container ─── */}
