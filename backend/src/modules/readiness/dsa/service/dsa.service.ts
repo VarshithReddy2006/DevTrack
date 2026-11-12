@@ -15,8 +15,11 @@ export class DSAService {
   async generateDSAIntelligence(input: DSAIntelligenceInput): Promise<DSAIntelligenceOutput> {
     const { userId, platform } = input;
 
-    // Fetch aggregated DSA data from repository
-    const dsaData = await dsaRepository.aggregateByUserId(userId);
+    const [dsaData, { recentActivity, hardGrowthTrend }, targetRole] = await Promise.all([
+      dsaRepository.aggregateByUserId(userId),
+      dsaRepository.getSolveHistory(userId),
+      dsaRepository.getTargetRole(userId),
+    ]);
 
     // Calculate consistency score
     const consistencyScore = consistencyEngine.calculateConsistencyScore({
@@ -40,7 +43,7 @@ export class DSAService {
     const hardProgressScore = hardProgressEngine.calculateHardProgressScore({
       hardSolved: dsaData.hardSolved,
       totalSolved: dsaData.totalSolved,
-      hardGrowthTrend: 0.1, // TODO: Calculate from historical data
+      hardGrowthTrend,
     });
 
     // Calculate confidence score
@@ -54,15 +57,14 @@ export class DSAService {
 
     // Calculate trend status
     const status = trendEngine.calculateTrend({
-      recentActivity: [], // TODO: Calculate from historical data
+      recentActivity,
       currentStreak: dsaData.currentStreak,
-      hardGrowthTrend: 0.1, // TODO: Calculate from historical data
+      hardGrowthTrend,
     });
 
     // Generate topic recommendations
     const { strongTopics, weakTopics, nextTopics } = recommendationEngine.generateRecommendations({
-      weakTopics: [], // TODO: Calculate from topic breakdown
-      targetRole: undefined, // TODO: Get from user profile
+      targetRole,
       topicBreakdown: dsaData.topicBreakdown,
     });
 

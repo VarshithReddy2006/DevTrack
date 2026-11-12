@@ -89,7 +89,6 @@ export interface TrendInput {
 }
 
 export interface RecommendationInput {
-  weakTopics: TopicAnalysis[];
   targetRole?: string;
   topicBreakdown: TopicBreakdown;
 }
