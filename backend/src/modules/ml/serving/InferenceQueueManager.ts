@@ -8,7 +8,7 @@ interface QueuedRequest {
   request: InferenceRequest;
   resolve: (result: InferenceResult) => void;
   reject: (error: Error) => void;
-  enqueuedAt: number;
+  timeoutHandle: ReturnType<typeof setTimeout>;
   priority: number;
 }
 
@@ -24,7 +24,10 @@ interface QueuedRequest {
  */
 export class InferenceQueueManager {
   private queue: QueuedRequest[] = [];
-  private processing: boolean = false;
+  private activeBatch: QueuedRequest[] | null = null;
+  private batchTimer: ReturnType<typeof setTimeout> | undefined;
+  private idleListeners = new Set<() => void>();
+  private shutdownPromise: Promise<void> | undefined;
   private maxQueueDepth: number;
   private batchSize: number;
   private processInterval: number;
@@ -55,12 +58,17 @@ export class InferenceQueueManager {
    */
   setProcessor(processor: (requests: InferenceRequest[]) => Promise<InferenceResult[]>): void {
     this.processor = processor;
+    void this.processBatch();
   }
 
   /**
    * Enqueue an inference request. Returns promise that resolves with result.
    */
   async enqueue(request: InferenceRequest): Promise<InferenceResult> {
+    if (this.shutdownPromise) {
+      throw new Error('Inference queue is shutting down');
+    }
+
     // Backpressure check
     if (this.queue.length >= this.maxQueueDepth) {
       this.totalDropped++;
@@ -73,32 +81,35 @@ export class InferenceQueueManager {
     return new Promise<InferenceResult>((resolve, reject) => {
       const priorityValue = this.priorityToNumber(request.priority);
 
-      this.queue.push({
+      const item: QueuedRequest = {
         request,
         resolve,
         reject,
-        enqueuedAt: Date.now(),
         priority: priorityValue,
-      });
+        timeoutHandle: setTimeout(() => {
+          const index = this.queue.indexOf(item);
+          if (index === -1) return;
 
-      // Sort by priority (higher = processed first), then by enqueue time (FIFO)
-      this.queue.sort((a, b) => {
-        if (a.priority !== b.priority) return b.priority - a.priority;
-        return a.enqueuedAt - b.enqueuedAt;
-      });
-
-      // Set timeout
-      setTimeout(() => {
-        const idx = this.queue.findIndex(q => q.request.requestId === request.requestId);
-        if (idx !== -1) {
-          this.queue.splice(idx, 1);
+          this.queue.splice(index, 1);
           this.totalTimeouts++;
           reject(new Error(`Inference request ${request.requestId} timed out after ${request.timeout}ms`));
-        }
-      }, request.timeout);
+          this.notifyIfIdle();
+        }, request.timeout),
+      };
 
-      // Trigger processing
-      this.triggerProcessing();
+      // Insert after requests of equal priority to preserve FIFO.
+      let first = 0;
+      let last = this.queue.length;
+      while (first < last) {
+        const middle = Math.floor((first + last) / 2);
+        if (this.queue[middle].priority >= item.priority) {
+          first = middle + 1;
+        } else {
+          last = middle;
+        }
+      }
+      this.queue.splice(first, 0, item);
+      void this.processBatch();
     });
   }
 
@@ -129,60 +140,85 @@ export class InferenceQueueManager {
   }
 
   /**
-   * Drain the queue (for graceful shutdown).
+   * Wait for pending and active requests to finish. A deadline only bounds the wait.
    */
-  async drain(): Promise<void> {
-    logger.info('[InferenceQueueManager] Draining queue');
-    while (this.queue.length > 0) {
-      await this.processBatch();
-    }
+  async drain(maxWaitMs?: number): Promise<void> {
+    if (!this.activeBatch && this.queue.length === 0) return;
+
+    await new Promise<void>((resolve, reject) => {
+      const onIdle = () => {
+        clearTimeout(deadline);
+        this.idleListeners.delete(onIdle);
+        resolve();
+      };
+      const deadline = maxWaitMs === undefined ? undefined : setTimeout(() => {
+        this.idleListeners.delete(onIdle);
+        reject(new Error('Inference queue drain timed out'));
+      }, maxWaitMs);
+      this.idleListeners.add(onIdle);
+    });
   }
 
-  // ---------------------------------------------------------------------------
-  // Internal
-  // ---------------------------------------------------------------------------
-
-  private async triggerProcessing(): Promise<void> {
-    if (this.processing) return;
-
-    this.processing = true;
-    try {
-      while (this.queue.length > 0) {
-        await this.processBatch();
-        if (this.queue.length > 0) {
-          await this.sleep(this.processInterval);
-        }
+  /**
+   * Stop accepting requests and reject unfinished work if the drain deadline expires.
+   */
+  shutdown(maxWaitMs = 5_000): Promise<void> {
+    this.shutdownPromise ??= this.drain(maxWaitMs).catch((error: Error) => {
+      for (const item of this.queue.splice(0)) {
+        clearTimeout(item.timeoutHandle);
+        item.reject(error);
       }
-    } finally {
-      this.processing = false;
-    }
+      for (const item of this.activeBatch ?? []) {
+        item.reject(error);
+      }
+      this.activeBatch = null;
+      this.notifyIfIdle();
+    });
+    return this.shutdownPromise;
+  }
+
+  private notifyIfIdle(): void {
+    if (this.activeBatch || this.queue.length > 0) return;
+    clearTimeout(this.batchTimer);
+    this.batchTimer = undefined;
+    for (const listener of this.idleListeners) listener();
   }
 
   private async processBatch(): Promise<void> {
-    if (!this.processor) {
-      logger.warn('[InferenceQueueManager] No processor set, cannot process batch');
-      return;
-    }
+    if (this.activeBatch || this.batchTimer !== undefined || !this.processor || this.queue.length === 0) return;
 
     const batch = this.queue.splice(0, this.batchSize);
     if (batch.length === 0) return;
+    this.activeBatch = batch;
+    for (const item of batch) clearTimeout(item.timeoutHandle);
 
     try {
-      const requests = batch.map(q => q.request);
-      const results = await this.processor(requests);
+      const results = await this.processor(batch.map(item => item.request));
+      if (this.activeBatch !== batch) return;
 
-      for (let i = 0; i < batch.length; i++) {
+      for (const [index, item] of batch.entries()) {
         this.totalProcessed++;
-        if (results[i]) {
-          batch[i].resolve(results[i]);
+        if (results[index]) {
+          item.resolve(results[index]);
         } else {
-          batch[i].reject(new Error('No result returned for request'));
+          item.reject(new Error('No result returned for request'));
         }
       }
     } catch (error) {
-      // Fail all requests in the batch
-      for (const item of batch) {
-        item.reject(error instanceof Error ? error : new Error(String(error)));
+      if (this.activeBatch !== batch) return;
+      const failure = error instanceof Error ? error : new Error(String(error));
+      for (const item of batch) item.reject(failure);
+    } finally {
+      if (this.activeBatch === batch) {
+        this.activeBatch = null;
+        if (this.queue.length > 0) {
+          this.batchTimer = setTimeout(() => {
+            this.batchTimer = undefined;
+            void this.processBatch();
+          }, this.processInterval);
+        } else {
+          this.notifyIfIdle();
+        }
       }
     }
   }
@@ -195,9 +231,5 @@ export class InferenceQueueManager {
       case 'low': return 1;
       default: return 2;
     }
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
