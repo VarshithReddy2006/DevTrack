@@ -64,12 +64,10 @@ class ReadinessMomentumEngineClass {
     try {
       logger.info('[ReadinessMomentumEngine] Analyzing momentum', { userId, timeframe });
       
-      // Get user's snapshots for trajectory analysis
-      const userSnapshots = SnapshotVersioningSystem.getUserSnapshots(userId);
-      
-      // Filter snapshots by timeframe
-      const cutoffDate = this.getCutoffDate(timeframe);
-      const relevantSnapshots = userSnapshots.filter(s => s.metadata.createdAt >= cutoffDate);
+      const relevantSnapshots = (await SnapshotVersioningSystem.getUserSnapshots(userId, {
+        modelType: 'core',
+        since: this.getCutoffDate(timeframe),
+      })).reverse();
       
       if (relevantSnapshots.length < 2) {
         // Not enough data for momentum analysis

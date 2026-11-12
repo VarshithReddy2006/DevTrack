@@ -1,4 +1,4 @@
-import { SnapshotVersioningSystem } from '../../operations/index.js';
+import { SnapshotVersioningSystem, type SnapshotData } from '../../operations/SnapshotVersioningSystem.js';
 import { ReadinessDsa } from '../../../db/models/readinessDsa.model.js';
 import { ReadinessSkills } from '../../../db/models/readinessSkills.model.js';
 import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js';
@@ -48,249 +48,70 @@ export interface SnapshotComparison {
   regressions: string[];
 }
 
-class ReadinessSnapshotServiceClass {
-  /**
-   * Create a complete readiness snapshot for a user
-   */
-  async createReadinessSnapshot(userId: string, changeDescription: string, createdBy: string = 'system'): Promise<ReadinessSnapshot> {
-    try {
-      logger.info('[ReadinessSnapshotService] Creating readiness snapshot', { userId });
-      
-      // Fetch all readiness data
-      const [dsaData, skillsData, projectsData, roadmapData, benchmarksData, coreData] = await Promise.all([
-        ReadinessDsa.findOne({ userId }),
-        ReadinessSkills.findOne({ userId }),
-        ReadinessProjects.findOne({ userId }),
-        ReadinessRoadmap.findOne({ userId }),
-        ReadinessBenchmarks.findOne({ userId }),
-        ReadinessCore.findOne({ userId }),
-      ]);
-      
-      // Calculate summary scores
-      const summary = this.calculateSummary(dsaData, skillsData, projectsData, roadmapData, coreData);
-      
-      // Create core snapshot
-      const coreSnapshot = SnapshotVersioningSystem.createSnapshot(
-        userId,
-        'core',
-        { core: coreData },
-        changeDescription,
-        undefined,
-        createdBy
-      );
-      
-      // Create individual component snapshots
-      const snapshotIds: string[] = [coreSnapshot.snapshotId];
-      
-      if (dsaData) {
-        const dsaSnapshot = SnapshotVersioningSystem.createSnapshot(
-          userId,
-          'dsa',
-          dsaData,
-          changeDescription,
-          coreSnapshot.snapshotId,
-          createdBy
-        );
-        snapshotIds.push(dsaSnapshot.snapshotId);
-      }
-      
-      if (skillsData) {
-        const skillsSnapshot = SnapshotVersioningSystem.createSnapshot(
-          userId,
-          'skills',
-          skillsData,
-          changeDescription,
-          coreSnapshot.snapshotId,
-          createdBy
-        );
-        snapshotIds.push(skillsSnapshot.snapshotId);
-      }
-      
-      if (projectsData) {
-        const projectsSnapshot = SnapshotVersioningSystem.createSnapshot(
-          userId,
-          'projects',
-          projectsData,
-          changeDescription,
-          coreSnapshot.snapshotId,
-          createdBy
-        );
-        snapshotIds.push(projectsSnapshot.snapshotId);
-      }
-      
-      if (roadmapData) {
-        const roadmapSnapshot = SnapshotVersioningSystem.createSnapshot(
-          userId,
-          'roadmap',
-          roadmapData,
-          changeDescription,
-          coreSnapshot.snapshotId,
-          createdBy
-        );
-        snapshotIds.push(roadmapSnapshot.snapshotId);
-      }
-      
-      if (benchmarksData) {
-        const benchmarksSnapshot = SnapshotVersioningSystem.createSnapshot(
-          userId,
-          'benchmarks',
-          benchmarksData,
-          changeDescription,
-          coreSnapshot.snapshotId,
-          createdBy
-        );
-        snapshotIds.push(benchmarksSnapshot.snapshotId);
-      }
-      
-      const readinessSnapshot: ReadinessSnapshot = {
-        snapshotId: coreSnapshot.snapshotId,
-        userId,
-        snapshotVersion: coreSnapshot.snapshotVersion,
-        createdAt: coreSnapshot.createdAt,
-        changeDescription,
-        readinessData: {
-          dsa: dsaData,
-          skills: skillsData,
-          projects: projectsData,
-          roadmap: roadmapData,
-          benchmarks: benchmarksData,
-          core: coreData,
-        },
-        summary,
-      };
-      
-      logger.info('[ReadinessSnapshotService] Readiness snapshot created', { 
-        snapshotId: readinessSnapshot.snapshotId,
-        userId,
-        componentCount: snapshotIds.length 
-      });
-      
-      return readinessSnapshot;
-    } catch (error) {
-      logger.error('[ReadinessSnapshotService] Failed to create readiness snapshot', { userId, error });
-      throw error;
-    }
+export class ReadinessSnapshotServiceClass {
+  async createReadinessSnapshot(userId: string, changeDescription: string, createdBy = 'system'): Promise<ReadinessSnapshot> {
+    const [dsa, skills, projects, roadmap, benchmarks, core] = await Promise.all([
+      ReadinessDsa.findOne({ userId }).lean(),
+      ReadinessSkills.findOne({ userId }).lean(),
+      ReadinessProjects.findOne({ userId }).lean(),
+      ReadinessRoadmap.findOne({ userId }).lean(),
+      ReadinessBenchmarks.findOne({ userId }).lean(),
+      ReadinessCore.findOne({ userId }).lean(),
+    ]);
+    return this.saveReadinessSnapshot(userId, { dsa, skills, projects, roadmap, benchmarks, core }, changeDescription, createdBy);
   }
 
-  /**
-   * Get latest readiness snapshot for a user
-   */
+  async saveReadinessSnapshot(
+    userId: string,
+    readinessData: ReadinessSnapshot['readinessData'],
+    changeDescription: string,
+    createdBy = 'system',
+    scores?: Pick<ReadinessSnapshot['summary'], 'dsaScore' | 'skillsScore' | 'projectsScore'>,
+  ): Promise<ReadinessSnapshot> {
+    const previous = await SnapshotVersioningSystem.getLatestSnapshot(userId, 'core');
+    const summary = { ...this.calculateSummary(readinessData), ...scores };
+    // A single document keeps all captured components consistent, including on standalone MongoDB.
+    const data = { ...readinessData, ...summary };
+    const metadata = await SnapshotVersioningSystem.createSnapshot(
+      userId, 'core', data, changeDescription, previous?.metadata.snapshotId, createdBy,
+    );
+    return this.toReadinessSnapshot({ metadata, data });
+  }
+
+  private toReadinessSnapshot({ metadata, data }: SnapshotData): ReadinessSnapshot {
+    const { snapshotId, userId, snapshotVersion, createdAt, changeDescription } = metadata;
+    const { dsa, skills, projects, roadmap, benchmarks, core, ...summary } = data;
+    return {
+      snapshotId, userId, snapshotVersion, createdAt, changeDescription,
+      readinessData: { dsa, skills, projects, roadmap, benchmarks, core },
+      summary,
+    };
+  }
+
   async getLatestReadinessSnapshot(userId: string): Promise<ReadinessSnapshot | null> {
     try {
-      const coreSnapshot = SnapshotVersioningSystem.getLatestSnapshot(userId, 'core');
-      
-      if (!coreSnapshot) {
-        return null;
-      }
-      
-      // Fetch all component snapshots
-      const dsaSnapshot = SnapshotVersioningSystem.getLatestSnapshot(userId, 'dsa');
-      const skillsSnapshot = SnapshotVersioningSystem.getLatestSnapshot(userId, 'skills');
-      const projectsSnapshot = SnapshotVersioningSystem.getLatestSnapshot(userId, 'projects');
-      const roadmapSnapshot = SnapshotVersioningSystem.getLatestSnapshot(userId, 'roadmap');
-      const benchmarksSnapshot = SnapshotVersioningSystem.getLatestSnapshot(userId, 'benchmarks');
-      
-      const summary = this.calculateSummary(
-        dsaSnapshot?.data,
-        skillsSnapshot?.data,
-        projectsSnapshot?.data,
-        roadmapSnapshot?.data,
-        coreSnapshot.data
-      );
-      
-      return {
-        snapshotId: coreSnapshot.metadata.snapshotId,
-        userId: coreSnapshot.metadata.userId,
-        snapshotVersion: coreSnapshot.metadata.snapshotVersion,
-        createdAt: coreSnapshot.metadata.createdAt,
-        changeDescription: coreSnapshot.metadata.changeDescription,
-        readinessData: {
-          dsa: dsaSnapshot?.data,
-          skills: skillsSnapshot?.data,
-          projects: projectsSnapshot?.data,
-          roadmap: roadmapSnapshot?.data,
-          benchmarks: benchmarksSnapshot?.data,
-          core: coreSnapshot.data,
-        },
-        summary,
-      };
+      const snapshot = await SnapshotVersioningSystem.getLatestSnapshot(userId, 'core');
+      return snapshot ? this.toReadinessSnapshot(snapshot) : null;
     } catch (error) {
       logger.error('[ReadinessSnapshotService] Failed to get latest readiness snapshot', { userId, error });
       return null;
     }
   }
 
-  /**
-   * Get readiness snapshot by ID
-   */
   async getReadinessSnapshot(snapshotId: string): Promise<ReadinessSnapshot | null> {
     try {
-      const coreSnapshot = SnapshotVersioningSystem.getSnapshot(snapshotId);
-      
-      if (!coreSnapshot) {
-        return null;
-      }
-      
-      // Fetch component snapshots with same parent
-      const dsaSnapshot = Array.from(SnapshotVersioningSystem.getUserSnapshots(coreSnapshot.metadata.userId))
-        .find(s => s.metadata.modelType === 'dsa' && s.metadata.parentSnapshotId === snapshotId);
-      const skillsSnapshot = Array.from(SnapshotVersioningSystem.getUserSnapshots(coreSnapshot.metadata.userId))
-        .find(s => s.metadata.modelType === 'skills' && s.metadata.parentSnapshotId === snapshotId);
-      const projectsSnapshot = Array.from(SnapshotVersioningSystem.getUserSnapshots(coreSnapshot.metadata.userId))
-        .find(s => s.metadata.modelType === 'projects' && s.metadata.parentSnapshotId === snapshotId);
-      const roadmapSnapshot = Array.from(SnapshotVersioningSystem.getUserSnapshots(coreSnapshot.metadata.userId))
-        .find(s => s.metadata.modelType === 'roadmap' && s.metadata.parentSnapshotId === snapshotId);
-      const benchmarksSnapshot = Array.from(SnapshotVersioningSystem.getUserSnapshots(coreSnapshot.metadata.userId))
-        .find(s => s.metadata.modelType === 'benchmarks' && s.metadata.parentSnapshotId === snapshotId);
-      
-      const summary = this.calculateSummary(
-        dsaSnapshot?.data,
-        skillsSnapshot?.data,
-        projectsSnapshot?.data,
-        roadmapSnapshot?.data,
-        coreSnapshot.data
-      );
-      
-      return {
-        snapshotId: coreSnapshot.metadata.snapshotId,
-        userId: coreSnapshot.metadata.userId,
-        snapshotVersion: coreSnapshot.metadata.snapshotVersion,
-        createdAt: coreSnapshot.metadata.createdAt,
-        changeDescription: coreSnapshot.metadata.changeDescription,
-        readinessData: {
-          dsa: dsaSnapshot?.data,
-          skills: skillsSnapshot?.data,
-          projects: projectsSnapshot?.data,
-          roadmap: roadmapSnapshot?.data,
-          benchmarks: benchmarksSnapshot?.data,
-          core: coreSnapshot.data,
-        },
-        summary,
-      };
+      const snapshot = await SnapshotVersioningSystem.getSnapshot(snapshotId);
+      return snapshot?.metadata.modelType === 'core' ? this.toReadinessSnapshot(snapshot) : null;
     } catch (error) {
       logger.error('[ReadinessSnapshotService] Failed to get readiness snapshot', { snapshotId, error });
       return null;
     }
   }
 
-  /**
-   * Get all readiness snapshots for a user
-   */
   async getUserReadinessSnapshots(userId: string): Promise<ReadinessSnapshot[]> {
     try {
-      const coreSnapshots = Array.from(SnapshotVersioningSystem.getUserSnapshots(userId))
-        .filter(s => s.metadata.modelType === 'core');
-      
-      const readinessSnapshots: ReadinessSnapshot[] = [];
-      
-      for (const coreSnapshot of coreSnapshots) {
-        const snapshot = await this.getReadinessSnapshot(coreSnapshot.metadata.snapshotId);
-        if (snapshot) {
-          readinessSnapshots.push(snapshot);
-        }
-      }
-      
-      return readinessSnapshots;
+      const snapshots = await SnapshotVersioningSystem.getUserSnapshots(userId, { modelType: 'core' });
+      return snapshots.map(snapshot => this.toReadinessSnapshot(snapshot));
     } catch (error) {
       logger.error('[ReadinessSnapshotService] Failed to get user readiness snapshots', { userId, error });
       return [];
@@ -406,23 +227,18 @@ class ReadinessSnapshotServiceClass {
   /**
    * Calculate summary scores from readiness data
    */
-  private calculateSummary(dsaData: any, skillsData: any, projectsData: any, roadmapData: any, coreData: any): ReadinessSnapshot['summary'] {
-    const dsaScore = dsaData?.overallEngineeringDepth || 0;
-    const skillsScore = skillsData?.overallEngineeringDepth || 0;
-    const projectsScore = projectsData?.engineeringMaturity || 0;
-    const infrastructureScore = projectsData?.infrastructureSophistication || 0;
-    const roadmapProgress = roadmapData 
-      ? (roadmapData.verifiedNodes.length / (roadmapData.verifiedNodes.length + roadmapData.missingDependencies.length)) * 100 
-      : 0;
-    
-    const overallScore = (dsaScore + skillsScore + projectsScore + infrastructureScore) / 4;
-    const confidenceScore = Math.min(
-      dsaData?.confidenceScore || 50,
-      skillsData?.confidenceScore || 50,
-      projectsData?.confidenceScore || 50,
-      coreData?.confidenceScore || 50
-    );
-    
+  private calculateSummary(data: ReadinessSnapshot['readinessData']): ReadinessSnapshot['summary'] {
+    const { dsa, skills, projects, roadmap, core } = data;
+    const dsaScore = dsa?.overallEngineeringDepth ?? 0;
+    const skillsScore = skills?.overallEngineeringDepth ?? 0;
+    const projectsScore = projects?.engineeringMaturity ?? 0;
+    const infrastructureScore = projects?.infrastructureSophistication ?? 0;
+    const verifiedNodes = roadmap?.verifiedNodes?.length ?? 0;
+    const roadmapProgress = (verifiedNodes / Math.max(1, verifiedNodes + (roadmap?.missingDependencies?.length ?? 0))) * 100;
+    const overallScore = core?.overallScore ?? (dsaScore + skillsScore + projectsScore + infrastructureScore) / 4;
+    const confidenceScore = Math.min(dsa?.confidenceScore ?? 50, skills?.confidenceScore ?? 50,
+      projects?.confidenceScore ?? 50, core?.confidenceScore ?? 50);
+
     return {
       overallScore: Math.round(overallScore),
       dsaScore: Math.round(dsaScore),
@@ -439,7 +255,7 @@ class ReadinessSnapshotServiceClass {
    */
   async deleteOldSnapshots(userId: string, keepCount: number = 10): Promise<number> {
     try {
-      const deletedCount = SnapshotVersioningSystem.deleteOldSnapshots(userId, keepCount);
+      const deletedCount = await SnapshotVersioningSystem.deleteOldSnapshots(userId, keepCount);
       logger.info('[ReadinessSnapshotService] Deleted old readiness snapshots', { 
         userId, 
         deletedCount 
@@ -454,12 +270,12 @@ class ReadinessSnapshotServiceClass {
   /**
    * Get snapshot statistics
    */
-  getSnapshotStats(): {
+  async getSnapshotStats(): Promise<{
     totalSnapshots: number;
     snapshotsByModelType: Record<string, number>;
     currentVersion: string;
-  } {
-    const stats = SnapshotVersioningSystem.getStats();
+  }> {
+    const stats = await SnapshotVersioningSystem.getStats();
     return {
       totalSnapshots: stats.totalSnapshots,
       snapshotsByModelType: stats.snapshotsByModelType,

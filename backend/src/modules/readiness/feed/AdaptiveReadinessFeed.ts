@@ -79,7 +79,7 @@ class AdaptiveReadinessFeedClass {
       }
       
       // Generate snapshot-based insights (compare with previous snapshots)
-      const snapshotInsights = this.generateSnapshotInsights(userId, timeframe);
+      const snapshotInsights = await this.generateSnapshotInsights(userId);
       feedItems.push(...snapshotInsights);
       
       // Sort by recency and severity
@@ -451,11 +451,11 @@ class AdaptiveReadinessFeedClass {
   /**
    * Generate snapshot-based insights (compare with previous snapshots)
    */
-  private generateSnapshotInsights(userId: string, timeframe: string): FeedItem[] {
+  private async generateSnapshotInsights(userId: string): Promise<FeedItem[]> {
     const insights: FeedItem[] = [];
     
     // Get user's snapshots
-    const userSnapshots = SnapshotVersioningSystem.getUserSnapshots(userId);
+    const userSnapshots = await SnapshotVersioningSystem.getUserSnapshots(userId, { modelType: 'core', limit: 2 });
     
     if (userSnapshots.length >= 2) {
       const latest = userSnapshots[0];

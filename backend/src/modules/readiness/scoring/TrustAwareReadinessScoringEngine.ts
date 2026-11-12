@@ -6,6 +6,7 @@ import { ReadinessRoadmap } from '../../../db/models/readinessRoadmap.model.js';
 import { ReadinessBenchmarks, type IReadinessBenchmarks } from '../../../db/models/readinessBenchmarks.model.js';
 import { CareerIntent } from '../../../db/models/careerIntent.model.js';
 import { logger } from '../../../shared/logger.js';
+import { ReadinessSnapshotService } from '../snapshot/ReadinessSnapshotService.js';
 
 export const READINESS_FRESHNESS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -137,7 +138,7 @@ export const TrustAwareReadinessScoringEngine = {
       const readinessTier = this.determineReadinessTier(overallScore, confidenceLevel);
       
       if (input.persist !== false) {
-        await ReadinessCore.findOneAndUpdate(
+        const core = await ReadinessCore.findOneAndUpdate(
           { userId },
           {
             overallScore,
@@ -162,7 +163,15 @@ export const TrustAwareReadinessScoringEngine = {
             computedAt: new Date(),
           },
           { upsert: true, new: true }
-        );
+        ).lean();
+        await ReadinessSnapshotService.saveReadinessSnapshot(userId, {
+          core,
+          dsa: hasDsa ? dsa?.toObject() : null,
+          skills: hasSkills ? skills?.toObject() : null,
+          projects: hasProjects ? projects?.toObject() : null,
+          roadmap: hasRoadmap ? roadmap?.toObject() : null,
+          benchmarks: hasBenchmarks ? benchmarks?.toObject() : null,
+        }, 'Readiness score updated', 'system', { dsaScore, skillsScore, projectsScore });
       }
 
       logger.info('[TrustAwareReadinessScoringEngine] Successfully calculated readiness score', { 

@@ -1,4 +1,4 @@
-import { SnapshotVersioningSystem } from '../../operations/index.js';
+import { SnapshotVersioningSystem } from '../../operations/SnapshotVersioningSystem.js';
 import { logger } from '../../../shared/logger.js';
 
 export interface TimelineInput {
@@ -70,7 +70,7 @@ export interface TimelineSummary {
   keyAchievements: string[];
 }
 
-class EngineeringEvolutionTimelineClass {
+export class EngineeringEvolutionTimelineClass {
   /**
    * Generate engineering evolution timeline
    */
@@ -80,12 +80,10 @@ class EngineeringEvolutionTimelineClass {
     try {
       logger.info('[EngineeringEvolutionTimeline] Generating timeline', { userId, timeframe });
       
-      // Get user's snapshots
-      const userSnapshots = SnapshotVersioningSystem.getUserSnapshots(userId);
-      
-      // Filter by timeframe
-      const cutoffDate = this.getCutoffDate(timeframe);
-      const relevantSnapshots = userSnapshots.filter(s => s.metadata.createdAt >= cutoffDate);
+      const relevantSnapshots = (await SnapshotVersioningSystem.getUserSnapshots(userId, {
+        modelType: 'core',
+        since: this.getCutoffDate(timeframe),
+      })).reverse();
       
       // Generate milestones
       const milestones = this.generateMilestones(relevantSnapshots);
@@ -192,7 +190,8 @@ class EngineeringEvolutionTimelineClass {
       
       // Check for Graph mastery improvement
       if (data.dsa?.topics) {
-        const graphTopic = data.dsa.topics.find((t: any) => t.topicName.toLowerCase().includes('graph'));
+        const graphTopic = data.dsa.topics.find((t: any) =>
+          (t.name ?? t.topicName ?? '').toLowerCase().includes('graph') && t.masteryLevel >= 70);
         if (graphTopic && graphTopic.masteryLevel >= 70) {
           const existingGraph = milestones.find(m => m.title === 'Graph mastery achieved');
           if (!existingGraph) {
@@ -398,10 +397,10 @@ class EngineeringEvolutionTimelineClass {
       trajectory.push({
         timestamp,
         overallScore: data.overallScore || 0,
-        dsaScore: data.dsa?.overallEngineeringDepth || 0,
-        skillsScore: data.skills?.overallEngineeringDepth || 0,
-        projectsScore: data.projects?.engineeringMaturity || 0,
-        infrastructureScore: data.projects?.infrastructureSophistication || 0,
+        dsaScore: data.dsaScore ?? data.dsa?.overallEngineeringDepth ?? 0,
+        skillsScore: data.skillsScore ?? data.skills?.overallEngineeringDepth ?? 0,
+        projectsScore: data.projectsScore ?? data.projects?.engineeringMaturity ?? 0,
+        infrastructureScore: data.infrastructureScore ?? data.projects?.infrastructureSophistication ?? 0,
       });
     });
     

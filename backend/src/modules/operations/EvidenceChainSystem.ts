@@ -1,4 +1,5 @@
-import { logger } from '../../shared/logger.js';
+import { randomUUID } from 'node:crypto';
+import { EvidenceChainRecord } from '../../db/models/evidenceChainRecord.model.js';
 
 export interface EvidenceNode {
   evidenceId: string;
@@ -27,19 +28,10 @@ export interface EvidenceChain {
   isComplete: boolean;
 }
 
-class EvidenceChainSystemClass {
-  private chains: Map<string, EvidenceChain> = new Map();
-  private evidenceNodes: Map<string, EvidenceNode> = new Map();
-  private links: Map<string, EvidenceLink> = new Map();
-
-  /**
-   * Create a new evidence chain for an insight
-   */
-  createChain(userId: string, rootInsight: string): EvidenceChain {
-    const chainId = this.generateChainId(userId, rootInsight);
-    
+export class EvidenceChainSystemClass {
+  async createChain(userId: string, rootInsight: string): Promise<EvidenceChain> {
     const chain: EvidenceChain = {
-      chainId,
+      chainId: randomUUID(),
       userId,
       rootInsight,
       nodes: [],
@@ -47,271 +39,139 @@ class EvidenceChainSystemClass {
       createdAt: new Date(),
       isComplete: false,
     };
-
-    this.chains.set(chainId, chain);
-    logger.info('[EvidenceChainSystem] Created evidence chain', { chainId, userId, rootInsight });
-
+    await EvidenceChainRecord.create(chain);
     return chain;
   }
 
-  /**
-   * Add an evidence node to a chain
-   */
-  addEvidenceNode(
+  async addEvidenceNode(
     chainId: string,
     source: string,
     type: EvidenceNode['type'],
-    data: any,
-    confidence: number
-  ): EvidenceNode {
-    const chain = this.chains.get(chainId);
-    if (!chain) {
-      throw new Error(`Chain not found: ${chainId}`);
-    }
-
-    const evidenceId = this.generateEvidenceId(chainId, source);
-    const node: EvidenceNode = {
-      evidenceId,
-      source,
-      type,
-      timestamp: new Date(),
-      data,
-      confidence,
-    };
-
-    this.evidenceNodes.set(evidenceId, node);
-    chain.nodes.push(node);
-    this.chains.set(chainId, chain);
-
-    logger.info('[EvidenceChainSystem] Added evidence node', { evidenceId, chainId, source });
-
+    data: unknown,
+    confidence: number,
+  ): Promise<EvidenceNode> {
+    const node: EvidenceNode = { evidenceId: randomUUID(), source, type, timestamp: new Date(), data, confidence };
+    const result = await EvidenceChainRecord.updateOne({ chainId }, { $push: { nodes: node } });
+    if (!result.matchedCount) throw new Error(`Chain not found: ${chainId}`);
     return node;
   }
 
-  /**
-   * Link evidence to an insight
-   */
-  linkEvidenceToInsight(
+  async linkEvidenceToInsight(
     chainId: string,
     insightId: string,
     insightType: string,
     evidenceIds: string[],
     reasoning: string,
-    contributionWeight: number
-  ): EvidenceLink {
-    const chain = this.chains.get(chainId);
-    if (!chain) {
-      throw new Error(`Chain not found: ${chainId}`);
-    }
-
-    const linkId = this.generateLinkId(insightId, evidenceIds);
-    const link: EvidenceLink = {
-      insightId,
-      insightType,
-      evidenceIds,
-      reasoning,
-      contributionWeight,
-    };
-
-    this.links.set(linkId, link);
-    chain.links.push(link);
-    this.chains.set(chainId, chain);
-
-    logger.info('[EvidenceChainSystem] Linked evidence to insight', { 
-      linkId, 
-      insightId, 
-      evidenceCount: evidenceIds.length 
-    });
-
+    contributionWeight: number,
+  ): Promise<EvidenceLink> {
+    const link: EvidenceLink = { insightId, insightType, evidenceIds, reasoning, contributionWeight };
+    const result = await EvidenceChainRecord.updateOne({ chainId }, { $push: { links: link } });
+    if (!result.matchedCount) throw new Error(`Chain not found: ${chainId}`);
     return link;
   }
 
-  /**
-   * Mark a chain as complete
-   */
-  markChainComplete(chainId: string): void {
-    const chain = this.chains.get(chainId);
-    if (!chain) {
-      throw new Error(`Chain not found: ${chainId}`);
-    }
-
-    chain.isComplete = true;
-    this.chains.set(chainId, chain);
-
-    logger.info('[EvidenceChainSystem] Marked chain complete', { chainId });
+  async markChainComplete(chainId: string): Promise<void> {
+    const result = await EvidenceChainRecord.updateOne({ chainId }, { $set: { isComplete: true } });
+    if (!result.matchedCount) throw new Error(`Chain not found: ${chainId}`);
   }
 
-  /**
-   * Get a chain by ID
-   */
-  getChain(chainId: string): EvidenceChain | undefined {
-    return this.chains.get(chainId);
+  async getChain(chainId: string): Promise<EvidenceChain | undefined> {
+    return (await EvidenceChainRecord.findOne({ chainId }, { _id: 0 }).lean()) ?? undefined;
   }
 
-  /**
-   * Get all chains for a user
-   */
-  getUserChains(userId: string): EvidenceChain[] {
-    return Array.from(this.chains.values())
-      .filter(c => c.userId === userId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  async getUserChains(userId: string): Promise<EvidenceChain[]> {
+    return EvidenceChainRecord.find({ userId }, { _id: 0 }).sort({ createdAt: -1, _id: -1 }).lean();
   }
 
-  /**
-   * Get evidence for a specific insight
-   */
-  getEvidenceForInsight(insightId: string): EvidenceNode[] {
-    const relevantLinks = Array.from(this.links.values())
-      .filter(l => l.insightId === insightId);
-    
-    const evidenceIds = new Set<string>();
-    relevantLinks.forEach(link => {
-      link.evidenceIds.forEach(id => evidenceIds.add(id));
-    });
-
-    const evidence: EvidenceNode[] = [];
-    evidenceIds.forEach(id => {
-      const node = this.evidenceNodes.get(id);
-      if (node) evidence.push(node);
-    });
-
-    return evidence;
+  async getEvidenceForInsight(insightId: string): Promise<EvidenceNode[]> {
+    return (await this.explainInsight(insightId)).evidence;
   }
 
-  /**
-   * Explain an insight with its evidence chain
-   */
-  explainInsight(insightId: string): {
+  async explainInsight(insightId: string): Promise<{
     insightId: string;
     evidence: EvidenceNode[];
     reasoning: string[];
     totalConfidence: number;
-  } {
-    const evidence = this.getEvidenceForInsight(insightId);
-    const relevantLinks = Array.from(this.links.values())
-      .filter(l => l.insightId === insightId);
-    
-    const reasoning = relevantLinks.map(l => l.reasoning);
-    
+  }> {
+    const chains = await EvidenceChainRecord.find({ 'links.insightId': insightId }, { userId: 1, links: 1 }).lean();
+    const links = chains.flatMap(chain => chain.links
+      .filter(link => link.insightId === insightId)
+      .map(link => ({ userId: chain.userId, link })));
+
+    const ids = [...new Set(links.flatMap(({ link }) => link.evidenceIds))];
+    const sources = ids.length ? await EvidenceChainRecord.find(
+      { 'nodes.evidenceId': { $in: ids }, userId: { $in: chains.map(chain => chain.userId) } },
+      { userId: 1, nodes: 1 },
+    ).lean() : [];
+    const nodes = new Map(sources.flatMap(chain => chain.nodes.map(
+      node => [node.evidenceId, { userId: chain.userId, node }] as const,
+    )));
+    const evidence = new Map<string, EvidenceNode>();
     let totalConfidence = 0;
     let totalWeight = 0;
-    
-    relevantLinks.forEach(link => {
-      const linkEvidence = link.evidenceIds
-        .map(id => this.evidenceNodes.get(id))
-        .filter((n): n is EvidenceNode => n !== undefined);
-      
-      const avgEvidenceConfidence = linkEvidence.length > 0
-        ? linkEvidence.reduce((sum, n) => sum + n.confidence, 0) / linkEvidence.length
-        : 0;
-      
-      totalConfidence += avgEvidenceConfidence * link.contributionWeight;
+    for (const { userId, link } of links) {
+      const matchingNodes = link.evidenceIds.flatMap(id => {
+        const match = nodes.get(id);
+        return match?.userId === userId ? [match.node] : [];
+      });
+      for (const node of matchingNodes) evidence.set(node.evidenceId, node);
+      const confidence = matchingNodes.reduce((sum, node) => sum + node.confidence, 0);
+      totalConfidence += (confidence / Math.max(1, matchingNodes.length)) * link.contributionWeight;
       totalWeight += link.contributionWeight;
-    });
-    
-    const finalConfidence = totalWeight > 0 ? totalConfidence / totalWeight : 0;
+    }
 
     return {
       insightId,
-      evidence,
-      reasoning,
-      totalConfidence: Math.round(finalConfidence),
+      evidence: [...evidence.values()],
+      reasoning: links.map(({ link }) => link.reasoning),
+      totalConfidence: totalWeight > 0 ? Math.round(totalConfidence / totalWeight) : 0,
     };
   }
 
-  /**
-   * Get audit trail for a user's readiness
-   */
-  getAuditTrail(userId: string): {
+  async getAuditTrail(userId: string): Promise<{
     chains: EvidenceChain[];
     totalEvidence: number;
     totalLinks: number;
     averageConfidence: number;
-  } {
-    const userChains = this.getUserChains(userId);
-    const totalEvidence = userChains.reduce((sum, c) => sum + c.nodes.length, 0);
-    const totalLinks = userChains.reduce((sum, c) => sum + c.links.length, 0);
-    
-    let totalConfidence = 0;
-    let confidenceCount = 0;
-    
-    userChains.forEach(chain => {
-      chain.nodes.forEach(node => {
-        totalConfidence += node.confidence;
-        confidenceCount++;
-      });
-    });
-    
-    const averageConfidence = confidenceCount > 0 ? totalConfidence / confidenceCount : 0;
-
+  }> {
+    const chains = await this.getUserChains(userId);
+    const nodes = chains.flatMap(chain => chain.nodes);
     return {
-      chains: userChains,
-      totalEvidence,
-      totalLinks,
-      averageConfidence: Math.round(averageConfidence),
+      chains,
+      totalEvidence: nodes.length,
+      totalLinks: chains.reduce((sum, chain) => sum + chain.links.length, 0),
+      averageConfidence: Math.round(nodes.reduce((sum, node) => sum + node.confidence, 0) / Math.max(1, nodes.length)),
     };
   }
 
-  /**
-   * Generate chain ID
-   */
-  private generateChainId(userId: string, rootInsight: string): string {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 8);
-    return `${userId}-${rootInsight}-${timestamp}-${random}`;
-  }
-
-  /**
-   * Generate evidence ID
-   */
-  private generateEvidenceId(chainId: string, source: string): string {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 8);
-    return `${chainId}-${source}-${timestamp}-${random}`;
-  }
-
-  /**
-   * Generate link ID
-   */
-  private generateLinkId(insightId: string, evidenceIds: string[]): string {
-    const evidenceHash = evidenceIds.sort().join('-');
-    const timestamp = Date.now();
-    return `${insightId}-${evidenceHash}-${timestamp}`;
-  }
-
-  /**
-   * Get system statistics
-   */
-  getStats(): {
+  async getStats(): Promise<{
     totalChains: number;
     totalEvidenceNodes: number;
     totalLinks: number;
     completedChains: number;
     averageChainSize: number;
-  } {
-    const chains = Array.from(this.chains.values());
-    const completedChains = chains.filter(c => c.isComplete).length;
-    const averageChainSize = chains.length > 0
-      ? chains.reduce((sum, c) => sum + c.nodes.length, 0) / chains.length
-      : 0;
-
+  }> {
+    const [counts] = await EvidenceChainRecord.aggregate<{
+      totalChains: number;
+      totalEvidenceNodes: number;
+      totalLinks: number;
+      completedChains: number;
+    }>([
+      {
+        $group: {
+          _id: null,
+          totalChains: { $sum: 1 },
+          totalEvidenceNodes: { $sum: { $size: '$nodes' } },
+          totalLinks: { $sum: { $size: '$links' } },
+          completedChains: { $sum: { $cond: ['$isComplete', 1, 0] } },
+        },
+      },
+      { $project: { _id: 0 } },
+    ]);
     return {
-      totalChains: this.chains.size,
-      totalEvidenceNodes: this.evidenceNodes.size,
-      totalLinks: this.links.size,
-      completedChains,
-      averageChainSize: Math.round(averageChainSize),
+      ...counts ?? { totalChains: 0, totalEvidenceNodes: 0, totalLinks: 0, completedChains: 0 },
+      averageChainSize: counts ? Math.round(counts.totalEvidenceNodes / counts.totalChains) : 0,
     };
-  }
-
-  /**
-   * Clear all data (for testing)
-   */
-  clear(): void {
-    this.chains.clear();
-    this.evidenceNodes.clear();
-    this.links.clear();
-    logger.info('[EvidenceChainSystem] Cleared all data');
   }
 }
 

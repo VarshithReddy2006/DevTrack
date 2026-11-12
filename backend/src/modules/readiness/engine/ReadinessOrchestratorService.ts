@@ -16,6 +16,7 @@ import { AdaptiveReadinessFeed } from './AdaptiveReadinessFeed.js';
 import { RoleAlignmentEngine } from './RoleAlignmentEngine.js';
 import { READINESS_FRESHNESS_MS, TrustAwareReadinessScoringEngine } from '../scoring/TrustAwareReadinessScoringEngine.js';
 import { ReadinessMomentumEngine } from './ReadinessMomentumEngine.js';
+import { EngineeringEvolutionTimeline } from '../evolution/EngineeringEvolutionTimeline.js';
 
 export const ReadinessOrchestratorService = {
   async computeDynamicSnapshot(userId: string) {
@@ -364,7 +365,10 @@ async function buildEvolutionIntelligence(userId: string, roadmap: any, core: an
   const roadmapIntelResponse = await buildRoadmapIntelligence(userId, roadmap, shared, []);
   const roadmapIntel = roadmapIntelResponse.intelligence;
 
-  const userSkillProgress = await UserSkillProgress.find({ userId, completed: true }).sort({ updatedAt: 1 }).lean();
+  const [userSkillProgress, snapshotTimeline] = await Promise.all([
+    UserSkillProgress.find({ userId, completed: true }).sort({ updatedAt: 1 }).lean(),
+    EngineeringEvolutionTimeline.generateTimeline({ userId }),
+  ]);
 
   // Calculate evolution Summary
   const oneMonthAgo = new Date();
@@ -441,6 +445,7 @@ async function buildEvolutionIntelligence(userId: string, roadmap: any, core: an
       nextStage,
       evolutionSummary,
       growthTimeline,
+      snapshotTimeline,
       biggestBlocker,
       nextMilestone,
       activitySummary

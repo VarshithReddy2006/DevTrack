@@ -142,8 +142,10 @@ class ObservabilityConsoleClass {
     }
 
     // Get system metrics
-    const snapshotStats = SnapshotVersioningSystem.getStats();
-    const evidenceStats = EvidenceChainSystem.getStats();
+    const [snapshotStats, evidenceStats] = await Promise.all([
+      SnapshotVersioningSystem.getStats(),
+      EvidenceChainSystem.getStats(),
+    ]);
     
     // Determine overall status
     let overallStatus: 'healthy' | 'degraded' | 'critical' = 'healthy';
