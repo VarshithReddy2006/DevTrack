@@ -17,6 +17,26 @@ export interface IReadinessBenchmarks extends Document {
     }>;
   }>;
   
+  percentileRankings: Array<{
+    metric: string;
+    value: number;
+    percentile: number;
+    cohortAverage: number;
+    cohortMedian: number;
+    cohortP90: number;
+    cohortP75: number;
+    cohortP25: number;
+    cohortP10: number;
+  }>;
+  relativeComparisons: Array<{
+    metric: string;
+    userValue: number;
+    cohortPercentile: number;
+    interpretation: 'above_average' | 'average' | 'below_average';
+    gapToAverage: number;
+    gapToP90: number;
+  }>;
+
   // Confidence & Evidence System
   confidenceScore: number; // 0-100
   confidenceReasoning: string;
@@ -53,6 +73,27 @@ const ReadinessBenchmarksSchema = new Schema<IReadinessBenchmarks>(
       }
     ],
     
+    percentileRankings: [{
+      _id: false,
+      metric: String,
+      value: Number,
+      percentile: Number,
+      cohortAverage: Number,
+      cohortMedian: Number,
+      cohortP90: Number,
+      cohortP75: Number,
+      cohortP25: Number,
+      cohortP10: Number,
+    }],
+    relativeComparisons: [{
+      _id: false,
+      metric: String,
+      userValue: Number,
+      cohortPercentile: Number,
+      interpretation: { type: String, enum: ['above_average', 'average', 'below_average'] },
+      gapToAverage: Number,
+      gapToP90: Number,
+    }],
     confidenceScore: { type: Number, default: 0 },
     confidenceReasoning: { type: String, default: '' },
     evidenceCoverage: { type: Number, default: 0 },

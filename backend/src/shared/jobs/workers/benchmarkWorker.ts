@@ -3,15 +3,15 @@ import { Worker, Job } from 'bullmq';
 import { getRedisClient } from '../../redis/index.js';
 import { QueueNames } from '../types.js';
 import { logger } from '../../logger.js';
-import { CohortBenchmarkEngine } from '../../../modules/readiness/engine/CohortBenchmarkEngine.js';
+import { BenchmarkEngine } from '../../../modules/readiness/benchmark/BenchmarkEngine.js';
 
 export function startBenchmarkWorker(): Worker {
   const worker = createDlqWorker(
     QueueNames.READINESS_BENCHMARKS,
     async (job: Job) => {
-      const { userId, targetRole, currentScore } = job.data;
+      const { userId } = job.data;
       logger.info('[Worker] Processing Benchmarks', { userId });
-      await CohortBenchmarkEngine.computeBenchmarks(userId, targetRole || 'General Engineering', currentScore || 0);
+      await BenchmarkEngine.generateBenchmarks({ userId });
     },
     { connection: getRedisClient() }
   );
