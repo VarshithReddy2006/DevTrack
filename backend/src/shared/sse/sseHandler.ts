@@ -12,7 +12,13 @@ import { trackSseConnectionSuccess, trackSseConnectionFailure, trackSseDisconnec
 
 const encoder = new TextEncoder();
 
-async function replayMissedEvents(
+/** A Redis Stream ID is `<ms>-<seq>`, both unsigned integers. Anything else is not a stream position. */
+export function parseStreamId(lastEventId: string | undefined | null): string | null {
+  const match = /^(\d+)-(\d+)$/.exec((lastEventId || '').trim());
+  return match ? `${match[1]}-${match[2]}` : null;
+}
+
+export async function replayMissedEvents(
   userId: string,
   lastEventId: string,
   controller: ReadableStreamDefaultController<Uint8Array>
@@ -21,16 +27,15 @@ async function replayMissedEvents(
   const streamKey = `sse:stream:${userId}`;
   
   try {
-    // Parse last event ID to get sequence number
-    const lastSequence = parseInt(lastEventId.split('-')[1] || '0', 10);
-    
-    // Read events from Redis stream after the last sequence
-    const events = await redis.xrange(
-      streamKey,
-      `(${lastSequence}`,
-      '+',
-      'COUNT', 50
-    );
+    // Last-Event-ID is a full `<ms>-<seq>` stream id. A malformed or foreign id (an older
+    // client, a fallback id) cannot be placed in the stream, so skip replay and resend full state.
+    const lastStreamId = parseStreamId(lastEventId);
+    const lastSequence = lastStreamId;
+
+    // Read only events strictly after that position
+    const events = lastStreamId
+      ? await redis.xrange(streamKey, `(${lastStreamId}`, '+', 'COUNT', 50)
+      : [];
     
     if (events.length > 0) {
       logger.info('[sse] Replaying missed events', {

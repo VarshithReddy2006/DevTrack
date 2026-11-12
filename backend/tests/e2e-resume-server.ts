@@ -1,6 +1,7 @@
 // Disposable API for the browser resume flow. Production auth is never bypassed:
 // only these test-created routers receive the fixed test identity.
 import express, { type Request, type Response, type NextFunction } from 'express';
+import { createHash } from 'node:crypto';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { connect } from 'node:net';
@@ -30,14 +31,63 @@ const database = await createIntegrationDatabase(
 );
 process.env.MONGODB_URI = database.uri;
 
-const [{ User }, { getRedisClient, disconnectRedis }, { startResumeUploadWorker, stopResumeUploadWorker },
+const [{ User }, { getRedisClient, disconnectRedis }, { closeAllQueues }, { QueueNames }, { workerDefinitions },
+  { AIProviderAdapter }, { EmbeddingProviderAdapter },
   { createResumeUploadRoutes }, { createResumeIntelligenceRoutes }] = await Promise.all([
   import('../src/db/models/index.js'),
   import('../src/shared/redis/index.js'),
-  import('../src/workers/worker-resume-upload.js'),
+  import('../src/shared/jobs/queueFactory.js'),
+  import('../src/shared/jobs/types.js'),
+  import('../src/workers/worker-runtime.js'),
+  import('../src/modules/ai/provider/AIProviderAdapter.js'),
+  import('../src/modules/ai/embedding/EmbeddingProviderAdapter.js'),
   import('../src/modules/resume/upload/upload.routes.js'),
   import('../src/modules/resume/routes/resume-intelligence.routes.js'),
 ]);
+
+// Deterministic in-process AI/embedding stubs for the offline E2E fixture server
+// so pipeline stages complete cleanly without external API keys.
+AIProviderAdapter.generateResponse = async (request) => {
+  const payload = request.responseSchemaVersion === 'resume-skills-v1'
+    ? { skills: ['TypeScript', 'Node.js', 'React', 'MongoDB'] }
+    : {
+        extractedSkills: {
+          languages: ['TypeScript'],
+          frameworks: ['React', 'Express'],
+          databases: ['MongoDB'],
+          cloudTools: [],
+          devOpsTools: ['Docker'],
+          aiMlTools: [],
+        },
+        experienceSignals: {
+          yearsOfExperience: 3,
+          engineeringDepth: 7,
+          projectComplexity: 7,
+          leadershipIndicators: 5,
+          productionExposure: 6,
+        },
+        roleAlignment: { backend: 80, frontend: 70, fullstack: 85, ml: 20, devops: 55 },
+        weaknesses: ['Add quantitative latency and throughput metrics'],
+        strengths: ['End-to-end TypeScript service delivery'],
+        semanticSummary: 'Full-stack TypeScript engineer with backend API and React experience.',
+        confidenceScore: 86,
+      };
+  return {
+    content: JSON.stringify(payload),
+    model: 'e2e-fixture-llm',
+    provider: 'openai',
+    tokensUsed: 0,
+    latency: 1,
+    cached: false,
+    fallbackTriggered: false,
+  };
+};
+
+EmbeddingProviderAdapter.prototype.generateEmbeddingBatch = async (texts) => texts.map((text) => {
+  const hash = createHash('sha256').update(text).digest();
+  const vector = Array.from({ length: 1536 }, (_, i) => Math.sin(i + hash[i % hash.length]) * 0.1);
+  return { vector, provider: 'openai', model: 'e2e-fixture-embedding', dimensions: vector.length };
+});
 
 const user = await User.create({
   clerkId: 'e2e_clerk_user',
@@ -46,7 +96,23 @@ const user = await User.create({
   displayName: 'Resume E2E User',
 });
 await getRedisClient().ping();
-await startResumeUploadWorker();
+
+const resumeStageQueues = new Set<string>([
+  QueueNames.RESUME_UPLOAD,
+  QueueNames.RESUME_ATS,
+  QueueNames.RESUME_EMBEDDING,
+  QueueNames.RESUME_SEMANTIC,
+  QueueNames.RESUME_RECOMMENDATION,
+]);
+const stageWorkers = await Promise.all(
+  workerDefinitions
+    .filter((definition) => definition.queueName && resumeStageQueues.has(definition.queueName))
+    .map(async (definition) => {
+      const lifecycle = await definition.load();
+      await lifecycle.start();
+      return lifecycle;
+    }),
+);
 
 const auth = [async (req: Request, res: Response, next: NextFunction) => {
   if (req.headers.authorization !== 'Bearer devtrack-e2e-token') {
@@ -86,7 +152,8 @@ async function shutdown() {
   if (closing) return;
   closing = true;
   await new Promise<void>(resolve => server.close(() => resolve()));
-  await stopResumeUploadWorker();
+  await Promise.allSettled(stageWorkers.map((worker) => worker.stop()));
+  await closeAllQueues();
   await disconnectRedis();
   await database.close();
   if (process.env.MONGODB_URI === database.uri) delete process.env.MONGODB_URI;

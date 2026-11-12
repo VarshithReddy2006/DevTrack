@@ -5,7 +5,7 @@ import { hardProgressEngine } from '../scoring/HardProgressEngine.js';
 import { confidenceEngine } from '../scoring/ConfidenceEngine.js';
 import { trendEngine } from '../trend-engine/TrendEngine.js';
 import { recommendationEngine } from '../recommendation-engine/RecommendationEngine.js';
-import { DSAIntelligenceInput, DSAIntelligenceOutput, TrendStatus, TopicBreakdown } from '../types/dsa.types';
+import { DSAIntelligenceInput, DSAIntelligenceOutput, Platform, TopicBreakdown } from '../types/dsa.types';
 
 export class DSAService {
   /**
@@ -101,7 +101,7 @@ export class DSAService {
    */
   async updateDSAProfile(
     userId: string,
-    platform: string,
+    platform: Platform,
     data: Partial<{
       totalSolved: number;
       easySolved: number;
@@ -109,9 +109,8 @@ export class DSAService {
       hardSolved: number;
       currentStreak: number;
       longestStreak: number;
-      lastSolvedDate: Date;
+      lastSolvedDate: Date | null;
       topicBreakdown: TopicBreakdown;
-      isVerified: boolean;
     }>
   ): Promise<void> {
     const updateData = {
@@ -119,15 +118,15 @@ export class DSAService {
       lastSyncedAt: new Date(),
     };
 
-    await dsaRepository.update(userId, platform as any, updateData);
+    await dsaRepository.update(userId, platform, updateData);
   }
 
   /**
    * Get DSA profile by user and platform
    */
-  async getDSAProfile(userId: string, platform?: string): Promise<AggregatedDSAData> {
+  async getDSAProfile(userId: string, platform?: Platform): Promise<AggregatedDSAData> {
     if (platform) {
-      const profile = await dsaRepository.findByUserIdAndPlatform(userId, platform as any);
+      const profile = await dsaRepository.findByUserIdAndPlatform(userId, platform);
       if (profile) {
         return {
           totalSolved: profile.totalSolved,

@@ -4,8 +4,8 @@ import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecom
 
 export class RecommendationDependencyGraph {
   
-  static async resolveDependencies(resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
-    const activeRecs = await IntelligenceRecommendation.find({ resumeProfileId, state: 'active' });
+  static async resolveDependencies(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
+    const activeRecs = await IntelligenceRecommendation.find({ userId, resumeProfileId, state: 'active' });
     
     // Categorize
     const atsRecs = activeRecs.filter(r => r.category === 'ats');

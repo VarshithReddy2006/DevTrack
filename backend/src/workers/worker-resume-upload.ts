@@ -8,7 +8,7 @@ import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/Re
 import { ResumeSession } from '../db/models/resumeSession.model.js';
 
 let worker: Worker | null = null;
-const orchestrator = new ResumeProcessingOrchestrator();
+const orchestrator = new ResumeProcessingOrchestrator(true);
 
 export async function startResumeUploadWorker(): Promise<Worker> {
   if (worker) {
@@ -21,15 +21,20 @@ export async function startResumeUploadWorker(): Promise<Worker> {
   worker = WorkerFactory.createWorker<ResumeUploadJobData | ResumeCheckpointJobData>(
     QueueNames.RESUME_UPLOAD,
     async (job: Job<ResumeUploadJobData | ResumeCheckpointJobData>) => {
+      const finalHandoffAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       const { sessionId, userId } = job.data;
 
       if ('recoveryRetryCount' in job.data) {
         let session = await ResumeSession.findOne({ sessionId, userId });
-        if (session?.currentStage === 'FAILED' && session.failureState?.failed && session.checkpointState?.stage
+        if (session?.checkpointState?.stage
           && (session.failureState.retryCount ?? 0) === job.data.recoveryRetryCount) {
-          await orchestrator.resumeFromCheckpoint(sessionId);
-          session = await ResumeSession.findOne({ sessionId });
-          if (session?.currentStage === 'COMPLETED' && session.uploadMetadata?.uploadPath) {
+          if (!session.timestamps?.completedAt
+            && (session.failureState.failed || job.attemptsStarted > 1)) {
+            await orchestrator.resumeFromCheckpoint(sessionId, finalHandoffAttempt);
+            session = await ResumeSession.findOne({ sessionId });
+          }
+          if ((session?.currentStage === 'COMPLETED' || session?.currentStage === 'DEGRADED')
+            && session.uploadMetadata?.uploadPath) {
             await artifactStorage.remove(session.uploadMetadata.uploadPath);
           }
         }
@@ -86,11 +91,11 @@ export async function startResumeUploadWorker(): Promise<Worker> {
         }
 
         // A redelivery after completion can retry cleanup without re-parsing.
-        if (session.currentStage !== 'COMPLETED') {
-          await orchestrator.startProcessing(sessionId);
+        if (session.currentStage !== 'COMPLETED' && session.currentStage !== 'DEGRADED') {
+          await orchestrator.startProcessing(sessionId, finalHandoffAttempt);
           session = await ResumeSession.findOne({ sessionId });
         }
-        if (session?.currentStage === 'COMPLETED') {
+        if (session?.currentStage === 'COMPLETED' || session?.currentStage === 'DEGRADED') {
           await artifactStorage.remove(session.uploadMetadata.uploadPath);
         }
 
@@ -100,7 +105,7 @@ export async function startResumeUploadWorker(): Promise<Worker> {
         throw error;
       }
     },
-    { concurrency: 3 }
+    { concurrency: 3, jobTimeoutMs: null }
   );
 
   worker.on('completed', (job) => {

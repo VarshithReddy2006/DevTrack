@@ -6,6 +6,9 @@ import { useProfileStore } from '../store/profileStore';
 import { useDashboardStore } from '../store/dashboardStore';
 import { useDsaStore } from '../store/dsaStore';
 import { useProjectsStore } from '../store/projectsStore';
+import { queryClient } from '../lib/queryClient';
+import { useSettingsStore } from '../store/settingsStore';
+import { useSessionState } from '../features/resume-tracker/state/useSessionState';
 import { useUIStore } from '../store/uiStore';
 import type { ApiUser } from '../types/api.types';
 
@@ -59,6 +62,11 @@ vi.mock('../hooks/useDashboardData', () => ({
   useDashboardData: () => ({ data: null, loading: false, error: 'Dashboard unavailable', refetch: vi.fn() }),
 }));
 vi.mock('../hooks/useDailyChallenge', () => ({ useDailyChallenge: () => ({ challenge: null }) }));
+vi.mock('../services/settingsService', () => ({
+  getSettings: vi.fn(() => new Promise(() => {})),
+  updateSettings: vi.fn(),
+}));
+vi.mock('../features/settings/components/SystemHealthBar', () => ({ SystemHealthBar: () => null }));
 vi.mock('../services/dsaService', () => ({
   fetchDsaContests: vi.fn().mockResolvedValue({ success: true, data: { contests: [] } }),
 }));
@@ -80,6 +88,10 @@ function setSignedIn(value: boolean) {
 
 beforeEach(() => {
   clerk.signedIn = true;
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  queryClient.setQueryData(['logout-test'], { owner: 'synthetic-user' });
+  useSettingsStore.setState({ isDirty: false, isLoading: true, loadRequest: {} });
+  useSessionState.setState({ error: 'Synthetic session data' });
   clerk.signOut.mockReset();
   clerk.signOut.mockImplementation(async (onSignedOut: () => Promise<void>) => {
     setSignedIn(false);
@@ -98,6 +110,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  queryClient.clear();
+  useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+  useSessionState.setState(useSessionState.getInitialState(), true);
   clerk.listeners.clear();
   useUserStore.setState(useUserStore.getInitialState());
   useProfileStore.setState(useProfileStore.getInitialState());
@@ -111,12 +126,13 @@ afterEach(() => {
 const controls = [
   ['/profile', 'Terminate Session', '/'],
   ['/dashboard', 'Log Out', '/login'],
+  ['/settings', 'Terminate Session', '/login'],
 ] as const;
 
 async function openControl(path: string, label: string) {
   window.history.replaceState({}, '', path);
   const view = render(<App />);
-  const button = await screen.findByRole('button', { name: label });
+  const button = await screen.findByRole('button', { name: label }, { timeout: 5000 });
   return { ...view, button };
 }
 
@@ -139,6 +155,9 @@ describe.each(controls)('%s custom logout', (path, label, redirect) => {
     expect(useDashboardStore.getState().data).toBeNull();
     expect(useDsaStore.getState().status).toBe('idle');
     expect(useProjectsStore.getState().listStatus).toBe('idle');
+    expect(useSettingsStore.getState().loadRequest).toBeNull();
+    expect(useSessionState.getState().error).toBeNull();
+    expect(queryClient.getQueryData(['logout-test'])).toBeUndefined();
     expect(localStorage.getItem('devtrack-profile')).toBeNull();
     expect(window.history.length).toBe(historyLength);
     // A signed-out protected-route visit is rejected by the real App guard.
@@ -165,6 +184,7 @@ describe.each(controls)('%s custom logout', (path, label, redirect) => {
     expect(clerk.signedIn).toBe(true);
     expect(useUserStore.getState().isAuthenticated).toBe(true);
     expect(useDashboardStore.getState().data).toEqual({ owner: 'synthetic-user' });
+    expect(queryClient.getQueryData(['logout-test'])).toEqual({ owner: 'synthetic-user' });
     expect(localStorage.getItem('devtrack-profile')).toBe('synthetic account data');
     expect(window.location.pathname).toBe(path);
     expect((button as HTMLButtonElement).disabled).toBe(false);
@@ -218,11 +238,22 @@ describe.each(controls)('%s custom logout', (path, label, redirect) => {
     fireEvent.click(button);
     await screen.findByText('Session ended');
     expect(screen.getByRole('alert').textContent).toContain('Reload before signing in again');
+    expect(queryClient.getQueryData(['logout-test'])).toBeUndefined();
     await waitFor(() => expect(window.location.pathname).toBe(redirect));
     expect(clerk.signedIn).toBe(false);
     expect(useUserStore.getState().user).toBeNull();
     expect(useUserStore.getState().isAuthenticated).toBe(false);
   });
+});
+
+it('keeps the Settings session active when confirmation is cancelled', async () => {
+  vi.mocked(window.confirm).mockReturnValueOnce(false);
+  const { button } = await openControl('/settings', 'Terminate Session');
+  fireEvent.click(button);
+  expect(window.confirm).toHaveBeenCalledOnce();
+  expect(clerk.signOut).not.toHaveBeenCalled();
+  expect(useUserStore.getState().isAuthenticated).toBe(true);
+  expect(window.location.pathname).toBe('/settings');
 });
 
 it('does not render a custom logout control on the public profile view', async () => {

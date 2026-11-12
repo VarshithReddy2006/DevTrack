@@ -287,8 +287,8 @@ class EventBus extends EventEmitter {
   private readonly startedAt = Date.now();
 
   // Event coalescing for runtime_state_patch
-  private patchCoalesceTimer: NodeJS.Timeout | null = null;
-  private pendingPatch: { userId: string; delta: Record<string, unknown> } | null = null;
+  // One buffer and one debounce timer per user, so a second user's patch never replaces the first's.
+  private pendingPatches = new Map<string, { delta: Record<string, unknown>; timer: NodeJS.Timeout }>();
   private readonly PATCH_COALESCE_MS = 3000; // 3 seconds
 
   constructor() {
@@ -591,8 +591,9 @@ class EventBus extends EventEmitter {
   // Broadcast helpers (convenience wrappers)
   // ---------------------------------------------------------------------------
 
-  emitSyncStarted(userId: string, platform?: string): void {
+  emitSyncStarted(userId: string, platform?: string, syncJobId?: string): void {
     const defaultPlatform = platform || 'leetcode';
+    const syncId = syncJobId || `sync_${defaultPlatform}_${Date.now()}`;
     this.publish(
       {
         type: 'sync_started',
@@ -601,7 +602,7 @@ class EventBus extends EventEmitter {
         platform: defaultPlatform,
         payload: {
           platform: defaultPlatform,
-          syncId: `sync_${defaultPlatform}_${Date.now()}`,
+          syncId,
           startedAt: new Date().toISOString(),
         },
         stats: { totalSolved: 0 },
@@ -610,7 +611,8 @@ class EventBus extends EventEmitter {
     );
   }
 
-  emitSyncCompleted(userId: string, platform: string, stats?: SseEvent['stats'], durationMs?: number): void {
+  emitSyncCompleted(userId: string, platform: string, stats?: SseEvent['stats'], durationMs?: number, syncJobId?: string): void {
+    const syncId = syncJobId || `sync_${platform}_${Date.now()}`;
     this.publish(
       {
         type: 'sync_completed',
@@ -620,7 +622,7 @@ class EventBus extends EventEmitter {
         stats,
         payload: {
           platform,
-          syncId: `sync_${platform}_${Date.now()}`,
+          syncId,
           duration: durationMs ?? 0,
           stats: {
             ingested: stats?.ingested ?? 0,
@@ -634,7 +636,8 @@ class EventBus extends EventEmitter {
     );
   }
 
-  emitSyncFailed(userId: string, platform: string, error: string): void {
+  emitSyncFailed(userId: string, platform: string, error: string, syncJobId?: string): void {
+    const syncId = syncJobId || `sync_${platform}_${Date.now()}`;
     this.publish(
       {
         type: 'sync_failed',
@@ -644,7 +647,7 @@ class EventBus extends EventEmitter {
         stats: { error },
         payload: {
           platform,
-          syncId: `sync_${platform}_${Date.now()}`,
+          syncId,
           error,
           retryable: true,
           failedAt: new Date().toISOString(),
@@ -815,23 +818,24 @@ class EventBus extends EventEmitter {
 
   async emitRuntimeStatePatch(userId: string, delta: Record<string, unknown>): Promise<void> {
     // Coalesce patches - max 1 per 3 seconds
-    if (this.pendingPatch && this.pendingPatch.userId === userId) {
-      // Merge with pending patch
-      this.pendingPatch.delta = { ...this.pendingPatch.delta, ...delta };
+    const pending = this.pendingPatches.get(userId);
+    if (pending) {
+      // Merge with this user's pending patch
+      pending.delta = { ...pending.delta, ...delta };
       return;
     }
 
-    if (this.patchCoalesceTimer) {
-      clearTimeout(this.patchCoalesceTimer);
-    }
-
-    this.pendingPatch = { userId, delta };
-    this.patchCoalesceTimer = setTimeout(async () => {
-      if (this.pendingPatch) {
-        await this.publishEnvelope(userId, 'runtime_state_patch', this.pendingPatch.delta);
-        this.pendingPatch = null;
+    const timer = setTimeout(async () => {
+      const entry = this.pendingPatches.get(userId);
+      this.pendingPatches.delete(userId);
+      if (!entry) return;
+      try {
+        await this.publishEnvelope(userId, 'runtime_state_patch', entry.delta);
+      } catch (error) {
+        logger.warn('[sse] Failed to flush coalesced runtime_state_patch', { userId, error });
       }
     }, this.PATCH_COALESCE_MS);
+    this.pendingPatches.set(userId, { delta, timer });
   }
 
   async emitRuntimeStateFull(userId: string, state: Record<string, unknown>): Promise<void> {
@@ -939,23 +943,12 @@ class EventBus extends EventEmitter {
     // Keep sequence key alive as long as the stream — prevents unbounded key accumulation
     await redis.expire(sequenceKey, 300);
     
-    // Generate event ID
-    const eventId = `${userId}-${sequence}-${Date.now()}`;
-    
-    const envelope: SseEventEnvelope = {
-      id: eventId,
-      type,
-      sequence,
-      timestamp: new Date().toISOString(),
-      userId,
-      payload: validatedPayload,
-      correlationId: correlationId || eventId,
-      schemaVersion: schemaVersion || 1,
-    };
-    
+    const timestamp = new Date().toISOString();
+    const fallbackId = `${userId}-${sequence}-${Date.now()}`;
+
     // Log to Redis stream for backfill (5 min retention, max 100 entries)
     const streamKey = `sse:stream:${userId}`;
-    await redis.xadd(
+    const streamId = await redis.xadd(
       streamKey,
       '*',
       'type',
@@ -965,12 +958,27 @@ class EventBus extends EventEmitter {
       'payload',
       JSON.stringify(validatedPayload),
       'timestamp',
-      envelope.timestamp,
+      timestamp,
       'correlationId',
-      envelope.correlationId || '',
+      correlationId || fallbackId,
       'schemaVersion',
-      (envelope.schemaVersion || 1).toString()
+      (schemaVersion || 1).toString()
     );
+
+    // Live events carry the Redis Stream ID, the same id a replay emits, so a client's
+    // Last-Event-ID always names a real position in the stream.
+    const eventId = typeof streamId === 'string' && streamId ? streamId : fallbackId;
+
+    const envelope: SseEventEnvelope = {
+      id: eventId,
+      type,
+      sequence,
+      timestamp,
+      userId,
+      payload: validatedPayload,
+      correlationId: correlationId || eventId,
+      schemaVersion: schemaVersion || 1,
+    };
     await redis.expire(streamKey, 300); // 5 minutes
     await redis.xtrim(streamKey, 'MAXLEN', '~', 100);
     
@@ -997,6 +1005,10 @@ class EventBus extends EventEmitter {
 
   shutdown(): void {
     this.stopHeartbeat();
+    for (const { timer } of this.pendingPatches.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingPatches.clear();
     for (const client of this.clients.values()) {
       try {
         client.controller.close();

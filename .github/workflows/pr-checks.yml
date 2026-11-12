@@ -198,9 +198,25 @@ jobs:
           npm ci --prefix backend
           npm ci --prefix frontend
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
         working-directory: ./frontend
+        run: |
+          sudo sed -i -E 's|https?://[a-z0-9.-]*archive\.ubuntu\.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          printf 'Acquire::Retries "3";\nAcquire::ForceIPv4 "true";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' | sudo tee /etc/apt/apt.conf.d/80-playwright-retries >/dev/null
+          for attempt in 1 2 3; do
+            if npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "Playwright Chromium install attempt ${attempt} failed; retrying..."
+            sleep 5
+          done
+          exit 1
 
       - name: Typecheck E2E harness
         run: |

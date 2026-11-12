@@ -954,6 +954,21 @@ const SystemTab: React.FC<SystemTabProps> = ({
   sseStatus,
   connectionStatus,
 }) => {
+  const queryClient = useQueryClient();
+  const [retryingQueue, setRetryingQueue] = useState<string | null>(null);
+
+  const handleRetryQueue = async (queueName: string) => {
+    try {
+      setRetryingQueue(queueName);
+      await axiosClient.post(`/ops/queues/${queueName}/replay-all`);
+      await queryClient.invalidateQueries({ queryKey: ['ops-metrics'] });
+    } catch (e) {
+      console.error('Failed to retry queue jobs', e);
+    } finally {
+      setRetryingQueue(null);
+    }
+  };
+
   if (loading) return <TabLoader />;
 
   const queueData = metrics?.queues || [];
@@ -1061,11 +1076,24 @@ const SystemTab: React.FC<SystemTabProps> = ({
             ) : (
               queueData.map((q: any) => (
                 <div key={q.name} className="space-y-1.5 text-xs">
-                  <div className="flex justify-between">
+                  <div className="flex justify-between items-center">
                     <span className="font-bold text-zinc-400 font-mono truncate mr-2">{q.name}</span>
-                    <span className="text-zinc-650 shrink-0 font-mono">
-                      [W: {q.waiting} | A: {q.active} | F: {q.failed}]
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-zinc-500 shrink-0 font-mono">
+                        [W: {q.waiting} | A: {q.active} | F: {q.failed}]
+                      </span>
+                      {q.failed > 0 && (
+                        <button
+                          onClick={() => handleRetryQueue(q.name)}
+                          disabled={retryingQueue === q.name}
+                          className="px-1.5 py-0.5 rounded text-[10px] bg-red-950/60 hover:bg-red-900/60 text-red-300 border border-red-800/60 transition flex items-center gap-1 font-mono cursor-pointer"
+                          title="Retry all failed jobs in DLQ"
+                        >
+                          <RefreshCw size={10} className={retryingQueue === q.name ? "animate-spin" : ""} />
+                          Retry
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="h-1.5 w-full bg-zinc-900 rounded-full overflow-hidden flex">
                     <div className="bg-emerald-500 h-full" style={{ width: `${Math.min(100, (q.completed / (q.completed + q.failed || 1)) * 100)}%` }} />

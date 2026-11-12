@@ -217,11 +217,36 @@ export const readinessService = {
   },
 
   async sendCopilotChatRequest(
-    _prompt: string,
-    _context: any,
-    _history: Array<{ role: string; content: string }>
+    prompt: string,
+    _context?: any,
+    _history?: Array<{ role: string; content: string }>,
+    threadId: string = 'career-copilot'
   ): Promise<string> {
-    throw new Error('AI Backend Endpoint Not Implemented Yet.');
+    const res = await axiosClient.post('/readiness/guidance/chat', {
+      prompt,
+      threadId,
+    });
+    return res.data?.data?.answer || '';
+  },
+
+  async getCopilotHistory(threadId: string = 'career-copilot'): Promise<Array<{ id: string; role: 'user' | 'assistant'; content: string }>> {
+    try {
+      const res = await axiosClient.get(`/readiness/guidance/history?threadId=${encodeURIComponent(threadId)}`);
+      return res.data?.data?.messages || [];
+    } catch (e) {
+      console.warn('Failed to fetch copilot history', e);
+      return [];
+    }
+  },
+
+  async clearCopilotHistory(threadId: string = 'career-copilot'): Promise<{ success: boolean }> {
+    try {
+      const res = await axiosClient.delete(`/readiness/guidance/history?threadId=${encodeURIComponent(threadId)}`);
+      return res.data;
+    } catch (e) {
+      console.warn('Failed to clear copilot history', e);
+      return { success: false };
+    }
   },
 
   async toggleSkillProgress(skill: string, completed: boolean): Promise<{ success: boolean; error?: string }> {

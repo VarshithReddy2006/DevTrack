@@ -6,7 +6,7 @@ import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecom
 export class ATSGapDetectionEngine {
   
   static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
-    const analysis = await ATSAnalysis.findOne({ resumeProfileId }).sort({ createdAt: -1 });
+    const analysis = await ATSAnalysis.findOne({ userId, resumeProfileId }).sort({ createdAt: -1 });
     if (!analysis) return;
 
     // Detect missing keywords

@@ -1,16 +1,13 @@
 import { z } from 'zod';
-import { Platform } from '../types/dsa.types';
 
 // Request DTOs
 export const GetDSAIntelligenceQuerySchema = z.object({
-  userId: z.string().min(1, 'User ID is required'),
   platform: z.enum(['leetcode', 'codeforces', 'manual']).optional(),
 });
 
 export type GetDSAIntelligenceQuery = z.infer<typeof GetDSAIntelligenceQuerySchema>;
 
 export const UpdateDSAProfileSchema = z.object({
-  userId: z.string().min(1, 'User ID is required'),
   platform: z.enum(['leetcode', 'codeforces', 'manual']),
   totalSolved: z.number().int().min(0).default(0),
   easySolved: z.number().int().min(0).default(0),
@@ -35,8 +32,7 @@ export const UpdateDSAProfileSchema = z.object({
     greedy: z.number().int().min(0).default(0),
     binarySearch: z.number().int().min(0).default(0),
   }).default({}),
-  isVerified: z.boolean().default(false),
-});
+}).partial().required({ platform: true });
 
 export type UpdateDSAProfileInput = z.infer<typeof UpdateDSAProfileSchema>;
 
