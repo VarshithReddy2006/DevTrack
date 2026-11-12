@@ -47,10 +47,10 @@ export function useGoals() {
         ) || []
       );
 
-      // Track telemetry
-      trackGoalComplete(goalId, 'mission');
-
       return { previousGoals };
+    },
+    onSuccess: (_response, goalId) => {
+      telemetry.track('goal_complete', { goalId, type: 'mission' });
     },
     onError: (_err, _goalId, context) => {
       // Rollback on error
@@ -99,11 +99,4 @@ export function useGoals() {
     isCompleting: completeMutation.isPending,
     isUpdating: updateProgressMutation.isPending,
   };
-}
-
-function trackGoalComplete(goalId: string, goalType: string) {
-  telemetry.track('goal_complete', {
-    goalId,
-    goalType,
-  });
 }
