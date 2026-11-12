@@ -19,14 +19,9 @@ export class ResumeIntelligenceReportEngine {
   async generateReport(userId: string | Types.ObjectId, sessionId: string): Promise<any> {
     logger.info(`[ReportEngine] Generating dossier report for session ${sessionId}`);
 
-    const session = await ResumeSession.findOne({ sessionId });
+    const session = await ResumeSession.findOne({ sessionId, userId });
     if (!session) {
       throw new Error(`Resume processing session ${sessionId} not found.`);
-    }
-
-    // Verify ownership — compare as strings to handle ObjectId vs string mismatch
-    if (session.userId && session.userId.toString() !== userId.toString()) {
-      throw new Error(`Session ${sessionId} does not belong to this user.`);
     }
 
     let profile = await ResumeProfile.findOne({ userId });
