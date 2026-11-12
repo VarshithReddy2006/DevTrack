@@ -65,13 +65,13 @@ describe('resume recovery requests and worker dispatch', () => {
     try {
       const [queue, process] = vi.mocked(WorkerFactory.createWorker).mock.calls[0];
       expect(queue).toBe('resume-upload');
-      await process({ data: jobData } as Parameters<typeof process>[0]);
-      expect(resumeFromCheckpoint).toHaveBeenCalledExactlyOnceWith('resume-1');
+      await process({ data: jobData, attemptsMade: 0, opts: { attempts: 3 } } as Parameters<typeof process>[0]);
+      expect(resumeFromCheckpoint).toHaveBeenCalledExactlyOnceWith('resume-1', false);
 
       vi.mocked(ResumeSession.findOne).mockResolvedValue({
         ...failedSession, failureState: { failed: true, retryCount: 3 },
       });
-      await process({ data: jobData } as Parameters<typeof process>[0]);
+      await process({ data: jobData, attemptsMade: 0, opts: { attempts: 3 } } as Parameters<typeof process>[0]);
       expect(resumeFromCheckpoint).toHaveBeenCalledTimes(1);
     } finally {
       await stopResumeUploadWorker();

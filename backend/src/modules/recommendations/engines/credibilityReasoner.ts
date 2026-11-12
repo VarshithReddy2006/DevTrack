@@ -6,7 +6,7 @@ import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.mode
 export class CredibilityReasoner {
   
   static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
-    const claims = await ResumeEvidenceClaim.find({ resumeProfileId });
+    const claims = await ResumeEvidenceClaim.find({ userId, resumeProfileId });
     if (!claims || claims.length === 0) return;
 
     let hasDistributedSystems = false;

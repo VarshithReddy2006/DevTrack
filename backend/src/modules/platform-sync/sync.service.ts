@@ -1,4 +1,5 @@
 // src/modules/platform-sync/sync.service.ts
+import { VerifiedProjectIngestionService } from '../readiness/services/VerifiedProjectIngestionService.js';
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { ConnectedPlatform, PlatformStats, SyncJob } from '../../db/models/index.js';
@@ -22,6 +23,9 @@ export interface SyncResult {
     rating?: number;
     rank?: string;
     totalContests?: number;
+    previousSolved?: number;
+    deltaSolved?: number;
+    isFirstSync?: boolean;
   };
   error?: string;
 }
@@ -92,6 +96,7 @@ export async function syncPlatform(userId: string, platformName: string): Promis
 
   try {
     const result = await syncPlatformWithLock(userId, platformName);
+    if (result.success && platformName === 'github') await VerifiedProjectIngestionService.queueRefresh(userId);
     if (result.success && ['leetcode', 'codeforces', 'codechef'].includes(platformName)) {
       try {
         await getReadinessDsaQueue().add('post-sync-readiness', { userId, platform: platformName });
@@ -146,11 +151,19 @@ async function syncPlatformWithLock(userId: string, platformName: string): Promi
   }
 
   await ConnectedPlatform.updateOne({ _id: platform._id }, { syncStatus: 'syncing', syncError: null });
+  const existingStats = await PlatformStats.findOne({
+    userId: new Types.ObjectId(userId),
+    platformName,
+  }).lean();
+  const previousSolved = existingStats?.totalSolved ?? 0;
+  const isFirstSync = !existingStats;
+
   const job = await SyncJob.create({
     userId: new Types.ObjectId(userId),
     platformName: platformName as 'leetcode' | 'codeforces' | 'github' | 'codechef',
     status: 'running',
   });
+  const syncJobId = job._id.toString();
 
   try {
     eventBus.emitSyncStarted(userId, platformName);
@@ -236,6 +249,7 @@ async function syncPlatformWithLock(userId: string, platformName: string): Promi
     });
 
     const syncDurationMs = Date.now() - syncStartedAt;
+    const deltaSolved = Math.max(0, fetched.totalSolved - previousSolved);
 
     // Refresh before notifying clients that may immediately reload the dashboard.
     await cacheManager.invalidateDashboard(userId);
@@ -261,6 +275,9 @@ async function syncPlatformWithLock(userId: string, platformName: string): Promi
         rating: fetched.rating ?? undefined,
         rank: fetched.rank ?? undefined,
         totalContests: fetched.totalContests,
+        previousSolved,
+        deltaSolved,
+        isFirstSync,
       },
     };
   } catch (error) {

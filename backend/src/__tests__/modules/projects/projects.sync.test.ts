@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import express from 'express';
 import { Types } from 'mongoose';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Project } from '../../../db/models/index.js';
+import { Project, VerifiedProject } from '../../../db/models/index.js';
 import { errorHandler } from '../../../middleware/error.js';
 import projectsRoutes from '../../../modules/projects/projects.routes.js';
 
@@ -79,7 +79,16 @@ describe('Project GitHub sync route', () => {
       if (parsed.pathname === '/repos/example/project') return Response.json({
         stargazers_count: 7, forks_count: 3, language: 'TypeScript',
         open_issues_count: 4, default_branch: 'main', private: options.privateRepository ?? false,
+        id: 42, name: 'project', full_name: 'example/project', size: options.emptyRepository ? 0 : 10,
+        created_at: '2025-10-01T00:00:00Z', fork: false, archived: false,
       });
+      if (parsed.pathname.endsWith('/languages')) return Response.json({ TypeScript: 1024 });
+      if (parsed.pathname.endsWith('/git/trees/main')) {
+        return Response.json({ tree: [
+          { path: 'src/index.test.ts', type: 'blob' },
+          { path: '.github/workflows/ci.yml', type: 'blob' },
+        ] });
+      }
       if (options.emptyRepository && parsed.pathname.endsWith('/commits')) {
         return Response.json({ message: 'Git Repository is empty.' }, { status: 409 });
       }
@@ -111,7 +120,14 @@ describe('Project GitHub sync route', () => {
 
     expect(result.status).toBe(200);
     expect(result.body.success).toBe(true);
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(10);
+    expect(await VerifiedProject.findOne({ userId: ownerId, githubRepoId: '42' }).lean()).toMatchObject({
+      projectId: new Types.ObjectId(projectId),
+      verification: { status: 'pending' },
+      metrics: { totalCommitCount: 11, primaryLanguage: 'TypeScript' },
+      provenance: { source: 'github', hasTests: true, hasCI: true },
+    });
+    expect(await VerifiedProject.countDocuments({ userId: otherId })).toBe(0);
     expect(calls.every(url => url.startsWith('https://api.github.com/repos/example/project'))).toBe(true);
     expect(project).toMatchObject({ stars: 7, forks: 3, language: 'TypeScript', totalCommits: 11,
       totalPullRequests: 5, totalIssues: 4, openIssues: 3, lastCommitMessage: 'Latest commit' });

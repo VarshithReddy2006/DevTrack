@@ -16,6 +16,7 @@ router.get('/queues', authMiddleware, opsAuditorMiddleware, opsController.global
 router.get('/queues/:queueName', authMiddleware, opsAuditorMiddleware, opsController.queueStatus);
 router.get('/queues/:queueName/jobs', authMiddleware, opsAuditorMiddleware, opsController.recentJobs);
 router.post('/queues/:queueName/jobs/:jobId/replay', authMiddleware, adminMiddleware, opsController.replayDlqJob);
+router.post('/queues/:queueName/replay-all', authMiddleware, adminMiddleware, opsController.replayAllFailed);
 
 // Cache management
 router.get('/cache/stats', authMiddleware, opsAuditorMiddleware, opsController.cacheStats);

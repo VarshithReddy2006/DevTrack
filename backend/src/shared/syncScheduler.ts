@@ -6,23 +6,31 @@ import cron from 'node-cron';
 import { Types } from 'mongoose';
 import { ConnectedPlatform } from '../db/models/index.js';
 import { syncState } from './syncState.js';
-import { eventBus } from './sse/index.js';
 import { getPlatformSyncQueue } from './jobs/index.js';
 import { PlatformSyncJobData, QueueNames } from './jobs/types.js';
 import { logger } from './logger.js';
 import { env } from '../config/env.js';
+import { acquireSchedulerLock, releaseSchedulerLock } from './redis/syncLock.service.js';
 
 // ---------------------------------------------------------------------------
-// In-memory sync lock — prevents overlapping cron executions
+// Distributed leader lock + In-memory guard — prevents overlapping cron executions
 // ---------------------------------------------------------------------------
 
 let syncLock = false;
 
-function acquireLock(): boolean {
+async function acquireLock(): Promise<boolean> {
   if (syncLock) {
-    logger.warn('[sync-scheduler] Skipped: sync already in progress', {
+    logger.warn('[sync-scheduler] Skipped: sync already in progress locally', {
       job: 'platform-sync',
       reason: 'overlapping_execution',
+    });
+    return false;
+  }
+  const leaderAcquired = await acquireSchedulerLock(60_000);
+  if (!leaderAcquired) {
+    logger.info('[sync-scheduler] Skipped: another replica holds scheduler lock', {
+      job: 'platform-sync',
+      reason: 'leader_lock_held',
     });
     return false;
   }
@@ -30,8 +38,9 @@ function acquireLock(): boolean {
   return true;
 }
 
-function releaseLock(): void {
+async function releaseLock(): Promise<void> {
   syncLock = false;
+  await releaseSchedulerLock();
 }
 
 // ---------------------------------------------------------------------------
@@ -39,17 +48,12 @@ function releaseLock(): void {
 // ---------------------------------------------------------------------------
 
 async function runScheduledSync(): Promise<void> {
-  if (!acquireLock()) return;
+  const acquired = await acquireLock();
+  if (!acquired) return;
 
   const startTime = Date.now();
   syncState.beginSync();
   const jobId = `sync-${Date.now()}`;
-
-  eventBus.publish({
-    type: 'sync_started',
-    timestamp: new Date().toISOString(),
-    stats: { totalSolved: 0 },
-  });
 
   logger.info('[sync-scheduler] Scheduled sync started', {
     job: 'platform-sync',
@@ -70,7 +74,6 @@ async function runScheduledSync(): Promise<void> {
         durationMs: Date.now() - startTime,
       });
       syncState.completeSync('success', Date.now() - startTime);
-      releaseLock();
       return;
     }
 
@@ -142,9 +145,11 @@ async function runScheduledSync(): Promise<void> {
     });
     syncState.completeSync('failed', durationMs);
   } finally {
-    releaseLock();
+    await releaseLock();
   }
 }
+
+export { runScheduledSync };
 
 // ---------------------------------------------------------------------------
 // Scheduler lifecycle

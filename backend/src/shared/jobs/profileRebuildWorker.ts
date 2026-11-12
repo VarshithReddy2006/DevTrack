@@ -1,25 +1,12 @@
 import { createDlqWorker } from './dlq.service.js';
-import { Queue, Worker, Job } from 'bullmq';
+import { Worker, Job } from 'bullmq';
 import { logger } from '../logger.js';
 import { PublicProfileService } from '../../modules/profile/publicProfile.service.js';
+import { QueueNames } from './types.js';
+import { getOrCreateQueue } from './queueFactory.js';
+import { getRedisClient } from '../redis/client.js';
 
-const connection = {
-  host: process.env.REDIS_HOST || '127.0.0.1',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-};
-
-export const profileRebuildQueue = new Queue('profile-rebuild', {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 10000,
-    },
-    removeOnComplete: true,
-    removeOnFail: false, // Keep in DLQ
-  },
-});
+export const profileRebuildQueue = getOrCreateQueue(QueueNames.PROFILE_REBUILD);
 
 export async function enqueueProfileRebuild(userId: string, reason: string) {
   // Use a debounce window based on userId and current 5-minute block
@@ -41,7 +28,7 @@ export function startProfileRebuildWorker() {
   if (worker) return worker;
 
   worker = createDlqWorker(
-    'profile-rebuild',
+    QueueNames.PROFILE_REBUILD,
     async (job: Job) => {
       const { userId, reason } = job.data;
       logger.info(`[profile-rebuild] Processing rebuild for ${userId} (Reason: ${reason})`);
@@ -54,7 +41,7 @@ export function startProfileRebuildWorker() {
         throw error;
       }
     },
-    { connection, concurrency: 5 }
+    { connection: getRedisClient(), concurrency: 5 }
   );
 
   worker.on('failed', (job, err) => {

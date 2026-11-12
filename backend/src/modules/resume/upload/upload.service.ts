@@ -1,5 +1,5 @@
 // src/modules/resume/upload/upload.service.ts
-import type { Types } from 'mongoose';
+import { Types } from 'mongoose';
 import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -164,17 +164,31 @@ export class UploadService {
   /**
    * Get session by ID
    */
-  async getSession(sessionId: string): Promise<any> {
+  async getSession(sessionId: string, userId?: string): Promise<any> {
     logger.info(`[UploadService] Getting session: ${sessionId}`);
-    return await ResumeSession.findOne({ sessionId }).lean();
+    const query: Record<string, unknown> = { sessionId };
+    if (userId) {
+      query.$or = [
+        { userId },
+        ...(Types.ObjectId.isValid(userId) ? [{ userId: new Types.ObjectId(userId) }] : []),
+      ];
+    }
+    return await ResumeSession.findOne(query).lean();
   }
 
   /**
    * Get session status directly from MongoDB ResumeSession model (KISS way)
    */
-  async getSessionStatus(sessionId: string): Promise<ISessionStatus | null> {
+  async getSessionStatus(sessionId: string, userId?: string): Promise<ISessionStatus | null> {
     logger.info(`[UploadService] Getting session status from DB: ${sessionId}`);
-    const session = await ResumeSession.findOne({ sessionId });
+    const query: Record<string, unknown> = { sessionId };
+    if (userId) {
+      query.$or = [
+        { userId },
+        ...(Types.ObjectId.isValid(userId) ? [{ userId: new Types.ObjectId(userId) }] : []),
+      ];
+    }
+    const session = await ResumeSession.findOne(query);
     if (!session) return null;
 
     // Map currentStage to deterministic progress metrics
@@ -189,6 +203,7 @@ export class UploadService {
       'RECOMMENDING': 90,
       'COMPLETED': 100,
       'FAILED': 100,
+      'DEGRADED': 100,
     };
 
     const progress = stageProgress[session.currentStage] || 50;
@@ -198,7 +213,9 @@ export class UploadService {
       status: session.currentStage,
       currentStage: session.currentStage,
       progress,
-      errors: session.failureState?.failed ? [session.failureState.failureReason || 'Processing failed'] : [],
+      errors: session.failureState?.failed ? [session.failureState.failureReason || 'Processing failed']
+        : session.currentStage === 'DEGRADED' && session.degradedState?.degradedReason
+          ? [session.degradedState.degradedReason] : [],
       metadata: {},
     };
   }

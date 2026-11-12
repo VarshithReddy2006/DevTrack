@@ -19,6 +19,8 @@ import type {
 import { parsePaginationParams, createPagination, getSkipCount, buildSortOptions } from '../../shared/pagination.js';
 import { parseGitHubRepositoryUrl, fetchGitHubProjectMetrics } from './project-github-sync.js';
 
+import { VerifiedProjectIngestionService } from '../readiness/services/VerifiedProjectIngestionService.js';
+
 const ALLOWED_SORT_FIELDS = ['name', 'createdAt', 'updatedAt', 'stars', 'lastCommitAt'];
 
 export async function getProjects(userId: string, filters: ApiProjectFilters): Promise<ApiProjectListResponse> {
@@ -78,6 +80,9 @@ export async function createProject(userId: string, payload: ApiProjectCreatePay
     openIssues: 0,
   });
 
+  if (parseGitHubRepositoryUrl(project.repoUrl)) {
+    await VerifiedProjectIngestionService.ingestAfterChange(userId, project._id);
+  }
   await cacheManager.invalidateDashboard(userId);
 
   // Activity logging
@@ -112,6 +117,9 @@ export async function updateProject(
   ).lean();
 
   if (project) {
+    if (payload.repoUrl !== undefined) {
+      await VerifiedProjectIngestionService.ingestAfterChange(userId, project._id);
+    }
     await cacheManager.invalidateDashboard(userId);
     // Build a human-readable description of what changed
     const changes: string[] = [];
@@ -158,6 +166,7 @@ export async function deleteProject(userId: string, projectId: string): Promise<
   });
 
   if (result.deletedCount > 0) {
+    if (parseGitHubRepositoryUrl(project.repoUrl)) await VerifiedProjectIngestionService.queueRefresh(userId);
     await cacheManager.invalidateDashboard(userId);
     createActivity(userId, {
       type: 'project_deleted',
@@ -251,33 +260,71 @@ export async function getProjectStats(userId: string): Promise<ApiProjectStats> 
   };
 }
 
-export async function getProjectTasks(userId: string, projectId: string): Promise<ApiProjectTask[]> {
+export interface ProjectTaskFilters {
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+  status?: 'todo' | 'in_progress' | 'review' | 'done';
+  milestoneId?: string;
+  overdueOnly?: boolean;
+}
+
+export async function getProjectTasks(
+  userId: string,
+  projectId: string,
+  filters?: ProjectTaskFilters
+): Promise<ApiProjectTask[] | null> {
   // Verify project exists and belongs to user
   const project = await Project.findOne({
     _id: new Types.ObjectId(projectId),
     userId: new Types.ObjectId(userId),
   });
 
-  if (!project) return [];
+  if (!project) return null;
 
-  const tasks = await ProjectTask.find({ projectId: new Types.ObjectId(projectId) }).sort({ rank: 1, createdAt: -1, _id: 1 });
+  const query: Record<string, unknown> = {
+    projectId: new Types.ObjectId(projectId),
+  };
 
-  return tasks.map((task) => ({
-    id: task._id.toString(),
-    projectId: task.projectId.toString(),
-    milestoneId: task.milestoneId,
-    title: task.title,
-    description: task.description,
-    status: task.status,
-    priority: task.priority,
-    assigneeId: task.assigneeId,
-    labels: task.labels,
-    dueDate: task.dueDate?.toISOString() || null,
-    completedAt: task.completedAt?.toISOString() || null,
-    rank: task.rank ?? null,
-    createdAt: task.createdAt.toISOString(),
-    updatedAt: task.updatedAt.toISOString(),
-  }));
+  if (filters?.priority) {
+    query.priority = filters.priority;
+  }
+  if (filters?.milestoneId) {
+    query.milestoneId = filters.milestoneId;
+  }
+  if (filters?.overdueOnly) {
+    if (filters.status === 'done') return [];
+    query.dueDate = { $lt: new Date() };
+    query.status = filters.status ?? { $ne: 'done' };
+  } else if (filters?.status) {
+    query.status = filters.status;
+  }
+
+  const tasks = await ProjectTask.find(query).sort({ rank: 1, createdAt: -1, _id: 1 });
+  const now = new Date();
+
+  return tasks.map((task) => {
+    const isOverdue = Boolean(task.dueDate && task.dueDate < now && task.status !== 'done');
+    return {
+      id: task._id.toString(),
+      projectId: task.projectId.toString(),
+      milestoneId: task.milestoneId,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority,
+      assigneeId: task.assigneeId,
+      labels: task.labels,
+      dueDate: task.dueDate?.toISOString() || null,
+      completedAt: task.completedAt?.toISOString() || null,
+      rank: task.rank ?? null,
+      createdAt: task.createdAt.toISOString(),
+      updatedAt: task.updatedAt.toISOString(),
+      isOverdue,
+    };
+  });
+}
+
+export async function getOverdueTasks(userId: string, projectId: string): Promise<ApiProjectTask[] | null> {
+  return getProjectTasks(userId, projectId, { overdueOnly: true });
 }
 
 export async function createProjectTask(
@@ -444,7 +491,10 @@ export async function syncProject(userId: string, projectId: string): Promise<Pr
     { $set: metrics },
     { new: true }
   );
-  if (updated) await cacheManager.invalidateDashboard(userId);
+  if (updated) {
+    await VerifiedProjectIngestionService.ingestAfterChange(userId, updated._id);
+    await cacheManager.invalidateDashboard(userId);
+  }
   return updated ? 'synced' : 'repo_changed';
 }
 

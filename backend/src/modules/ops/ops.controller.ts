@@ -122,28 +122,23 @@ export const opsController = {
     const redis = getRedisClient();
     const dbSize = (await redis.dbsize()) || 0;
 
-    // Get queue metrics
+    // Get queue metrics across all queues
     const queueMetrics: QueueMetrics[] = [];
-    const queueNames = [
-      QueueNames.PLATFORM_SYNC,
-      QueueNames.XP_PROCESSING,
-      QueueNames.STREAK_RECALC,
-      QueueNames.NOTIFICATIONS,
-      QueueNames.PROFILE_REBUILD,
-    ];
+    const allQueues = getAllQueues();
 
-    for (const name of queueNames) {
-      const queue = getQueue(name);
-      if (queue) {
-        const counts = await queue.getJobCounts();
+    for (const queue of allQueues) {
+      try {
+        const counts = await queue.getJobCounts('waiting', 'active', 'completed', 'failed', 'paused');
         queueMetrics.push({
-          name,
+          name: queue.name,
           waiting: counts.waiting || 0,
           active: counts.active || 0,
           completed: counts.completed || 0,
           failed: counts.failed || 0,
           paused: counts.paused === 1 || false,
         });
+      } catch (err) {
+        logger.warn(`[ops] Failed to get counts for queue ${queue.name}`, { error: String(err) });
       }
     }
 
@@ -273,28 +268,89 @@ export const opsController = {
     const queueName = req.params.queueName as string;
     const jobId = req.params.jobId as string;
 
-    const queue = getQueue(queueName);
-    if (!queue) {
-      res.status(404).json({ error: 'Queue not found' });
-      return;
+    try {
+      let replayed = false;
+      try {
+        const { dlqService } = await import('../../shared/jobs/dlq.service.js');
+        await dlqService.replayFromDlq(queueName, jobId);
+        replayed = true;
+      } catch {
+        const queue = getQueue(queueName);
+        if (queue) {
+          const job = await queue.getJob(jobId);
+          if (job) {
+            await job.retry();
+            replayed = true;
+          }
+        }
+      }
+
+      if (!replayed) {
+        res.status(404).json({ error: 'Job not found in queue or DLQ' });
+        return;
+      }
+
+      try {
+        const { DeadLetterJob } = await import('../../db/models/deadLetterJob.model.js');
+        await DeadLetterJob.updateMany(
+          { $or: [{ queueName, jobId }, { jobId }] },
+          { $set: { recovered: true } }
+        );
+      } catch (dbErr) {
+        logger.warn('[ops] Failed to update DeadLetterJob audit status', { error: String(dbErr) });
+      }
+
+      logger.info('[ops] DLQ job replayed', { queueName, jobId });
+
+      res.json({
+        success: true,
+        message: 'Job requeued for retry',
+        jobId,
+        recovered: true,
+      });
+    } catch (err) {
+      logger.error('[ops] Failed to replay DLQ job', err as Error, { queueName, jobId });
+      res.status(500).json({ error: 'Failed to replay DLQ job' });
     }
+  },
 
-    const job = await queue.getJob(jobId);
-    if (!job) {
-      res.status(404).json({ error: 'Job not found' });
-      return;
+  // ─── Replay all failed jobs in queue / DLQ ──────────────────────────────
+  async replayAllFailed(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const queueName = req.params.queueName as string;
+    try {
+      const { dlqService } = await import('../../shared/jobs/dlq.service.js');
+      const dlqResult = await dlqService.bulkReplay(queueName, 50);
+
+      const queue = getQueue(queueName);
+      let queueRetried = 0;
+      if (queue) {
+        const failedJobs = await queue.getFailed(0, 50);
+        for (const job of failedJobs) {
+          try {
+            await job.retry();
+            queueRetried++;
+          } catch {}
+        }
+      }
+
+      try {
+        const { DeadLetterJob } = await import('../../db/models/deadLetterJob.model.js');
+        await DeadLetterJob.updateMany(
+          { queueName, recovered: false },
+          { $set: { recovered: true } }
+        );
+      } catch {}
+
+      res.json({
+        success: true,
+        replayedCount: dlqResult.succeeded + queueRetried,
+        dlqReplayed: dlqResult.succeeded,
+        queueRetried,
+      });
+    } catch (err) {
+      logger.error('[ops] Failed to replay all failed jobs', err as Error, { queueName });
+      res.status(500).json({ error: 'Failed to replay all failed jobs' });
     }
-
-    // Retry the job
-    await job.retry();
-
-    logger.info('[ops] DLQ job replayed', { queueName, jobId });
-
-    res.json({
-      success: true,
-      message: 'Job requeued for retry',
-      jobId,
-    });
   },
 
   // ─── Cache management ─────────────────────────────────────────────────

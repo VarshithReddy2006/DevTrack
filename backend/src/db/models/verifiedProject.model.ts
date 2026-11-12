@@ -44,6 +44,21 @@ export interface IVerifiedProject extends Document {
     suspicionScore: number;
   };
 
+  provenance?: {
+    source: 'github';
+    checkedAt: Date;
+    contributorId: string | null;
+    checkedAccountId: string | null;
+    isFork: boolean;
+    isArchived: boolean;
+    fileCount: number;
+    files: string[];
+    hasTests: boolean;
+    hasCI: boolean;
+    linkedRepoUrl?: string;
+    discoveredBySync?: boolean;
+  };
+
   name: string;
   description: string | null;
   techStack: string[];
@@ -94,6 +109,24 @@ const VerifiedProjectSchema = new Schema<IVerifiedProject>(
       isCommitFarmed: { type: Boolean, default: false },
       hasEmptyCommits: { type: Boolean, default: false },
       suspicionScore: { type: Number, default: 0 },
+    },
+
+    provenance: {
+      type: new Schema({
+        source: { type: String, enum: ['github'], required: true },
+        checkedAt: { type: Date, required: true },
+        contributorId: { type: String, default: null },
+        checkedAccountId: { type: String, default: null },
+        isFork: Boolean,
+        isArchived: Boolean,
+        fileCount: Number,
+        files: [String],
+        hasTests: Boolean,
+        hasCI: Boolean,
+        linkedRepoUrl: String,
+        discoveredBySync: Boolean,
+      }, { _id: false }),
+      default: undefined,
     },
 
     name: { type: String, required: true },

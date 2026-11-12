@@ -52,6 +52,7 @@ router.patch('/problems/:id', authMiddleware, validateParams(problemIdParamsSche
 router.delete('/problems/:id', authMiddleware, validateParams(problemIdParamsSchema), asyncHandler(controller.deleteProblem));
 router.post('/problems/:id/favorite', authMiddleware, validateParams(problemIdParamsSchema), asyncHandler(controller.toggleFavorite));
 router.get('/stats', authMiddleware, asyncHandler(controller.getStats));
+router.get('/distribution', authMiddleware, asyncHandler(controller.getDistribution));
 router.get('/dashboard', authMiddleware, asyncHandler(controller.getDashboard));
 router.get('/heatmap', authMiddleware, asyncHandler(controller.getHeatmap));
 router.get('/submissions', authMiddleware, asyncHandler(controller.getSubmissions));

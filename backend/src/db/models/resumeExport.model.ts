@@ -1,7 +1,7 @@
 // src/db/models/resumeExport.model.ts
 import { Schema, model, type Document } from 'mongoose';
 
-export type ExportType = 'pdf' | 'docx' | 'html' | 'json';
+export type ExportType = 'pdf' | 'docx' | 'html' | 'json' | 'txt' | 'md';
 export type ATSValidationState = 'pending' | 'passed' | 'failed' | 'warning';
 
 export interface IResumeExport extends Document {
@@ -44,7 +44,7 @@ const resumeExportSchema = new Schema<IResumeExport>(
     },
     exportType: {
       type: String,
-      enum: ['pdf', 'docx', 'html', 'json'],
+      enum: ['pdf', 'docx', 'html', 'json', 'txt', 'md'],
       required: true,
       default: 'pdf',
     },

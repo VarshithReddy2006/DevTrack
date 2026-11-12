@@ -12,6 +12,7 @@
 
 import { create } from 'zustand';
 import { queryClient } from '../queryClient';
+import { useUserStore } from '../../store/userStore';
 
 export type SseEventType =
   | 'xp_updated'
@@ -70,7 +71,7 @@ interface SseStore {
 }
 
 const MAX_HISTORY = 50;
-const MAX_SEEN_IDS = 200;
+const MAX_SEEN_IDS = 1000;
 
 export const BACKOFF_BASE_MS = 1_000;
 export const BACKOFF_CAP_MS = 30_000;
@@ -109,9 +110,48 @@ let connectGeneration = 0;
 /** True between connect() and disconnect(); gates automatic reconnects. */
 let shouldConnect = false;
 let networkListenersAttached = false;
+let userStoreSubscribed = false;
+let previousAuthState: boolean | null = null;
 /** Timestamp (ms) of the event that set `lastSequence`. */
 let lastSequenceTime = Number.NEGATIVE_INFINITY;
 const seenEventIds = new Set<string>();
+
+export async function resolveAuthToken(): Promise<string | null> {
+  if (typeof window !== 'undefined' && window.Clerk && window.Clerk.session) {
+    try {
+      const token = await window.Clerk.session.getToken();
+      if (token) return token;
+    } catch {
+      // ignore
+    }
+  }
+  if (typeof localStorage !== 'undefined') {
+    const localToken = localStorage.getItem('devtrack_access_token');
+    if (localToken) return localToken;
+  }
+  return null;
+}
+
+export function attachUserStoreListener(): void {
+  if (userStoreSubscribed) return;
+  userStoreSubscribed = true;
+  previousAuthState = useUserStore.getState().isAuthenticated;
+
+  useUserStore.subscribe((state) => {
+    const wasAuthed = previousAuthState ?? false;
+    const isNowAuthed = state.isAuthenticated;
+    previousAuthState = isNowAuthed;
+
+    if (isNowAuthed && !wasAuthed) {
+      if (shouldConnect) {
+        void useSseStore.getState().connect();
+      }
+    } else if (!isNowAuthed && wasAuthed) {
+      useSseStore.getState().disconnect();
+      useSseStore.getState().clearHistory();
+    }
+  });
+}
 
 function eventKey(event: SseEvent, id?: string): string {
   if (id) return id;
@@ -256,9 +296,14 @@ export function parseSseMessage(raw: string, transportId?: string): SseEvent | n
 function isDuplicate(event: SseEvent): boolean {
   const key = eventKey(event, event.id);
 
+  if (event.id && seenEventIds.has(event.id)) {
+    return true;
+  }
+
   if (event.type === 'runtime_state_full') {
     if (seenEventIds.has(key)) return true;
     rememberKey(key);
+    if (event.id) rememberKey(event.id);
     return false;
   }
 
@@ -275,11 +320,13 @@ function isDuplicate(event: SseEvent): boolean {
 
     lastSequenceTime = Number.isFinite(eventTime) ? eventTime : lastSequenceTime;
     useSseStore.setState({ lastSequence: event.sequence });
+    if (event.id) rememberKey(event.id);
     return false;
   }
 
   if (seenEventIds.has(key)) return true;
   rememberKey(key);
+  if (event.id) rememberKey(event.id);
   return false;
 }
 
@@ -311,6 +358,7 @@ export const useSseStore = create<SseStore>((set, get) => ({
   connect: async () => {
     shouldConnect = true;
     attachNetworkListeners();
+    attachUserStoreListener();
     clearReconnectTimer();
     closeEventSource();
 
@@ -322,9 +370,10 @@ export const useSseStore = create<SseStore>((set, get) => ({
     }
 
     const baseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
-    const token = localStorage.getItem('devtrack_access_token');
+    const token = await resolveAuthToken();
+    const isAuthed = useUserStore.getState().isAuthenticated;
 
-    if (!token) {
+    if (!token && !isAuthed) {
       setConnectionState({ reconnecting: false, error: 'No auth token' });
       return;
     }
@@ -452,6 +501,8 @@ export function __resetSseManagerForTests(): void {
   useSseStore.getState().disconnect();
   lastSequenceTime = Number.NEGATIVE_INFINITY;
   seenEventIds.clear();
+  userStoreSubscribed = false;
+  previousAuthState = null;
   useSseStore.setState({
     eventHistory: [],
     lastEventId: null,

@@ -5,8 +5,12 @@ import { logger } from '../shared/logger.js';
 import { QueueNames, type ResumeEmbeddingJobData } from '../shared/jobs/types.js';
 import { ResumeSession } from '../db/models/resumeSession.model.js';
 import { EmbeddingProviderAdapter } from '../modules/ai/embedding/EmbeddingProviderAdapter.js';
+import { EMBEDDING_VERSION } from '../modules/ai/embedding/embeddingScope.js';
 import { EmbeddingPersistenceLayer } from '../modules/ai/embedding/EmbeddingPersistenceLayer.js';
 
+import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
+
+const orchestrator = new ResumeProcessingOrchestrator(true);
 let worker: Worker | null = null;
 const embeddingAdapter = new EmbeddingProviderAdapter();
 const persistenceLayer = new EmbeddingPersistenceLayer();
@@ -62,6 +66,13 @@ export async function startResumeEmbeddingWorker(): Promise<Worker> {
   worker = WorkerFactory.createWorker<ResumeEmbeddingJobData>(
     QueueNames.RESUME_EMBEDDING,
     async (job: Job<ResumeEmbeddingJobData>) => {
+      if (job.name === 'resume-stage') {
+        if (job.data.generation === undefined) throw new Error('Missing resume stage generation');
+        await orchestrator.processQueuedStage(job.data.sessionId, 'EMBEDDING', job.data.generation,
+          job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
+        return;
+      }
+
       const { sessionId } = job.data;
 
       logger.info(`[ResumeEmbeddingWorker] Processing embedding job: ${sessionId}`);
@@ -79,25 +90,27 @@ export async function startResumeEmbeddingWorker(): Promise<Worker> {
         logger.info(`[ResumeEmbeddingWorker] Text chunked. Session: ${sessionId}, Chunks: ${chunks.length}, Original Length: ${text.length}`);
         
         // Generate Embeddings
-        const embeddings = await embeddingAdapter.generateEmbeddingBatch(chunks);
+        const scope = session.userId ? { scope: 'user' as const, userId: session.userId.toString() } : undefined;
+        const embeddings = await embeddingAdapter.generateEmbeddingBatch(chunks, scope);
+        if (!embeddings.length) throw new Error('No resume embeddings generated');
         
         // Persist Embeddings
         const dimensions = embeddings[0]?.dimensions || 1536;
         const provider = embeddings[0]?.provider || 'openai';
         const model = embeddings[0]?.model || 'text-embedding-3-small';
 
-        const savePromises = embeddings.map((emb, index) => 
+        const savePromises = scope ? embeddings.map((emb, index) =>
           persistenceLayer.saveEmbedding(
+            scope,
             sessionId,
             index,
             emb.vector,
             emb.provider,
             emb.model,
             chunks[index],
-            'resume',
-            session.userId?.toString()
+            'resume'
           )
-        );
+        ) : [];
         
         await Promise.all(savePromises);
 
@@ -112,6 +125,7 @@ export async function startResumeEmbeddingWorker(): Promise<Worker> {
           vector: meanVector,
           provider: provider as 'openai' | 'gemini',
           dimensions,
+          embeddingVersion: EMBEDDING_VERSION,
           generatedAt: new Date()
         };
         session.currentStage = 'SEMANTIC_ANALYZING'; // Progress pipeline
@@ -138,7 +152,7 @@ export async function startResumeEmbeddingWorker(): Promise<Worker> {
         throw error; // Re-throw for BullMQ to handle retries if configured at queue level
       }
     },
-    { concurrency: 3 }
+    { concurrency: 3, jobTimeoutMs: null }
   );
 
   worker.on('completed', (job) => {

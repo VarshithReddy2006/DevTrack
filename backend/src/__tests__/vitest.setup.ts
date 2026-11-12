@@ -212,9 +212,9 @@ vi.mock('../modules/ai/provider/AIProviderAdapter.js', () => {
 
 vi.mock('../modules/ai/embedding/EmbeddingProviderAdapter.js', () => {
   class MockEmbeddingAdapter {
-    generateEmbedding = vi.fn().mockResolvedValue({ vector: new Array(1536).fill(0.1), provider: 'openai', model: 'text-embedding-3-small' });
+    generateEmbedding = vi.fn().mockResolvedValue({ vector: new Array(1536).fill(0.1), dimensions: 1536, provider: 'openai', model: 'text-embedding-3-small' });
     generateEmbeddingBatch = vi.fn().mockResolvedValue([
-      { vector: new Array(1536).fill(0.1), provider: 'openai', model: 'text-embedding-3-small' }
+      { vector: new Array(1536).fill(0.1), dimensions: 1536, provider: 'openai', model: 'text-embedding-3-small' }
     ]);
   }
   return {

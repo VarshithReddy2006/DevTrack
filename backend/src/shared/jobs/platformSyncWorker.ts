@@ -62,23 +62,37 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
             // Enqueue XP award — inject current trace so XP worker logs are correlated
             try {
               const xpQueue = getXpProcessingQueue();
-              const syncSourceId = `sync_${userId}_${platformName}_${Date.now()}`;
+              const statsRecord = result.stats as (Record<string, unknown> | undefined);
+              const totalSolved = (statsRecord?.totalSolved as number) ?? 0;
+              const previousSolved = (statsRecord?.previousSolved as number) ?? 0;
+              const deltaSolved = (statsRecord?.deltaSolved as number) ?? 0;
+              const isFirstSync = Boolean(statsRecord?.isFirstSync);
+
+              const syncSourceId = `sync_${userId}_${platformName}_${totalSolved}`;
               const xpJobData = injectTraceIntoJob({
                 userId,
                 sourceType: 'sync_completed',
                 sourceId: syncSourceId,
-                metadata: { platform: platformName, stats: result.stats },
+                metadata: {
+                  platform: platformName,
+                  stats: result.stats,
+                  totalSolved,
+                  previousSolved,
+                  deltaSolved,
+                  isFirstSync,
+                },
                 requestId: requestId ?? jobId,
               });
               await xpQueue.add(
                 'sync-completed-xp',
                 xpJobData,
-                { jobId: `xp-sync-${platformName}-${userId}-${Date.now()}` }
+                { jobId: `xp-sync-${platformName}-${userId}-${syncSourceId}` }
               );
               logger.debug('[worker] XP job enqueued for sync completion', {
                 event: 'xp_job_enqueued',
                 userId,
                 platform: platformName,
+                syncSourceId,
               });
             } catch (xpErr) {
               // XP failure must NOT fail the sync pipeline
@@ -134,7 +148,7 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
           });
 
           syncState.completeSync('failed', durationMs);
-          eventBus.emitSyncFailed(userId, platformName, errorMessage);
+          eventBus.emitSyncFailed(userId, platformName, errorMessage, jobId);
 
           throw err;
         }
