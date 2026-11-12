@@ -335,6 +335,42 @@ export async function createProblem(userId: string, payload: ApiDsaProblemCreate
   return mapProblemToApi(problem.toObject() as unknown as Record<string, unknown> & { _id: { toString(): string } });
 }
 
+async function applyProblemUpdate(
+  userObjId: Types.ObjectId,
+  problemObjId: Types.ObjectId,
+  payload: ApiDsaProblemUpdatePayload,
+) {
+  const update: Record<string, unknown> = { ...payload };
+  const now = new Date();
+  const filter = { _id: problemObjId, userId: userObjId };
+
+  if (payload.status === 'solved') {
+    update.solvedAt = now;
+    update.lastSubmittedAt = now;
+    return DsaProblem.findOneAndUpdate(filter, { $set: update, $inc: { submissionCount: 1 } }, { new: true }).lean();
+  }
+
+  if (payload.status === 'attempted' || payload.status === 'revisit') {
+    update.solvedAt = null;
+    update.lastSubmittedAt = now;
+    return DsaProblem.findOneAndUpdate(filter, { $set: update, $inc: { submissionCount: 1 } }, { new: true }).lean();
+  }
+
+  if (payload.status === 'unsolved') {
+    update.solvedAt = null;
+    // Only count transitions away from a non-unsolved state; re-sending status: 'unsolved'
+    // with notes or tags updates does not inflate submissionCount.
+    const transitioned = await DsaProblem.findOneAndUpdate(
+      { ...filter, status: { $ne: 'unsolved' } },
+      { $set: { ...update, lastSubmittedAt: now }, $inc: { submissionCount: 1 } },
+      { new: true }
+    ).lean();
+    if (transitioned) return transitioned;
+  }
+
+  return DsaProblem.findOneAndUpdate(filter, { $set: update }, { new: true }).lean();
+}
+
 export async function updateProblem(
   userId: string,
   problemId: string,
@@ -343,49 +379,26 @@ export async function updateProblem(
   const userObjId = new Types.ObjectId(userId);
   const problemObjId = new Types.ObjectId(problemId);
 
-  // Retrieve current problem state before updating to check category and status transitions
-  const existing = await DsaProblem.findOne({ _id: problemObjId, userId: userObjId }).lean();
+  const existing = await DsaProblem.findOne({ _id: problemObjId, userId: userObjId })
+    .select('category')
+    .lean();
   if (!existing) return null;
 
-  const update: Record<string, unknown> = { ...payload };
-  const unset: Record<string, 1> = {};
-
-  const statusChanged = payload.status !== undefined && payload.status !== existing.status;
-  const isAttempt = payload.status === 'attempted' || payload.status === 'solved';
-
-  // If status changed to solved, set solvedAt
-  if (payload.status === 'solved') {
-    update.solvedAt = new Date();
-    update.lastSubmittedAt = new Date();
-  } else if (payload.status) {
-    // Reset solvedAt when transitioning to unsolved, attempted, or revisit
-    unset.solvedAt = 1;
-    if (statusChanged) {
-      update.lastSubmittedAt = new Date();
-    }
-  }
-
-  const updateDoc: Record<string, unknown> = { $set: update };
-  if (Object.keys(unset).length > 0) {
-    updateDoc.$unset = unset;
-  }
-  // Only increment submissionCount if the status actually changed or an attempt occurred
-  if (statusChanged && isAttempt) {
-    updateDoc.$inc = { submissionCount: 1 };
-  }
-
-  const problem = await DsaProblem.findOneAndUpdate(
-    { _id: problemObjId, userId: userObjId },
-    updateDoc,
-    { new: true }
-  ).lean();
+  const problem = await applyProblemUpdate(userObjId, problemObjId, payload);
 
   if (problem) {
     await cacheManager.invalidateDashboard(userId);
 
-    // Reconcile topic progress if status changed
-    const category = existing.category;
-    if (statusChanged && category && !isReservedPlatformTopic(category)) {
+    const categoriesToReconcile = new Set<string>();
+    if (payload.status !== undefined || (problem.category && problem.category !== existing.category)) {
+      if (existing.category && !isReservedPlatformTopic(existing.category)) {
+        categoriesToReconcile.add(existing.category);
+      }
+      if (problem.category && !isReservedPlatformTopic(problem.category)) {
+        categoriesToReconcile.add(problem.category);
+      }
+    }
+    for (const category of categoriesToReconcile) {
       await reconcileBulkTopicProgress(userObjId, category);
     }
   }
@@ -467,6 +480,16 @@ export async function bulkUpdateStatus(
 }
 
 async function reconcileBulkTopicProgress(userId: Types.ObjectId, topicName: string): Promise<void> {
+  // Ensure the topic cache exists before entering the 8-attempt OCC retry budget so
+  // concurrent first-time creations do not consume update attempts.
+  if (!(await DsaTopicProgress.exists({ userId, topicName }))) {
+    try {
+      await DsaTopicProgress.create({ userId, topicName });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+    }
+  }
+
   // Read the existing revision BEFORE aggregating. Concurrent bulk requests
   // must re-aggregate if another request has published newer counts.
   for (let attempt = 0; attempt < 8; attempt++) {

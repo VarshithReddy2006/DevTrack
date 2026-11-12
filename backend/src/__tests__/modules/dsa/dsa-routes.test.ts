@@ -299,12 +299,12 @@ describe('DSA problem routes', () => {
       'persists %s with one increment and the existing timestamp semantics', async status => {
         await seedSubmissionMetadata();
         const response = await patch(`/problems/${ownedIds[0]}`, { status });
-        const solvedAt = status === 'solved' ? now : previous;
+        const solvedAt = status === 'solved' ? now : null;
 
         expect.soft(response.status).toBe(200);
         expect.soft(response.body).toMatchObject({ success: true, data: {
           id: ownedIds[0], status, submissionCount: 8,
-          lastSubmittedAt: now.toISOString(), solvedAt: solvedAt.toISOString(),
+          lastSubmittedAt: now.toISOString(), solvedAt: solvedAt ? solvedAt.toISOString() : null,
         } });
         expect(await DsaProblem.findById(ownedIds[0]).lean()).toMatchObject({
           status, submissionCount: 8, lastSubmittedAt: now, solvedAt,
@@ -376,7 +376,7 @@ describe('DSA problem routes', () => {
       expect(responses.map(response => response.body.data.submissionCount).sort((a, b) => a - b))
         .toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
       expect(await DsaProblem.findById(ownedIds[0]).lean()).toMatchObject({
-        status: 'attempted', submissionCount: 15, lastSubmittedAt: now, solvedAt: previous,
+        status: 'attempted', submissionCount: 15, lastSubmittedAt: now, solvedAt: null,
       });
     });
 

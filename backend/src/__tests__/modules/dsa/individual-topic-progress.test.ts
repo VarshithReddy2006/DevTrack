@@ -116,7 +116,7 @@ describe('Issue #114: individual problem updates and deletions reconcile DsaTopi
 
     // Verify database directly
     const doc = await DsaProblem.findById(problemId).lean();
-    expect(doc?.solvedAt).toBeUndefined();
+    expect(doc?.solvedAt).toBeNull();
 
     // Verify topic progress updated
     topic = await DsaTopicProgress.findOne({ userId, topicName: 'greedy' }).lean();
