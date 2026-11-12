@@ -28,7 +28,7 @@ export class RecommendationEngine {
     weakTopics: TopicAnalysis[];
     nextTopics: string[];
   } {
-    const { weakTopics, targetRole, topicBreakdown } = input;
+    const { targetRole, topicBreakdown } = input;
 
     // Calculate topic mastery for all topics
     const allTopics = this.calculateAllTopicMastery(topicBreakdown);

@@ -130,11 +130,6 @@ export const TrendInputSchema = z.object({
 export type TrendInput = z.infer<typeof TrendInputSchema>;
 
 export const RecommendationInputSchema = z.object({
-  weakTopics: z.array(z.object({
-    topic: z.string(),
-    solved: z.number().int().min(0),
-    mastery: z.number().min(0).max(100),
-  })),
   targetRole: z.string().optional(),
   topicBreakdown: z.object({
     arrays: z.number().int().min(0),
