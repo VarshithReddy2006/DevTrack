@@ -1,6 +1,7 @@
 // Telemetry and analytics system for product validation
 // Tracks user behavior, engagement quality, and identifies friction points
-import axiosClient from '../../utils/axiosClient';
+import { useUserStore } from '../../store/userStore';
+import { envConfig } from '../../utils/envCheck';
 
 type TelemetryEvent =
   | 'session_start'
@@ -39,8 +40,6 @@ type TelemetryEvent =
 interface TelemetryPayload {
   event: TelemetryEvent;
   timestamp: number;
-  sessionId: string;
-  userId?: string;
   properties: Record<string, unknown>;
   context: {
     page: string;
@@ -49,74 +48,72 @@ interface TelemetryPayload {
   };
 }
 
+const MAX_QUEUED_EVENTS = 100;
+const MAX_KEEPALIVE_BYTES = 60 * 1024;
+
+interface TelemetrySession {
+  id: string;
+  userId: string;
+  clerkSessionId?: string;
+  token?: string;
+  startedAt: number;
+  started: boolean;
+  flushing: boolean;
+}
+
+async function postObservation(path: string, body: string, token: string, keepalive = false) {
+  const response = await fetch(`${envConfig.VITE_API_BASE_URL.replace(/\/$/, '')}/observation/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body,
+    keepalive,
+  });
+  if (!response.ok) throw new Error(`Observation request failed (${response.status})`);
+}
+
 class TelemetryManager {
-  private sessionId: string;
   private queue: TelemetryPayload[] = [];
-  private flushInterval: number | null = null;
-  private isInitialized = false;
+  private session?: TelemetrySession;
+  private flushInterval?: number;
 
-  constructor() {
-    this.sessionId = crypto.randomUUID();
-  }
+  initialize() {
+    const { user, isAuthenticated } = useUserStore.getState();
+    if (this.session || !isAuthenticated || !user) return;
 
-  private hasToken(): boolean {
-    return !!localStorage.getItem('devtrack_access_token');
-  }
-
-  async initialize() {
-    if (this.isInitialized) return;
-    this.isInitialized = true;
-
-    // Start periodic flush (every 30 seconds)
-    this.flushInterval = window.setInterval(() => this.flush(), 30000);
-
-    if (!this.hasToken()) return;
-
-    // Track session start in local buffer
-    this.track('session_start', {
+    this.session = {
+      id: crypto.randomUUID(),
+      userId: user.id,
+      startedAt: Date.now(),
+      started: false,
+      flushing: false,
+    };
+    this.enqueue(this.makeEvent('session_start', {
       referrer: document.referrer,
       entryPage: window.location.pathname,
-    });
-
-    // Notify backend that session has started
-    try {
-      await axiosClient.post('/observation/session/start', {
-        sessionId: this.sessionId,
-        deviceInfo: {
-          userAgent: navigator.userAgent,
-          viewport: { width: window.innerWidth, height: window.innerHeight },
-          deviceType: 'desktop',
-        },
-      });
-    } catch (err) {
-      console.warn('[Telemetry] Start session sync failed:', err);
-    }
-
-    // Track session end on unload
-    window.addEventListener('beforeunload', () => {
-      if (!this.hasToken()) return;
-      this.track('session_end', {
-        duration: Date.now() - this.sessionStartTime,
-      });
-      // Try to notify backend immediately on exit
-      try {
-        axiosClient.post('/observation/session/end', { sessionId: this.sessionId });
-      } catch {
-        // Ignore
-      }
-      this.flush();
-    });
+    }));
+    this.flushInterval = window.setInterval(() => void this.flush(), 30_000);
+    window.addEventListener('pagehide', this.onPageHide);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    void this.flush();
   }
 
-  private sessionStartTime = Date.now();
-
   track(event: TelemetryEvent, properties: Record<string, unknown> = {}) {
-    // If not fully initialized yet, we still queue it locally
-    const payload: TelemetryPayload = {
+    if (this.session && !this.isCurrentUser(this.session)) return;
+    this.enqueue(this.makeEvent(event, properties));
+
+    if (import.meta.env.DEV) {
+      console.debug('[Telemetry Tracked]', event, properties);
+    }
+
+    if (['error_occurred', 'achievement_unlock', 'streak_milestone', 'burnout_signal', 'abandonment'].includes(event)) {
+      void this.flush();
+    }
+  }
+
+  private makeEvent(event: TelemetryEvent, properties: Record<string, unknown>): TelemetryPayload {
+    return {
       event,
       timestamp: Date.now(),
-      sessionId: this.sessionId,
-      userId: this.getUserId(),
       properties,
       context: {
         page: window.location.pathname,
@@ -124,82 +121,122 @@ class TelemetryManager {
         userAgent: navigator.userAgent,
       },
     };
-
-    this.queue.push(payload);
-
-    if (import.meta.env.DEV) {
-      console.debug('[Telemetry Tracked]', event, properties);
-    }
-
-    // Flush immediately for critical events
-    if (
-      [
-        'error_occurred',
-        'achievement_unlock',
-        'streak_milestone',
-        'burnout_signal',
-        'abandonment',
-      ].includes(event)
-    ) {
-      this.flush();
-    }
   }
 
-  private getUserId(): string | undefined {
-    try {
-      const userStr = localStorage.getItem('devtrack_user');
-      if (userStr) {
-        const user = JSON.parse(userStr);
-        return user.id;
-      }
-    } catch {
-      // Ignore
-    }
-    return undefined;
+  private enqueue(event: TelemetryPayload) {
+    this.queue.push(event);
+    if (this.queue.length > MAX_QUEUED_EVENTS) this.queue.shift();
+  }
+
+  private isCurrentUser(session: TelemetrySession) {
+    const { user, isAuthenticated } = useUserStore.getState();
+    const clerk = window.Clerk?.session;
+    return isAuthenticated && user?.id === session.userId &&
+      (!session.clerkSessionId || clerk?.id === session.clerkSessionId);
   }
 
   private async flush() {
-    if (this.queue.length === 0) return;
-    if (!this.hasToken()) {
-      this.queue = [];
-      return;
-    }
+    const session = this.session;
+    const clerk = window.Clerk?.session;
+    if (!session || !clerk || session.flushing || !this.isCurrentUser(session)) return;
 
-    const eventsToSend = [...this.queue];
-    this.queue = [];
-
+    session.clerkSessionId = clerk.id;
+    session.flushing = true;
     try {
-      // Send events to backend analytics endpoint
-      await axiosClient.post('/observation/events', {
-        sessionId: this.sessionId,
-        events: eventsToSend,
-      });
+      const token: string | null = await clerk.getToken();
+      if (this.session !== session || !this.isCurrentUser(session)) return;
+      session.token = token ?? undefined;
+      if (!token) return;
+
+      if (!session.started) {
+        await postObservation('session/start', JSON.stringify({
+          sessionId: session.id,
+          deviceInfo: {
+            userAgent: navigator.userAgent,
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+            deviceType: 'desktop',
+          },
+        }), token);
+        session.started = true;
+      }
+
+      if (this.session === session && this.isCurrentUser(session)) {
+        await this.sendEvents(session, token);
+      }
     } catch (error) {
-      console.warn('[Telemetry] Failed to flush telemetry, re-queueing events:', error);
-      // Re-queue failed events
-      this.queue.unshift(...eventsToSend);
+      console.warn('[Telemetry] Observation sync failed:', error);
+    } finally {
+      session.flushing = false;
     }
   }
 
-  destroy() {
-    if (this.flushInterval) {
-      clearInterval(this.flushInterval);
-      this.flushInterval = null;
-    }
-    
-    // Notify end of session
-    if (this.hasToken()) {
-      try {
-        axiosClient.post('/observation/session/end', { sessionId: this.sessionId });
-      } catch {
-        // Ignore
+  private async sendEvents(session: TelemetrySession, token: string, keepalive = false) {
+    let count = this.queue.length;
+    while (count > 0) {
+      const events = this.queue.slice(-count);
+      const body = JSON.stringify({
+        sessionId: session.id,
+        events: events.map(event => ({ ...event, sessionId: session.id, userId: session.userId })),
+      });
+      if (keepalive && new TextEncoder().encode(body).byteLength > MAX_KEEPALIVE_BYTES) {
+        count = Math.floor(count / 2);
+        continue;
       }
-      this.flush();
-    } else {
-      this.queue = [];
+
+      this.queue.splice(-count);
+      try {
+        await postObservation('events', body, token, keepalive);
+      } catch (error) {
+        if (this.session === session && this.isCurrentUser(session)) {
+          this.queue = [...events, ...this.queue]
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .slice(-MAX_QUEUED_EVENTS);
+        }
+        throw error;
+      }
+      return;
     }
-    
-    this.isInitialized = false;
+  }
+
+  private flushKeepalive(session: TelemetrySession) {
+    // Use the token acquired while the page was active so fetch starts during the event.
+    if (!session.started || !session.token || !this.isCurrentUser(session)) return;
+    void this.sendEvents(session, session.token, true).catch(() => {});
+  }
+
+  private onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden' && this.session) {
+      this.flushKeepalive(this.session);
+    } else {
+      void this.flush();
+    }
+  };
+
+  private onPageHide = (event: PageTransitionEvent) => {
+    if (event.persisted && this.session) {
+      this.flushKeepalive(this.session);
+    } else {
+      this.destroy();
+    }
+  };
+
+  destroy() {
+    const session = this.session;
+    if (!session) return;
+
+    window.clearInterval(this.flushInterval);
+    window.removeEventListener('pagehide', this.onPageHide);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
+
+    if (session.started && session.token && this.isCurrentUser(session)) {
+      this.enqueue(this.makeEvent('session_end', { duration: Date.now() - session.startedAt }));
+      this.flushKeepalive(session);
+      void postObservation('session/end', JSON.stringify({ sessionId: session.id }), session.token, true)
+        .catch(() => {});
+    }
+
+    this.session = undefined;
+    this.queue = [];
   }
 }
 

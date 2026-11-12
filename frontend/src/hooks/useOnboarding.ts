@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { telemetry } from '../lib/telemetry/analytics';
 import axiosClient from '../utils/axiosClient';
+import { useUserStore } from '../store/userStore';
 
 interface OnboardingStep {
   id: string;
@@ -42,10 +43,12 @@ const onboardingApi = {
 };
 
 export function useOnboarding() {
+  const isAuthenticated = useUserStore((state) => state.isAuthenticated);
   const queryClient = useQueryClient();
 
   const query = useQuery({
     queryKey: ['onboarding'],
+    enabled: isAuthenticated,
     queryFn: onboardingApi.getProgress,
     staleTime: 5 * 60 * 1000,
   });

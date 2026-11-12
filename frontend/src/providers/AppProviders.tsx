@@ -31,6 +31,7 @@ function getRarityTheme(level: number) {
 /** Wires theme, SSE, and lightweight telemetry for authenticated sessions */
 export function AppProviders({ children }: AppProvidersProps) {
   const isAuthenticated = useUserStore((s) => s.isAuthenticated);
+  const telemetryUserId = useUserStore((s) => s.user?.id);
   const queryClient = useQueryClient();
   const { liveLevel } = useXpState();
 
@@ -80,15 +81,11 @@ export function AppProviders({ children }: AppProvidersProps) {
   }, [theme]);
 
   useEffect(() => {
-    if (isAuthenticated) {
-      telemetry.initialize();
-    } else {
-      telemetry.destroy();
-    }
-    return () => {
-      telemetry.destroy();
-    };
-  }, [isAuthenticated]);
+    if (!isAuthenticated || !telemetryUserId) return;
+
+    telemetry.initialize();
+    return () => telemetry.destroy();
+  }, [isAuthenticated, telemetryUserId]);
 
   useEffect(() => {
     const levelToUse = isAuthenticated ? liveLevel : 1;
