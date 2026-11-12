@@ -153,8 +153,10 @@ export const opsController = {
     let openaiLatency = 0;
     try {
       const { AIResponseAuditLog } = await import('../../db/models/aiResponseAuditLog.model.js');
-      const geminiLogs = await AIResponseAuditLog.find({ provider: 'gemini' }).sort({ createdAt: -1 }).limit(10).lean();
-      const openaiLogs = await AIResponseAuditLog.find({ provider: 'openai' }).sort({ createdAt: -1 }).limit(10).lean();
+      const geminiLogs = await AIResponseAuditLog.find({ provider: 'gemini', success: { $ne: false }, cached: { $ne: true } })
+        .select('latencyMs').sort({ createdAt: -1 }).limit(10).lean();
+      const openaiLogs = await AIResponseAuditLog.find({ provider: 'openai', success: { $ne: false }, cached: { $ne: true } })
+        .select('latencyMs').sort({ createdAt: -1 }).limit(10).lean();
 
       if (geminiLogs.length > 0) {
         geminiLatency = Math.round(geminiLogs.reduce((acc, curr) => acc + curr.latencyMs, 0) / geminiLogs.length);

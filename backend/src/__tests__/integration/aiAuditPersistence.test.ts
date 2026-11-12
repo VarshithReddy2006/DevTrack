@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AIResponseAuditLog as AuditLogModel, AI_AUDIT_RETENTION_SECONDS } from '../../db/models/aiResponseAuditLog.model.js';
 import { AIProviderAdapter } from '../../modules/ai/AIProviderAdapter.js';
+import { AIProviderAdapter as LiveAIProviderAdapter } from '../../modules/ai/provider/AIProviderAdapter.js';
 import { AIResponseAuditLogClass } from '../../modules/ai/audit/AIResponseAuditLog.js';
 import { logger } from '../../shared/logger.js';
 
@@ -102,7 +103,8 @@ describe('AI audit persistence', () => {
       totalRequests: 2, totalTokens: 30, averageLatency: 150, cacheHitRate: 50,
     });
     expect(await audit.getFlaggedEntries('safety')).toEqual([failed]);
-    expect(await audit.getFailedEntries()).toEqual([failed]);
+    expect(await audit.getFailedEntries()).toEqual([expect.objectContaining({ errorCode: 'provider_error' })]);
+    expect(await AuditLogModel.findById(failed!.logId).lean()).not.toHaveProperty('errorMessage');
     expect(await audit.getUserEntries('legacy-user')).toMatchObject([{ success: true, model: 'unknown', prompt: '' }]);
   });
 
@@ -117,6 +119,52 @@ describe('AI audit persistence', () => {
     } finally {
       create.mockRestore();
       warn.mockRestore();
+    }
+  });
+
+  it('records live adapter success and exhausted failover using only audit metadata', async () => {
+    const providerBody = 'private provider diagnostic with a credential';
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({
+        choices: [{ message: { content: 'private generated response' } }],
+        usage: { total_tokens: 12 },
+      }))
+      .mockImplementation(async () => new Response(providerBody, { status: 429 }));
+
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('OPENAI_API_KEY', 'unit-test-key');
+    vi.stubEnv('GEMINI_API_KEY', '');
+    const request = {
+      prompt: 'private resume',
+      systemPrompt: 'private instructions',
+      tenantScope: 'provider-audit-user',
+      responseSchemaVersion: 'test-v1',
+      cache: false,
+    };
+
+    try {
+      await expect(LiveAIProviderAdapter.generateResponse({ ...request, providerPreference: 'openai' }))
+        .resolves.toMatchObject({ provider: 'openai', tokensUsed: 12 });
+      vi.useFakeTimers();
+      const failure = expect(LiveAIProviderAdapter.generateResponse({ ...request, providerPreference: 'gemini' }))
+        .rejects.toThrow('provider_rate_limited');
+      await vi.advanceTimersByTimeAsync(6000);
+      vi.useRealTimers();
+      await failure;
+
+      await vi.waitFor(async () => {
+        const rows = await AuditLogModel.find({ userId: request.tenantScope }).lean();
+        expect(rows).toHaveLength(2);
+        expect(rows).toEqual(expect.arrayContaining([
+          expect.objectContaining({ provider: 'openai', success: true, tokensUsed: 12, contextVersion: 'test-v1' }),
+          expect.objectContaining({ provider: 'openai', success: false, errorCode: 'provider_rate_limited', tokensUsed: 0 }),
+        ]));
+        expect(JSON.stringify(rows)).not.toMatch(/private|unit-test-key/);
+      });
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
     }
   });
 

@@ -1,5 +1,5 @@
 import { isObjectIdOrHexString, type FilterQuery, type PipelineStage, type Types } from 'mongoose';
-import { AIResponseAuditLog as AuditLogModel, type IAIResponseAuditLog } from '../../../db/models/aiResponseAuditLog.model.js';
+import { AIResponseAuditLog as AuditLogModel, AI_AUDIT_ERROR_CODES, type AIAuditErrorCode, type IAIResponseAuditLog } from '../../../db/models/aiResponseAuditLog.model.js';
 import { escapeRegExp } from '../../../shared/regex.js';
 import { logger } from '../../../shared/logger.js';
 
@@ -23,6 +23,7 @@ export interface AuditLogEntry {
   response: string;
   success: boolean;
   errorMessage?: string;
+  errorCode?: AIAuditErrorCode;
 }
 
 export interface AuditStats {
@@ -49,7 +50,7 @@ export interface AuditStats {
 type StoredEntry = Pick<IAIResponseAuditLog,
   'userId' | 'requestType' | 'model' | 'provider' | 'latencyMs' | 'tokensUsed' | 'cached' |
   'contextVersion' | 'responseConfidence' | 'moderationFlags' | 'hallucinationFlags' |
-  'safetyViolations' | 'success' | 'createdAt'> & { _id: Types.ObjectId };
+  'safetyViolations' | 'success' | 'errorCode' | 'createdAt'> & { _id: Types.ObjectId };
 
 type Breakdown = AuditStats['byProvider'][string];
 type Totals = Omit<AuditStats, 'byProvider' | 'byModel' | 'cacheHitRate'> & { cachedCount: number };
@@ -78,6 +79,7 @@ function toEntry(record: StoredEntry): AuditLogEntry {
     hallucinationFlags: record.hallucinationFlags ?? [],
     safetyViolations: record.safetyViolations ?? [],
     success: record.success ?? true,
+    ...(record.errorCode && { errorCode: record.errorCode }),
     prompt: '',
     systemPrompt: '',
     response: '',
@@ -116,6 +118,8 @@ export class AIResponseAuditLogClass {
         hallucinationFlags: entry.hallucinationFlags,
         safetyViolations: entry.safetyViolations,
         success: entry.success,
+        errorCode: entry.success ? undefined
+          : AI_AUDIT_ERROR_CODES.find(code => code === entry.errorCode) ?? 'provider_error',
       });
       return toEntry(record.toObject());
     } catch {

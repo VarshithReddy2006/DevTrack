@@ -7,10 +7,18 @@ import { Project } from '../../../db/models/project.model.js';
 import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
 import { Types } from 'mongoose';
 
-vi.mock('../../../modules/ai/AIProviderAdapter.js');
-vi.mock('../../../db/models/resumeProfile.model.js');
-vi.mock('../../../db/models/project.model.js');
-vi.mock('../../../db/models/atsAnalysis.model.js');
+vi.mock('../../../modules/ai/AIProviderAdapter.js', () => ({
+  AIProviderAdapter: { generateResponse: vi.fn() },
+}));
+vi.mock('../../../db/models/resumeProfile.model.js', () => ({
+  ResumeProfile: { findOne: vi.fn() },
+}));
+vi.mock('../../../db/models/project.model.js', () => ({
+  Project: { find: vi.fn() },
+}));
+vi.mock('../../../db/models/atsAnalysis.model.js', () => ({
+  ATSAnalysis: { findOne: vi.fn() },
+}));
 vi.mock('../../../shared/logger.js');
 
 describe('ResumeWordingService', () => {
