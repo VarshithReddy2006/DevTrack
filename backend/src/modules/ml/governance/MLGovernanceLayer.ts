@@ -4,6 +4,7 @@
 // ML systems remain bounded, observable, and explainable.
 
 import { logger } from '../../../shared/logger.js';
+import { MongoModelState } from '../MongoModelState.js';
 import type {
   GovernancePolicy,
   GovernanceConstraint,
@@ -13,6 +14,18 @@ import type {
   ModelMetadata,
   DriftStatus,
 } from '../types.js';
+
+const VIOLATION_WINDOW_MS = 300_000;
+
+interface GovernanceState {
+  modelId: string;
+  policies: GovernancePolicy[];
+  blocked: boolean;
+  totalViolations: number;
+  recentViolations: GovernanceViolation[];
+}
+
+type PredictionSignals = Pick<MLPrediction, 'modelId' | 'confidence' | 'latencyMs'>;
 
 interface GovernanceDecision {
   allowed: boolean;
@@ -43,9 +56,11 @@ interface ModelSafetyCheck {
  * No black-box intelligence. No uncontrolled autonomous reasoning.
  */
 export class MLGovernanceLayer {
-  private policies: Map<string, GovernancePolicy> = new Map();
-  private violations: GovernanceViolation[] = [];
-  private blockedModels: Set<string> = new Set();
+  private readonly store = new MongoModelState<GovernanceState>('ml_model_governance');
+
+  private emptyState(modelId: string): GovernanceState {
+    return { modelId, policies: [], blocked: false, totalViolations: 0, recentViolations: [] };
+  }
 
   // Global thresholds
   private globalConfidenceMinimum: number;
@@ -73,20 +88,57 @@ export class MLGovernanceLayer {
   /**
    * Register a governance policy for a model.
    */
-  registerPolicy(policy: GovernancePolicy): void {
-    this.policies.set(policy.policyId, policy);
+  async registerPolicy(policy: GovernancePolicy): Promise<void> {
+    await this.store.update(policy.modelId, (state = this.emptyState(policy.modelId)) => ({
+      ...state,
+      policies: [...state.policies.filter(existing => existing.policyId !== policy.policyId), policy],
+    }));
     logger.info(`[MLGovernance] Policy registered: ${policy.policyName} for model ${policy.modelId}`);
   }
 
   /**
    * Evaluate whether a prediction should be allowed.
    */
-  evaluatePrediction(prediction: MLPrediction): GovernanceDecision {
+  async evaluatePrediction(prediction: PredictionSignals): Promise<GovernanceDecision> {
+    let decision: GovernanceDecision | undefined;
+    await this.store.update(prediction.modelId, (state = this.emptyState(prediction.modelId)) => {
+      if (state.blocked) {
+        decision = this.blockedDecision(prediction.modelId, []);
+        return undefined;
+      }
+
+      decision = this.evaluatePolicies(prediction, state.policies);
+      const { violations } = decision;
+      if (violations.length === 0) return undefined;
+
+      const recentViolations = [...this.recent(state), ...violations];
+      const blocked = decision.action === 'block' || recentViolations.length >= this.maxViolationsBeforeBlock;
+      if (blocked) decision = this.blockedDecision(prediction.modelId, violations);
+      return {
+        ...state,
+        blocked,
+        totalViolations: state.totalViolations + violations.length,
+        recentViolations,
+      };
+    });
+    return decision!;
+  }
+
+  private blockedDecision(modelId: string, violations: GovernanceViolation[]): GovernanceDecision {
+    return {
+      allowed: false,
+      action: 'block',
+      violations,
+      explanation: [`Model ${modelId} is blocked due to governance violations`],
+    };
+  }
+
+  private evaluatePolicies(prediction: PredictionSignals, policies: GovernancePolicy[]): GovernanceDecision {
     const violations: GovernanceViolation[] = [];
     const explanations: string[] = [];
 
     // 1. Global confidence minimum
-    if (prediction.confidence < this.globalConfidenceMinimum) {
+    if (!Number.isFinite(prediction.confidence) || prediction.confidence < this.globalConfidenceMinimum) {
       violations.push({
         policyId: 'global_confidence',
         modelId: prediction.modelId,
@@ -114,7 +166,7 @@ export class MLGovernanceLayer {
     }
 
     // 3. Check model-specific policies
-    for (const policy of this.policies.values()) {
+    for (const policy of policies) {
       if (policy.modelId !== prediction.modelId || !policy.enabled) continue;
 
       for (const constraint of policy.constraints) {
@@ -134,32 +186,9 @@ export class MLGovernanceLayer {
       }
     }
 
-    // 4. Check if model is blocked
-    if (this.blockedModels.has(prediction.modelId)) {
-      violations.push({
-        policyId: 'model_blocked',
-        modelId: prediction.modelId,
-        constraintType: 'confidence_minimum',
-        threshold: 0,
-        actualValue: 0,
-        action: 'block',
-        timestamp: new Date().toISOString(),
-      });
-      explanations.push(`Model ${prediction.modelId} is blocked due to governance violations`);
-    }
-
-    // Record violations
-    this.violations.push(...violations);
-
-    // Check if we should auto-block the model
-    this.checkAutoBlock(prediction.modelId);
-
-    // Determine action
-    const allowed = violations.length === 0;
     const action = this.determineAction(violations);
-
     return {
-      allowed,
+      allowed: action === 'allow' || action === 'warn',
       action,
       violations,
       explanation: explanations,
@@ -212,7 +241,7 @@ export class MLGovernanceLayer {
   /**
    * Handle drift detection for a model.
    */
-  handleDrift(modelId: string, driftStatus: DriftStatus): GovernanceAction {
+  async handleDrift(modelId: string, driftStatus: DriftStatus): Promise<GovernanceAction> {
     switch (driftStatus) {
       case 'stable':
         return 'allow';
@@ -221,7 +250,7 @@ export class MLGovernanceLayer {
         return 'warn';
       case 'critical':
         logger.warn(`[MLGovernance] Model ${modelId} has critical drift — suppressing`);
-        this.blockedModels.add(modelId);
+        await this.store.update(modelId, (state = this.emptyState(modelId)) => ({ ...state, blocked: true }));
         return 'fallback_deterministic';
       default:
         return 'allow';
@@ -231,33 +260,38 @@ export class MLGovernanceLayer {
   /**
    * Unblock a model (after fixes).
    */
-  unblockModel(modelId: string): void {
-    this.blockedModels.delete(modelId);
+  async unblockModel(modelId: string): Promise<void> {
+    await this.store.update(modelId, state => state && { ...state, blocked: false, recentViolations: [] });
     logger.info(`[MLGovernance] Model ${modelId} unblocked`);
   }
 
-  /**
-   * Get all violations.
-   */
-  getViolations(modelId?: string): GovernanceViolation[] {
-    if (modelId) return this.violations.filter(v => v.modelId === modelId);
-    return this.violations;
+  async isModelBlocked(modelId: string): Promise<boolean> {
+    return (await this.store.get(modelId))?.blocked ?? false;
   }
 
-  /**
-   * Get governance status summary.
-   */
-  getStatus(): {
+  /** Get violations from the rolling governance window. */
+  async getViolations(modelId?: string): Promise<GovernanceViolation[]> {
+    if (modelId !== undefined) {
+      const state = await this.store.get(modelId);
+      return state ? this.recent(state) : [];
+    }
+    return (await this.store.list()).flatMap(state => this.recent(state))
+      .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  }
+
+  async getStatus(): Promise<{
     totalPolicies: number;
     totalViolations: number;
     blockedModels: string[];
     recentViolations: GovernanceViolation[];
-  } {
+  }> {
+    const states = await this.store.list();
     return {
-      totalPolicies: this.policies.size,
-      totalViolations: this.violations.length,
-      blockedModels: Array.from(this.blockedModels),
-      recentViolations: this.violations.slice(-10),
+      totalPolicies: states.reduce((total, state) => total + state.policies.length, 0),
+      totalViolations: states.reduce((total, state) => total + state.totalViolations, 0),
+      blockedModels: states.filter(state => state.blocked).map(state => state.modelId),
+      recentViolations: states.flatMap(state => this.recent(state))
+        .sort((left, right) => left.timestamp.localeCompare(right.timestamp)).slice(-10),
     };
   }
 
@@ -288,7 +322,7 @@ export class MLGovernanceLayer {
   // Internal
   // ---------------------------------------------------------------------------
 
-  private getConstraintValue(type: GovernanceConstraint['type'], prediction: MLPrediction): number | null {
+  private getConstraintValue(type: GovernanceConstraint['type'], prediction: PredictionSignals): number | null {
     switch (type) {
       case 'confidence_minimum': return prediction.confidence;
       case 'latency_maximum': return prediction.latencyMs;
@@ -325,14 +359,8 @@ export class MLGovernanceLayer {
     return worstAction;
   }
 
-  private checkAutoBlock(modelId: string): void {
-    const recentViolations = this.violations
-      .filter(v => v.modelId === modelId)
-      .filter(v => Date.now() - new Date(v.timestamp).getTime() < 300_000); // last 5 min
-
-    if (recentViolations.length >= this.maxViolationsBeforeBlock) {
-      logger.warn(`[MLGovernance] Auto-blocking model ${modelId}: ${recentViolations.length} violations in 5 min`);
-      this.blockedModels.add(modelId);
-    }
+  private recent(state: GovernanceState): GovernanceViolation[] {
+    const cutoff = Date.now() - VIOLATION_WINDOW_MS;
+    return state.recentViolations.filter(violation => Date.parse(violation.timestamp) > cutoff);
   }
 }

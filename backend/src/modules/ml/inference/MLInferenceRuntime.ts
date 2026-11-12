@@ -4,7 +4,13 @@
 
 import { logger } from '../../../shared/logger.js';
 import type { InferenceRequest, InferenceResult, InferenceMetrics, MLPrediction } from '../types.js';
-import { generateRequestId } from '../types.js';
+import type { MLGovernanceLayer } from '../governance/MLGovernanceLayer.js';
+import type { ModelRegistryEngine } from '../registry/ModelRegistryEngine.js';
+
+interface InferenceGovernance {
+  governance?: Pick<MLGovernanceLayer, 'isModelBlocked' | 'evaluatePrediction'>;
+  registry?: Pick<ModelRegistryEngine, 'getModel' | 'rollback'>;
+}
 
 interface RuntimeConfig {
   maxBatchSize: number;
@@ -87,7 +93,7 @@ export class MLInferenceRuntime {
   }[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(config?: Partial<RuntimeConfig>) {
+  constructor(config?: Partial<RuntimeConfig>, private readonly controls: InferenceGovernance = {}) {
     this.config = {
       maxBatchSize: config?.maxBatchSize ?? 16,
       batchTimeoutMs: config?.batchTimeoutMs ?? 50,
@@ -133,6 +139,7 @@ export class MLInferenceRuntime {
 
     try {
       const result = await this.executeWithRetry(request);
+      if (!result) return this.degradedModeInference(request, start);
       this.metrics.successfulRequests++;
       this.circuitBreaker.failureCount = 0;
       const latency = Date.now() - start;
@@ -221,7 +228,7 @@ export class MLInferenceRuntime {
   // Internal
   // ---------------------------------------------------------------------------
 
-  private async executeWithRetry(request: InferenceRequest): Promise<InferenceResult> {
+  private async executeWithRetry(request: InferenceRequest): Promise<InferenceResult | null> {
     let lastError: Error | null = null;
 
     // Try each provider in priority order
@@ -229,20 +236,58 @@ export class MLInferenceRuntime {
       if (!provider.isHealthy()) continue;
 
       for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+        if (!(await this.canServe(request.modelId))) return null;
+        let result: InferenceResult;
         try {
-          const result = await this.executeWithTimeout(provider, request);
-          return result;
+          result = await this.executeWithTimeout(provider, request);
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
           if (attempt < this.config.maxRetries) {
             this.metrics.retryRequests++;
             await this.sleep(this.config.retryDelayMs * (attempt + 1));
           }
+          continue;
         }
+        return (await this.canServe(request.modelId, result)) ? result : null;
       }
     }
 
     throw lastError ?? new Error('No providers available');
+  }
+
+  private async canServe(modelId: string, result?: InferenceResult): Promise<boolean> {
+    const { registry, governance } = this.controls;
+    if (!registry && !governance) return true;
+
+    try {
+      const prediction = result?.prediction;
+      if (result && (result.modelId !== modelId || prediction?.modelId !== modelId)) return false;
+
+      if (registry) {
+        const model = await registry.getModel(modelId);
+        if (!model?.evaluationGate.passed || model.driftStatus === 'critical' ||
+            (model.deploymentState !== 'production' && model.deploymentState !== 'canary') ||
+            (prediction && prediction.modelVersion !== model.version)) {
+          return false;
+        }
+      }
+
+      if (!governance) return true;
+      if (!prediction) return !(await governance.isModelBlocked(modelId));
+
+      const confidence = 'confidence' in prediction
+        ? prediction.confidence
+        : prediction.items.reduce(
+          (minimum, item) => Math.min(minimum, item.confidence),
+          prediction.items.length > 0 ? 1 : 0,
+        );
+      const decision = await governance.evaluatePrediction({ modelId, confidence, latencyMs: prediction.latencyMs });
+      if (decision.action === 'rollback') await registry?.rollback(modelId, 'Inference governance policy violation');
+      return decision.allowed;
+    } catch (error) {
+      logger.warn('[MLInferenceRuntime] Governance check failed, using degraded mode', { modelId, error });
+      return false;
+    }
   }
 
   private async executeWithTimeout(
