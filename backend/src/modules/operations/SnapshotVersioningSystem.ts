@@ -1,4 +1,5 @@
-import { logger } from '../../shared/logger.js';
+import { randomUUID } from 'node:crypto';
+import { ReadinessSnapshotRecord, ReadinessSnapshotVersion } from '../../db/models/readinessSnapshotRecord.model.js';
 
 export interface SnapshotMetadata {
   snapshotId: string;
@@ -28,29 +29,32 @@ export interface VersionLineage {
   changeDescription: string;
 }
 
-class SnapshotVersioningSystemClass {
-  private snapshots: Map<string, SnapshotData> = new Map();
-  private lineage: Map<string, VersionLineage> = new Map();
-  private currentVersion: string = '1.0.0';
+const versionCounterId = 'snapshots';
+const newestFirst = { 'metadata.createdAt': -1, _id: -1 } as const;
+const recordFields = { _id: 0, metadata: 1, data: 1 };
 
-  /**
-   * Create a new snapshot of readiness data
-   */
-  createSnapshot(
+interface SnapshotQuery {
+  modelType?: SnapshotMetadata['modelType'];
+  since?: Date;
+  limit?: number;
+}
+
+export class SnapshotVersioningSystemClass {
+  async createSnapshot(
     userId: string,
     modelType: SnapshotMetadata['modelType'],
-    data: any,
+    data: unknown,
     changeDescription: string,
     parentSnapshotId?: string,
-    createdBy: string = 'system'
-  ): SnapshotMetadata {
-    const snapshotId = this.generateSnapshotId(userId, modelType);
-    const snapshotVersion = this.incrementVersion();
-    
+    createdBy = 'system',
+  ): Promise<SnapshotMetadata> {
+    const counter = await ReadinessSnapshotVersion.findByIdAndUpdate(
+      versionCounterId, { $inc: { version: 1 } }, { upsert: true, new: true },
+    ).lean();
     const metadata: SnapshotMetadata = {
-      snapshotId,
+      snapshotId: randomUUID(),
       userId,
-      snapshotVersion,
+      snapshotVersion: `1.0.${counter.version}`,
       analyticsVersion: '1.0.0',
       graphVersion: '1.0.0',
       scoringVersion: '1.0.0',
@@ -61,217 +65,94 @@ class SnapshotVersioningSystemClass {
       modelType,
     };
 
-    const snapshotData: SnapshotData = {
-      metadata,
-      data,
-    };
-
-    this.snapshots.set(snapshotId, snapshotData);
-    
-    // Update lineage
-    this.updateLineage(snapshotId, parentSnapshotId, snapshotVersion, changeDescription);
-    
-    logger.info('[SnapshotVersioningSystem] Created snapshot', { 
-      snapshotId, 
-      userId, 
-      modelType,
-      version: snapshotVersion 
-    });
-
+    await ReadinessSnapshotRecord.create({ metadata, data });
     return metadata;
   }
 
-  /**
-   * Get a snapshot by ID
-   */
-  getSnapshot(snapshotId: string): SnapshotData | undefined {
-    return this.snapshots.get(snapshotId);
+  async getSnapshot(snapshotId: string): Promise<SnapshotData | undefined> {
+    return (await ReadinessSnapshotRecord.findOne({ 'metadata.snapshotId': snapshotId }, recordFields).lean()) ?? undefined;
   }
 
-  /**
-   * Get latest snapshot for a user and model type
-   */
-  getLatestSnapshot(userId: string, modelType: SnapshotMetadata['modelType']): SnapshotData | undefined {
-    const userSnapshots = Array.from(this.snapshots.values())
-      .filter(s => s.metadata.userId === userId && s.metadata.modelType === modelType)
-      .sort((a, b) => b.metadata.createdAt.getTime() - a.metadata.createdAt.getTime());
-    
-    return userSnapshots[0];
+  async getLatestSnapshot(userId: string, modelType: SnapshotMetadata['modelType']): Promise<SnapshotData | undefined> {
+    return (await this.getUserSnapshots(userId, { modelType, limit: 1 }))[0];
   }
 
-  /**
-   * Get all snapshots for a user
-   */
-  getUserSnapshots(userId: string): SnapshotData[] {
-    return Array.from(this.snapshots.values())
-      .filter(s => s.metadata.userId === userId)
-      .sort((a, b) => b.metadata.createdAt.getTime() - a.metadata.createdAt.getTime());
+  async getUserSnapshots(userId: string, { modelType, since, limit }: SnapshotQuery = {}): Promise<SnapshotData[]> {
+    const query = ReadinessSnapshotRecord.find({
+      'metadata.userId': userId,
+      ...(modelType && { 'metadata.modelType': modelType }),
+      ...(since && { 'metadata.createdAt': { $gte: since } }),
+    }, recordFields).sort(newestFirst);
+    if (limit !== undefined) query.limit(limit);
+    return query.lean();
   }
 
-  /**
-   * Get version lineage for a snapshot
-   */
-  getLineage(snapshotId: string): VersionLineage | undefined {
-    return this.lineage.get(snapshotId);
+  async getLineage(snapshotId: string): Promise<VersionLineage | undefined> {
+    const snapshot = await ReadinessSnapshotRecord.findOne(
+      { 'metadata.snapshotId': snapshotId }, { metadata: 1 },
+    ).lean();
+    if (!snapshot) return undefined;
+
+    const { userId, snapshotVersion, parentSnapshotId, createdAt, changeDescription } = snapshot.metadata;
+    const children = await ReadinessSnapshotRecord.find(
+      { 'metadata.parentSnapshotId': snapshotId, 'metadata.userId': userId },
+      { 'metadata.snapshotId': 1 },
+    ).sort({ 'metadata.createdAt': 1, _id: 1 }).lean();
+
+    return {
+      snapshotId,
+      version: snapshotVersion,
+      parentSnapshotId,
+      childSnapshotIds: children.map(child => child.metadata.snapshotId),
+      createdAt,
+      changeDescription,
+    };
   }
 
-  /**
-   * Get full version history for a snapshot
-   */
-  getVersionHistory(snapshotId: string): VersionLineage[] {
+  async getVersionHistory(snapshotId: string): Promise<VersionLineage[]> {
     const history: VersionLineage[] = [];
     const visited = new Set<string>();
-    
-    this.traverseLineage(snapshotId, history, visited);
-    
+    let currentId: string | undefined = snapshotId;
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const lineage = await this.getLineage(currentId);
+      if (!lineage) break;
+      history.push(lineage);
+      currentId = lineage.parentSnapshotId;
+    }
     return history;
   }
 
-  /**
-   * Rollback to a previous snapshot
-   */
-  rollbackToSnapshot(snapshotId: string): SnapshotData | undefined {
-    const snapshot = this.snapshots.get(snapshotId);
-    if (!snapshot) {
-      logger.warn('[SnapshotVersioningSystem] Snapshot not found for rollback', { snapshotId });
-      return undefined;
-    }
-
-    logger.info('[SnapshotVersioningSystem] Rolled back to snapshot', { 
-      snapshotId, 
-      version: snapshot.metadata.snapshotVersion 
-    });
-
-    return snapshot;
+  async rollbackToSnapshot(snapshotId: string): Promise<SnapshotData | undefined> {
+    return this.getSnapshot(snapshotId);
   }
 
-  /**
-   * Delete old snapshots (cleanup)
-   */
-  deleteOldSnapshots(userId: string, keepCount: number = 10): number {
-    const userSnapshots = this.getUserSnapshots(userId);
-    const toDelete = userSnapshots.slice(keepCount);
-    
-    let deletedCount = 0;
-    toDelete.forEach(snapshot => {
-      this.snapshots.delete(snapshot.metadata.snapshotId);
-      this.lineage.delete(snapshot.metadata.snapshotId);
-      deletedCount++;
-    });
-
-    logger.info('[SnapshotVersioningSystem] Deleted old snapshots', { 
-      userId, 
-      deletedCount 
-    });
-
-    return deletedCount;
+  async deleteOldSnapshots(userId: string, keepCount = 10): Promise<number> {
+    const query = ReadinessSnapshotRecord.find({ 'metadata.userId': userId }, { _id: 1 }).sort(newestFirst);
+    const outdated = await query.skip(Math.max(0, Math.trunc(keepCount))).lean();
+    const result = await ReadinessSnapshotRecord.deleteMany({ _id: { $in: outdated.map(snapshot => snapshot._id) } });
+    return result.deletedCount;
   }
 
-  /**
-   * Generate unique snapshot ID
-   */
-  private generateSnapshotId(userId: string, modelType: string): string {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 8);
-    return `${userId}-${modelType}-${timestamp}-${random}`;
-  }
-
-  /**
-   * Increment version number
-   */
-  private incrementVersion(): string {
-    const [major, minor, patch] = this.currentVersion.split('.').map(Number);
-    
-    // Simple increment logic - increment patch
-    const newPatch = patch + 1;
-    this.currentVersion = `${major}.${minor}.${newPatch}`;
-    
-    return this.currentVersion;
-  }
-
-  /**
-   * Update lineage information
-   */
-  private updateLineage(
-    snapshotId: string,
-    parentSnapshotId: string | undefined,
-    version: string,
-    changeDescription: string
-  ): void {
-    const lineage: VersionLineage = {
-      snapshotId,
-      version,
-      parentSnapshotId,
-      childSnapshotIds: [],
-      createdAt: new Date(),
-      changeDescription,
-    };
-
-    this.lineage.set(snapshotId, lineage);
-
-    // Update parent's child references
-    if (parentSnapshotId) {
-      const parentLineage = this.lineage.get(parentSnapshotId);
-      if (parentLineage) {
-        parentLineage.childSnapshotIds.push(snapshotId);
-        this.lineage.set(parentSnapshotId, parentLineage);
-      }
-    }
-  }
-
-  /**
-   * Traverse lineage recursively
-   */
-  private traverseLineage(
-    snapshotId: string,
-    history: VersionLineage[],
-    visited: Set<string>
-  ): void {
-    if (visited.has(snapshotId)) return;
-    visited.add(snapshotId);
-
-    const lineage = this.lineage.get(snapshotId);
-    if (!lineage) return;
-
-    history.push(lineage);
-
-    if (lineage.parentSnapshotId) {
-      this.traverseLineage(lineage.parentSnapshotId, history, visited);
-    }
-  }
-
-  /**
-   * Get snapshot statistics
-   */
-  getStats(): {
+  async getStats(): Promise<{
     totalSnapshots: number;
     totalLineageEntries: number;
     currentVersion: string;
     snapshotsByModelType: Record<string, number>;
-  } {
-    const snapshotsByModelType: Record<string, number> = {};
-    
-    this.snapshots.forEach((snapshot) => {
-      const modelType = snapshot.metadata.modelType;
-      snapshotsByModelType[modelType] = (snapshotsByModelType[modelType] || 0) + 1;
-    });
-
+  }> {
+    const [counts, counter] = await Promise.all([
+      ReadinessSnapshotRecord.aggregate<{ _id: string; count: number }>([
+        { $group: { _id: '$metadata.modelType', count: { $sum: 1 } } },
+      ]),
+      ReadinessSnapshotVersion.findById(versionCounterId).lean(),
+    ]);
+    const totalSnapshots = counts.reduce((sum, { count }) => sum + count, 0);
     return {
-      totalSnapshots: this.snapshots.size,
-      totalLineageEntries: this.lineage.size,
-      currentVersion: this.currentVersion,
-      snapshotsByModelType,
+      totalSnapshots,
+      totalLineageEntries: totalSnapshots,
+      currentVersion: `1.0.${counter?.version ?? 0}`,
+      snapshotsByModelType: Object.fromEntries(counts.map(({ _id, count }) => [_id, count])),
     };
-  }
-
-  /**
-   * Clear all snapshots (for testing)
-   */
-  clear(): void {
-    this.snapshots.clear();
-    this.lineage.clear();
-    this.currentVersion = '1.0.0';
-    logger.info('[SnapshotVersioningSystem] Cleared all snapshots');
   }
 }
 
