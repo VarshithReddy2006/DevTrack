@@ -59,24 +59,28 @@ export interface ResumeCheckpointJobData {
 
 export interface ResumeATSJobData {
   sessionId: string;
+  generation?: number;
   userId?: string;
   requestId?: string;
 }
 
 export interface ResumeEmbeddingJobData {
   sessionId: string;
+  generation?: number;
   userId?: string;
   requestId?: string;
 }
 
 export interface ResumeSemanticJobData {
   sessionId: string;
+  generation?: number;
   userId?: string;
   requestId?: string;
 }
 
 export interface ResumeRecommendationJobData {
   sessionId: string;
+  generation?: number;
   userId?: string;
   requestId?: string;
 }

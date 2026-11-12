@@ -10,10 +10,18 @@ import { EMBEDDING_VERSION } from '../../ai/embedding/embeddingScope.js';
 import { RealEmbeddingPipeline } from '../../ai/embedding/RealEmbeddingPipeline.js';
 import { SemanticSimilarityService } from '../../ai/retrieval/SemanticSimilarityService.js';
 import { RecommendationIntelligenceService } from '../../recommendations/recommendation.service.js';
-import { ProviderFailoverRuntime } from '../../ai/reliability/ProviderFailoverRuntime.js';
+import { getOrCreateQueue } from '../../../shared/jobs/queueFactory.js';
+import { QueueNames } from '../../../shared/jobs/types.js';
+import { NonRetryableError, RetryableError } from '../../../infrastructure/queues/ErrorClassifier.js';
+import { SemanticIntelligenceLayer } from '../ai/SemanticIntelligenceLayer.js';
+import { SemanticAnalysis } from '../../../db/models/semanticAnalysis.model.js';
 import { RuntimeReliabilityEnforcer } from '../../ai/reliability/RuntimeReliabilityEnforcer.js';
-import { FailureHandler } from '../failure/FailureHandler.js';
-import { AIProviderAdapter } from '../../ai/AIProviderAdapter.js';
+const stageQueues: Partial<Record<ProcessingStage, string>> = {
+  ATS_ANALYZING: QueueNames.RESUME_ATS,
+  EMBEDDING: QueueNames.RESUME_EMBEDDING,
+  SEMANTIC_ANALYZING: QueueNames.RESUME_SEMANTIC,
+  RECOMMENDING: QueueNames.RESUME_RECOMMENDATION,
+};
 
 type StreamStatus = 'pending' | 'running' | 'completed' | 'failed' | 'degraded';
 
@@ -44,11 +52,10 @@ export class ResumeProcessingOrchestrator {
   private parsingPipeline: DocumentParsingPipeline;
   private atsEngine: ATSCompatibilityEngine;
   private embeddingPipeline = new RealEmbeddingPipeline();
-  private failoverRuntime = new ProviderFailoverRuntime();
+  private semanticLayer = new SemanticIntelligenceLayer();
   private reliabilityEnforcer = new RuntimeReliabilityEnforcer();
-  private failureHandler = new FailureHandler();
 
-  constructor() {
+  constructor(private readonly dispatchStages = false) {
     this.parsingPipeline = new DocumentParsingPipeline();
     this.atsEngine = new ATSCompatibilityEngine();
   }
@@ -56,7 +63,7 @@ export class ResumeProcessingOrchestrator {
   /**
    * Start processing for a resume session
    */
-  async startProcessing(sessionId: string): Promise<void> {
+  async startProcessing(sessionId: string, finalHandoffAttempt = false): Promise<void> {
     logger.info(`[ProcessingOrchestrator] Starting processing for session: ${sessionId}`);
 
     const session = await ResumeSession.findOne({ sessionId });
@@ -64,8 +71,17 @@ export class ResumeProcessingOrchestrator {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
-    if (session.checkpointState?.stage && session.failureState?.failed) {
-      await this.resumeFromCheckpoint(sessionId);
+    if (session.failureState?.failed) {
+      if (!this.dispatchStages && session.checkpointState?.stage) {
+        await this.resumeFromCheckpoint(sessionId);
+      }
+      return;
+    }
+
+    if (this.dispatchStages && session.checkpointState?.stage) {
+      if (['VALIDATING', 'PARSING', 'EXTRACTING'].includes(session.checkpointState.stage)) {
+        await this.transitionToNextStage(sessionId, undefined, finalHandoffAttempt);
+      }
       return;
     }
 
@@ -88,28 +104,76 @@ export class ResumeProcessingOrchestrator {
     } catch (error) {
       logger.error(`[ProcessingOrchestrator] Validation failed for session: ${sessionId}`, error);
       await this.handleStageFailure(sessionId, 'VALIDATING', error);
+      if (this.dispatchStages) {
+        throw new NonRetryableError('Resume validation failed', error instanceof Error ? error : undefined);
+      }
       return;
     }
 
     // Start stage transitions
-    await this.transitionToNextStage(sessionId);
+    await this.transitionToNextStage(sessionId, undefined, finalHandoffAttempt);
   }
 
   /**
    * Transition to next processing stage
    */
-  private async transitionToNextStage(sessionId: string): Promise<void> {
+  async processQueuedStage(sessionId: string, stage: ProcessingStage, generation: number, finalHandoffAttempt = false): Promise<void> {
+    const session = await ResumeSession.findOne({ sessionId });
+    if (!session || (session.failureState.retryCount ?? 0) !== generation) return;
+    if (session.currentStage === 'COMPLETED' || session.currentStage === 'DEGRADED') {
+      if (stage === 'RECOMMENDING' && session.uploadMetadata.uploadPath) {
+        await artifactStorage.remove(session.uploadMetadata.uploadPath);
+      }
+      return;
+    }
+    if (session.currentStage === 'FAILED') return;
+
+    const checkpoint = session.checkpointState?.stage;
+    if (!checkpoint) return;
+    if (this.getNextStage(checkpoint) !== stage && checkpoint !== stage
+      && !(stage === 'RECOMMENDING' && checkpoint === 'REPLAY_GENERATING')) return;
+
+    await this.transitionToNextStage(sessionId, stage, finalHandoffAttempt);
+    if (stage === 'RECOMMENDING') {
+      const finished = await ResumeSession.findOne({ sessionId });
+      if (finished?.timestamps.completedAt && finished.uploadMetadata.uploadPath) {
+        await artifactStorage.remove(finished.uploadMetadata.uploadPath);
+      }
+    }
+  }
+
+  private async transitionToNextStage(sessionId: string, workerStage?: ProcessingStage, finalHandoffAttempt = false): Promise<void> {
     const session = await ResumeSession.findOne({ sessionId });
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
-    const currentStage = session.currentStage;
+    const currentStage = this.dispatchStages
+      ? session.checkpointState?.stage ?? session.currentStage
+      : session.currentStage;
     const nextStage = this.getNextStage(currentStage);
 
     if (!nextStage) {
       // Processing complete
       await this.completeProcessing(sessionId);
+      return;
+    }
+
+    const queue = this.dispatchStages && stageQueues[nextStage];
+    if (queue && nextStage !== workerStage) {
+      const generation = session.failureState.retryCount ?? 0;
+      // BullMQ custom IDs reserve colons.
+      try {
+        await getOrCreateQueue(queue).add('resume-stage', { sessionId, generation }, {
+          jobId: `${sessionId}--${nextStage}--${generation}`,
+        });
+      } catch (error) {
+        const cause = error instanceof Error ? error : undefined;
+        const message = `Could not enqueue resume stage ${nextStage}`;
+        if (!finalHandoffAttempt) throw new RetryableError(message, cause);
+        await this.handleStageFailure(sessionId, nextStage, new Error(message));
+        throw new NonRetryableError(message, cause);
+      }
       return;
     }
 
@@ -122,9 +186,6 @@ export class ResumeProcessingOrchestrator {
 
     // Stream progress change
     await this.streamProgress(session, 'running');
-
-    // Add to processing history
-    await this.addProcessingHistory(session, nextStage, 'success');
 
     // Execute stage with retries and failover
     const startTime = Date.now();
@@ -153,11 +214,13 @@ export class ResumeProcessingOrchestrator {
       // Track real execution replay snapshot
       const updatedSession = await ResumeSession.findOne({ sessionId });
       if (updatedSession) {
+        const reason = updatedSession.degradedState.degradedComponents?.includes(nextStage)
+          ? updatedSession.degradedState.degradedReason : undefined;
         updatedSession.replayState.snapshots = updatedSession.replayState.snapshots || [];
         updatedSession.replayState.snapshots.push({
           stage: nextStage,
           timestamp: new Date(),
-          status: 'success',
+          status: reason ? 'degraded' : 'success',
           metrics: {
             durationMs,
             memoryUsage: process.memoryUsage().heapUsed,
@@ -170,36 +233,42 @@ export class ResumeProcessingOrchestrator {
             recommendationCount: updatedSession.recommendationState.recommendations?.length || 0,
           }
         });
-        await updatedSession.save();
+        await this.addProcessingHistory(updatedSession, nextStage, reason ? 'degraded' : 'success', reason, false);
         await this.saveCheckpoint(updatedSession, nextStage);
         await this.streamProgress(updatedSession, updatedSession.degradedState.degraded ? 'degraded' : 'completed', undefined, undefined, {
           latencyMs: durationMs,
           attemptCount: attempt + 1,
         });
       }
-
-      // Transition to next stage
-      await this.transitionToNextStage(sessionId);
     } catch (error) {
       logger.error(`[ProcessingOrchestrator] Stage ${nextStage} failed after all retries:`, error);
       await this.handleStageFailure(sessionId, nextStage, error);
+      if (this.dispatchStages) {
+        throw new NonRetryableError(`Resume stage ${nextStage} failed`, error instanceof Error ? error : undefined);
+      }
+      return;
     }
+
+    // Retry a failed handoff from the committed checkpoint on job redelivery.
+    await this.transitionToNextStage(sessionId, undefined, finalHandoffAttempt);
   }
 
   /** Restore the last committed stage and continue from the following stage. */
-  async resumeFromCheckpoint(sessionId: string): Promise<void> {
+  async resumeFromCheckpoint(sessionId: string, finalHandoffAttempt = false): Promise<void> {
     const session = await ResumeSession.findOne({ sessionId });
     if (!session) throw new Error(`Session not found: ${sessionId}`);
     const checkpoint = session.checkpointState;
     if (!checkpoint?.stage) throw new Error(`No checkpoint available for session: ${sessionId}`);
 
-    Object.assign(session, checkpoint.snapshot);
-    session.currentStage = checkpoint.stage;
-    session.failureState = { failed: false, retryCount: session.failureState.retryCount || 0 };
-    session.timestamps.lastUpdated = new Date();
-    await session.save();
+    if (session.failureState.failed || !this.dispatchStages) {
+      Object.assign(session, checkpoint.snapshot);
+      session.currentStage = checkpoint.stage;
+      session.failureState = { failed: false, retryCount: session.failureState.retryCount || 0 };
+      session.timestamps.lastUpdated = new Date();
+      await session.save();
+    }
 
-    await this.transitionToNextStage(sessionId);
+    await this.transitionToNextStage(sessionId, undefined, finalHandoffAttempt);
   }
 
   private async saveCheckpoint(session: typeof ResumeSession.prototype, stage: ProcessingStage): Promise<void> {
@@ -312,40 +381,15 @@ export class ResumeProcessingOrchestrator {
     logger.info(`[ProcessingOrchestrator] Executing EXTRACTION for session: ${session.sessionId}`);
     
     if (!session.parsedContent || !session.parsedContent.text) {
-      logger.warn(`[ProcessingOrchestrator] No parsed text found for session: ${session.sessionId}`);
-      return;
+      throw new Error('No text was extracted from the resume');
     }
 
-    try {
-      const systemPrompt = `You are an expert technical recruiter and resume parser. Extract a comprehensive list of all technical skills (languages, frameworks, databases, tools, platforms, cloud services) from the provided resume text. Return ONLY a valid JSON array of strings. Do not include any markdown formatting, backticks, or explanation. Example: ["React", "Node.js", "Docker", "AWS"]`;
-      const userPrompt = `RESUME TEXT:\n${session.parsedContent.text}`;
-      
-      const responseText = await AIProviderAdapter.generateResponse(
-        session.userId?.toString() || 'anonymous',
-        systemPrompt,
-        userPrompt
-      );
-      
-      let skills: string[] = [];
-      try {
-        skills = JSON.parse(responseText.trim());
-      } catch (e) {
-        // Fallback cleanup if LLM included markdown
-        const cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        skills = JSON.parse(cleaned);
-      }
-      
-      if (Array.isArray(skills)) {
-        session.parsedContent.metadata = session.parsedContent.metadata || {};
-        session.parsedContent.metadata.extractedSkills = skills;
-        await session.save();
-        logger.info(`[ProcessingOrchestrator] Successfully extracted ${skills.length} skills from resume for session: ${session.sessionId}`);
-      } else {
-        throw new Error('LLM did not return an array');
-      }
-    } catch (error) {
-      logger.error(`[ProcessingOrchestrator] Failed to extract skills for session: ${session.sessionId}:`, error);
-    }
+    const { skills, provenance, degradedReason } = await this.semanticLayer.extractResumeSkills(
+      session.parsedContent.text, session.userId?.toString() ?? session.sessionId,
+    );
+    session.parsedContent.metadata = { ...session.parsedContent.metadata, extractedSkills: skills, skillExtractionProvenance: provenance };
+    if (degradedReason) this.markDegraded(session, 'EXTRACTING', degradedReason);
+    await session.save();
   }
 
   /**
@@ -388,34 +432,35 @@ export class ResumeProcessingOrchestrator {
    */
   private async executeEmbedding(session: typeof ResumeSession.prototype): Promise<void> {
     logger.info(`[ProcessingOrchestrator] Executing EMBEDDING for session: ${session.sessionId}`);
-    
-    await this.failoverRuntime.executeWithFailover(async () => {
-      const text = session.parsedContent.text || '';
-      
-      // Safety/Abuse checks
-      if (text.length > 50000) {
-        throw new Error('Security Abuse Protection: Payload size too large for embedding model.');
-      }
-      if (text.includes('system prompt') || text.includes('ignore previous instructions')) {
-        logger.warn(`[ProcessingOrchestrator] Prompt injection marker detected in session: ${session.sessionId}`);
-        session.parsedContent.parsingDiagnostics.warnings.push('Potential prompt injection wording detected in resume content.');
-      }
 
-      const scope = session.userId ? { scope: 'user' as const, userId: session.userId.toString() } : undefined;
-      const embedding = scope
-        ? await this.embeddingPipeline.processAndStore(session.sessionId, text, scope)
-        : await this.embeddingPipeline.embedText(text);
+    const text = session.parsedContent.text || '';
 
-      session.embeddingState = {
-        generated: true,
-        vector: embedding.vector,
-        provider: embedding.provider,
-        dimensions: embedding.dimensions,
-        embeddingVersion: EMBEDDING_VERSION,
-        generatedAt: new Date(),
-      };
-      await session.save();
-    });
+    // Safety/Abuse checks
+    if (text.length > 50000) {
+      throw new Error('Security Abuse Protection: Payload size too large for embedding model.');
+    }
+    if (text.includes('system prompt') || text.includes('ignore previous instructions')) {
+      logger.warn(`[ProcessingOrchestrator] Prompt injection marker detected in session: ${session.sessionId}`);
+      session.parsedContent.parsingDiagnostics.warnings.push('Potential prompt injection wording detected in resume content.');
+    }
+
+    const scope = session.userId ? { scope: 'user' as const, userId: session.userId.toString() } : undefined;
+    const embedding = scope
+      ? await this.embeddingPipeline.processAndStore(session.sessionId, text, scope)
+      : await this.embeddingPipeline.embedText(text);
+
+    if (embedding.model === 'deterministic-fallback-v1') {
+      this.markDegraded(session, 'EMBEDDING', 'No embedding provider configured');
+    }
+    session.embeddingState = {
+      generated: true,
+      vector: embedding.vector,
+      provider: embedding.provider,
+      dimensions: embedding.dimensions,
+      embeddingVersion: EMBEDDING_VERSION,
+      generatedAt: new Date(),
+    };
+    await session.save();
   }
 
   /**
@@ -424,11 +469,23 @@ export class ResumeProcessingOrchestrator {
   private async executeSemanticAnalysis(session: typeof ResumeSession.prototype): Promise<void> {
     logger.info(`[ProcessingOrchestrator] Executing SEMANTIC_ANALYZING for session: ${session.sessionId}`);
     
+    const intelligence = await this.semanticLayer.analyzeResume(
+      session.parsedContent.text, session.userId?.toString() ?? session.sessionId,
+    );
+    if (intelligence.degradedReason) {
+      this.markDegraded(session, 'SEMANTIC_ANALYZING', intelligence.degradedReason);
+    } else if (intelligence.analysis) {
+      await SemanticAnalysis.findOneAndUpdate({ sessionId: session.sessionId }, {
+        ...intelligence.analysis, provenance: intelligence.provenance, sessionId: session.sessionId,
+      }, { upsert: true, setDefaultsOnInsert: true });
+    }
+    await session.save();
+
     const scope = session.userId ? { scope: 'user' as const, userId: session.userId.toString() } : undefined;
     const resumeVector = session.embeddingState.embeddingVersion === EMBEDDING_VERSION
       ? session.embeddingState.vector
       : scope ? await this.embeddingPipeline.getEmbeddingForId(scope, session.sessionId) : null;
-    if (resumeVector) {
+    if (resumeVector && !session.degradedState.degradedComponents?.includes('EMBEDDING')) {
       const similarityService = new SemanticSimilarityService();
       
       // Determine the target role based on the profile or filename fallback
@@ -439,20 +496,13 @@ export class ResumeProcessingOrchestrator {
       // Formulate a descriptive expectation prompt for the semantic search matching
       const roleExpectationsPrompt = `A professional software engineer specializing in ${targetRole} roles, possessing comprehensive expertise in typical stacks, architecture paradigms, infrastructure deployments, databases, and core problem-solving competencies aligned with ${targetRole} duties.`;
       
-      let expectationVector: number[] = [];
-      try {
-        const embeddingRes = await this.embeddingPipeline.embedText(roleExpectationsPrompt, scope);
-        if (embeddingRes.dimensions !== resumeVector.length
-          || (session.embeddingState.provider && embeddingRes.provider !== session.embeddingState.provider)) {
-          throw new Error('Resume and expectation use different embedding models');
-        }
-        expectationVector = embeddingRes.vector;
-      } catch (err) {
-        logger.warn(`[ProcessingOrchestrator] Error generating semantic expectation vector, falling back to layout-stable template: ${err}`);
-        // Stable layout-aware template fallback to protect operations
-        expectationVector = Array.from({ length: resumeVector.length }, (_, i) => Math.sin(i + targetRole.length) * 0.1);
+      const embeddingRes = await this.embeddingPipeline.embedText(roleExpectationsPrompt, scope);
+      if (embeddingRes.dimensions !== resumeVector.length
+        || (session.embeddingState.provider && embeddingRes.provider !== session.embeddingState.provider)) {
+        throw new Error('Resume and expectation use different embedding models');
       }
-      
+      const expectationVector = embeddingRes.vector;
+
       const score = similarityService.calculate(resumeVector, expectationVector);
       
       session.semanticState = {
@@ -465,44 +515,52 @@ export class ResumeProcessingOrchestrator {
     }
   }
 
+  private markDegraded(session: typeof ResumeSession.prototype, stage: ProcessingStage, reason: string): void {
+    if (session.degradedState.degradedComponents?.includes(stage)) return;
+    session.degradedState = {
+      degraded: true,
+      degradedComponents: [...new Set([...(session.degradedState.degradedComponents ?? []), stage])],
+      degradedReason: [session.degradedState.degradedReason, reason].filter(Boolean).join("; "),
+      degradedAt: new Date(),
+    };
+  }
+
   /**
    * Execute recommendation stage
    */
   private async executeRecommendation(session: typeof ResumeSession.prototype): Promise<void> {
     logger.info(`[ProcessingOrchestrator] Executing RECOMMENDING for session: ${session.sessionId}`);
-    
-    await this.failoverRuntime.executeWithFailover(async () => {
-      const userId = session.userId;
-      if (!userId) return;
 
-      const targetRole = session.uploadMetadata.originalFilename.toLowerCase().includes('frontend') ? 'frontend engineer' : 'backend engineer';
-      
-      await RecommendationIntelligenceService.generateIntelligence(
-        userId,
-        session._id!,
-        targetRole
-      );
-      
-      const activeRecs = await RecommendationIntelligenceService.getActiveRecommendations(userId, session._id!);
-      const recTitles = activeRecs.map(r => r.title);
-      
-      let credibilityScore = 85;
-      const semanticGaps = activeRecs.filter(r => r.category === 'semantic');
-      if (semanticGaps.length > 0) {
-        credibilityScore -= (semanticGaps.length * 15);
-      }
-      
-      session.recommendationState = {
-        generated: true,
-        recommendations: recTitles,
-        credibilityScore: Math.max(30, credibilityScore),
-        generatedAt: new Date(),
-      };
-      await session.save();
+    const userId = session.userId;
+    if (!userId) return;
 
-      // Perform Cross-System Consistency Validation
-      await this.runConsistencyValidation(session);
-    });
+    const targetRole = session.uploadMetadata.originalFilename.toLowerCase().includes('frontend') ? 'frontend engineer' : 'backend engineer';
+
+    await RecommendationIntelligenceService.generateIntelligence(
+      userId,
+      session._id!,
+      targetRole
+    );
+
+    const activeRecs = await RecommendationIntelligenceService.getActiveRecommendations(userId, session._id!);
+    const recTitles = activeRecs.map(r => r.title);
+
+    let credibilityScore = 85;
+    const semanticGaps = activeRecs.filter(r => r.category === 'semantic');
+    if (semanticGaps.length > 0) {
+      credibilityScore -= (semanticGaps.length * 15);
+    }
+
+    session.recommendationState = {
+      generated: true,
+      recommendations: recTitles,
+      credibilityScore: Math.max(30, credibilityScore),
+      generatedAt: new Date(),
+    };
+    await session.save();
+
+    // Perform Cross-System Consistency Validation
+    await this.runConsistencyValidation(session);
   }
 
   /**
@@ -530,7 +588,7 @@ export class ResumeProcessingOrchestrator {
       if (!session.degradedState.degradedComponents.includes('ConsistencyValidator')) {
         session.degradedState.degradedComponents.push('ConsistencyValidator');
       }
-      session.degradedState.degradedReason = 'System consistency check flagged engineering metric contradictions.';
+      session.degradedState.degradedReason ??= 'System consistency check flagged engineering metric contradictions.';
       session.degradedState.degradedAt = new Date();
       await session.save();
       logger.warn(`[ProcessingOrchestrator] Consistency validations flagged contradictions for session: ${session.sessionId}`, { warnings });
@@ -583,16 +641,21 @@ export class ResumeProcessingOrchestrator {
 
     logger.info(`[ProcessingOrchestrator] Processing complete for session: ${sessionId}`);
 
-    session.currentStage = 'COMPLETED';
+    if (session.timestamps.completedAt) return;
+    const providerDegraded = session.degradedState.degradedComponents?.some(component =>
+      component === 'EXTRACTING' || component === 'EMBEDDING' || component === 'SEMANTIC_ANALYZING',
+    );
+    session.currentStage = providerDegraded ? 'DEGRADED' : 'COMPLETED';
     session.timestamps.completedAt = new Date();
     session.timestamps.lastUpdated = new Date();
     await session.save();
 
     // Stream final progress event
-    await this.streamProgress(session, 'completed');
+    await this.streamProgress(session, providerDegraded ? 'degraded' : 'completed',
+      providerDegraded && session.degradedState.degradedReason ? [session.degradedState.degradedReason] : undefined);
 
     // Add to processing history
-    await this.addProcessingHistory(session, 'COMPLETED', 'success');
+    await this.addProcessingHistory(session, session.currentStage, providerDegraded ? 'degraded' : 'success');
 
     // Phase 2: Longitudinal Evolution Delta calculation
     // Phase 2: Longitudinal Evolution Delta calculation
@@ -664,36 +727,22 @@ export class ResumeProcessingOrchestrator {
 
     logger.error(`[ProcessingOrchestrator] Handling failure for stage ${stage}:`, error);
 
+    const reason = error instanceof Error ? error.message : String(error);
+
     // Update failure state
     session.failureState = {
       failed: true,
       failureStage: stage,
-      failureReason: error instanceof Error ? error.message : 'Unknown error',
-      failureDetails: error,
+      failureReason: reason,
+      failureDetails: error instanceof Error ? { name: error.name, stack: error.stack } : undefined,
       failedAt: new Date(),
       retryCount: (session.failureState.retryCount || 0) + 1,
     };
 
     session.currentStage = 'FAILED';
     session.timestamps.lastUpdated = new Date();
-    await session.save();
-
-    // Stream failure state to client
-    await this.streamProgress(session, 'failed', [error instanceof Error ? error.message : 'Unknown error']);
-
-    // Coordinate with FailureHandler
-    try {
-      await this.failureHandler.handleFailure({
-        sessionId,
-        stage,
-        error: error instanceof Error ? error : new Error(String(error)),
-      });
-    } catch (e) {
-      logger.error(`[ProcessingOrchestrator] FailureHandler execution failed`, e);
-    }
-
-    // Add to processing history
-    await this.addProcessingHistory(session, stage, 'failed', error instanceof Error ? error.message : 'Unknown error');
+    await this.addProcessingHistory(session, stage, 'failed', reason);
+    await this.streamProgress(session, 'failed', [reason]);
   }
 
   /**
@@ -727,7 +776,8 @@ export class ResumeProcessingOrchestrator {
     session: typeof ResumeSession.prototype,
     stage: ProcessingStage,
     status: 'success' | 'failed' | 'degraded',
-    error?: string
+    error?: string,
+    persist = true,
   ): Promise<void> {
     const historyEntry = {
       stage,
@@ -741,7 +791,7 @@ export class ResumeProcessingOrchestrator {
     historyEntry.duration = historyEntry.completedAt.getTime() - historyEntry.startedAt.getTime();
 
     session.processingHistory.push(historyEntry);
-    await session.save();
+    if (persist) await session.save();
   }
 
   /**
@@ -764,7 +814,7 @@ export class ResumeProcessingOrchestrator {
     const currentIndex = stageOrder.indexOf(session.currentStage);
     const totalStages = stageOrder.length;
 
-    if (session.currentStage === 'COMPLETED') {
+    if (session.currentStage === 'COMPLETED' || session.currentStage === 'DEGRADED') {
       return 100;
     }
 
@@ -809,7 +859,7 @@ export class ResumeProcessingOrchestrator {
     const confidence = this.calculateStageConfidence(session);
     const retryCount = session.failureState.retryCount || Number(metadata?.attempt ?? 1) - 1 || 0;
     const queueMetadata = {
-      queueName: `resume-${emittedStage.toLowerCase().replaceAll('_', '-')}`,
+      queueName: stageQueues[currentStage] ?? QueueNames.RESUME_UPLOAD,
       retryCount,
       attempt: metadata?.attempt,
       maxAttempts: metadata?.maxAttempts,

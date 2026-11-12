@@ -9,6 +9,9 @@ import { ATSCompatibilityEngine } from '../modules/resume/ats/ATSCompatibilityEn
 import { ResumeProfile } from '../db/models/resumeProfile.model.js';
 import type { Types } from 'mongoose';
 
+import { ResumeProcessingOrchestrator } from '../modules/resume/orchestration/ResumeProcessingOrchestrator.js';
+
+const orchestrator = new ResumeProcessingOrchestrator(true);
 let worker: Worker | null = null;
 const atsEngine = new ATSCompatibilityEngine();
 
@@ -23,6 +26,13 @@ export async function startResumeATSWorker(): Promise<Worker> {
   worker = WorkerFactory.createWorker<ResumeATSJobData>(
     QueueNames.RESUME_ATS,
     async (job: Job<ResumeATSJobData>) => {
+      if (job.name === 'resume-stage') {
+        if (job.data.generation === undefined) throw new Error('Missing resume stage generation');
+        await orchestrator.processQueuedStage(job.data.sessionId, 'ATS_ANALYZING', job.data.generation,
+          job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
+        return;
+      }
+
       const { sessionId } = job.data;
 
       logger.info(`[ResumeATSWorker] Processing ATS job: ${sessionId}`);

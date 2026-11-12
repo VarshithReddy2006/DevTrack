@@ -59,7 +59,7 @@ it('hands an upload to the worker through the configured shared directory and cl
 
     await startResumeUploadWorker();
     const processJob = queue.processor.mock.lastCall?.[0];
-    const job = { data: queue.add.mock.lastCall?.[1] };
+    const job = { data: queue.add.mock.lastCall?.[1], attemptsMade: 0, opts: { attempts: 3 } };
     await processJob(job);
     await processJob(job); // Redelivery uses persisted completion and does not parse a deleted file.
     const session = await ResumeSession.findOne({ sessionId: uploaded.sessionId }).orFail();
