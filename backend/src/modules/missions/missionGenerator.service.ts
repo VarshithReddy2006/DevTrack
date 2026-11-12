@@ -6,6 +6,7 @@ import { Types } from 'mongoose';
 import { Mission, UserXp, User, type IMission } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/sse/index.js';
+import { getMissionPeriod, type MissionPeriodType } from './missionPeriod.js';
 
 interface MissionTemplate {
   title: string;
@@ -14,146 +15,63 @@ interface MissionTemplate {
   category: 'dsa' | 'project' | 'learning' | 'consistency';
   targetCount: number;
   xpReward: number;
-  expiresInHours: number;
+  key: string;
 }
 
 // ─── Mission generation logic ────────────────────────────────────────────────
 
-export async function generateDailyMissions(): Promise<void> {
-  logger.info('[missions] Starting daily mission generation');
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-  try {
-    // Get active users (active within last 7 days)
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const activeUsers = await User.find({
-      lastActiveAt: { $gte: sevenDaysAgo },
-    }).select('_id');
-
-    logger.info(`[missions] Found ${activeUsers.length} active users for daily missions`);
-
-    let generated = 0;
-    let skipped = 0;
-
-    for (const user of activeUsers) {
-      const userId = user._id.toString();
-
-      // Expire old daily missions
-      await Mission.updateMany(
-        {
-          userId: user._id,
-          type: 'daily',
-          status: { $in: ['pending', 'in_progress'] },
-          expiresAt: { $lt: new Date() },
-        },
-        { $set: { status: 'expired' } }
-      );
-
-      await cacheManager.invalidateDashboard(userId);
-
-      // Check if user already has active daily missions
-      const existingDailyMissions = await Mission.countDocuments({
-        userId: user._id,
-        type: 'daily',
-        status: { $in: ['pending', 'in_progress'] },
-        expiresAt: { $gte: new Date() },
-      });
-
-      if (existingDailyMissions > 0) {
-        skipped++;
-        continue;
-      }
-
-      // Get user's stats to calibrate difficulty
-      const userXp = await UserXp.findOne({ userId: user._id });
-      const avgProblemsPerDay = calculateAvgProblemsPerDay(userXp);
-      const userLevel = userXp?.currentLevel ?? 1;
-
-      // Generate personalized daily missions
-      const missions = generateDailyMissionTemplates(avgProblemsPerDay, userLevel);
-
-      // Create missions
-      for (const template of missions) {
-        await createMission(user._id, template);
-      }
-
-      generated++;
-    }
-
-    logger.info(`[missions] Daily mission generation complete: ${generated} users, ${skipped} skipped`);
-  } catch (error) {
-    logger.error('[missions] Daily mission generation failed', { error });
-    throw error;
-  }
+export async function generateDailyMissions(now = new Date()): Promise<void> {
+  await generateMissions('daily', now);
 }
 
-export async function generateWeeklyMissions(): Promise<void> {
-  logger.info('[missions] Starting weekly mission generation');
-
-  try {
-    // Get active users (active within last 14 days for weekly missions)
-    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-    const activeUsers = await User.find({
-      lastActiveAt: { $gte: fourteenDaysAgo },
-    }).select('_id');
-
-    logger.info(`[missions] Found ${activeUsers.length} active users for weekly missions`);
-
-    let generated = 0;
-    let skipped = 0;
-
-    for (const user of activeUsers) {
-      const userId = user._id.toString();
-
-      // Expire old weekly missions
-      await Mission.updateMany(
-        {
-          userId: user._id,
-          type: 'weekly',
-          status: { $in: ['pending', 'in_progress'] },
-          expiresAt: { $lt: new Date() },
-        },
-        { $set: { status: 'expired' } }
-      );
-
-      await cacheManager.invalidateDashboard(userId);
-
-      // Check if user already has active weekly missions
-      const existingWeeklyMissions = await Mission.countDocuments({
-        userId: user._id,
-        type: 'weekly',
-        status: { $in: ['pending', 'in_progress'] },
-        expiresAt: { $gte: new Date() },
-      });
-
-      if (existingWeeklyMissions > 0) {
-        skipped++;
-        continue;
-      }
-
-      // Get user's stats to calibrate difficulty
-      const userXp = await UserXp.findOne({ userId: user._id });
-      const avgProblemsPerDay = calculateAvgProblemsPerDay(userXp);
-      const userLevel = userXp?.currentLevel ?? 1;
-
-      // Generate personalized weekly missions
-      const missions = generateWeeklyMissionTemplates(avgProblemsPerDay, userLevel);
-
-      // Create missions
-      for (const template of missions) {
-        await createMission(user._id, template);
-      }
-
-      generated++;
-    }
-
-    logger.info(`[missions] Weekly mission generation complete: ${generated} users, ${skipped} skipped`);
-  } catch (error) {
-    logger.error('[missions] Weekly mission generation failed', { error });
-    throw error;
-  }
+export async function generateWeeklyMissions(now = new Date()): Promise<void> {
+  await generateMissions('weekly', now);
 }
 
-// ─── Mission template generators ─────────────────────────────────────────────
+async function generateMissions(type: MissionPeriodType, now: Date): Promise<void> {
+  // The partial unique index must be ready before replicas can upsert missions.
+  await Mission.init();
+  const period = getMissionPeriod(type, now);
+  const activeWindowDays = type === 'daily' ? 7 : 14;
+  const activeUsers = await User.find({
+    lastActiveAt: { $gte: new Date(now.getTime() - activeWindowDays * DAY_MS) },
+  }).select('_id');
+  const templatesFor = type === 'daily' ? generateDailyMissionTemplates : generateWeeklyMissionTemplates;
+
+  for (const user of activeUsers) {
+    const userId = user._id;
+    const expired = await Mission.updateMany(
+      { userId, type, status: { $in: ['pending', 'in_progress'] }, expiresAt: { $lte: now } },
+      { $set: { status: 'expired' } },
+    );
+    if (expired.modifiedCount) await cacheManager.invalidateDashboard(userId.toString());
+
+    // During rollout, keep a legacy batch already created for this period or still active.
+    const legacyBatch = await Mission.exists({
+      userId, type, periodKey: { $exists: false },
+      $or: [
+        { createdAt: { $gte: period.start, $lt: period.end } },
+        { status: { $in: ['pending', 'in_progress'] }, expiresAt: { $gt: now } },
+      ],
+    });
+    if (legacyBatch) continue;
+
+    const xp = await UserXp.findOne({ userId }).lean();
+    const calibration = { averageProblemsPerDay: calculateAvgProblemsPerDay(xp), level: xp?.currentLevel ?? 1 };
+    const [primary] = templatesFor(calibration.averageProblemsPerDay, calibration.level);
+    // The primary mission freezes the calibration for the entire batch, including after partial failure.
+    const anchor = await upsertMission(userId, period, primary, calibration);
+    const saved = anchor.generationCalibration!;
+    const [, ...remaining] = templatesFor(saved.averageProblemsPerDay, saved.level);
+    for (const template of remaining) {
+      await upsertMission(userId, period, template);
+    }
+  }
+
+  logger.info('[missions] Mission generation complete', { type, period: period.key, activeUsers: activeUsers.length });
+}
 
 function generateDailyMissionTemplates(avgProblemsPerDay: number, userLevel: number): MissionTemplate[] {
   const missions: MissionTemplate[] = [];
@@ -167,7 +85,7 @@ function generateDailyMissionTemplates(avgProblemsPerDay: number, userLevel: num
     category: 'dsa',
     targetCount: targetProblems,
     xpReward: targetProblems * 10,
-    expiresInHours: 24,
+    key: 'solve-count',
   });
 
   // Mission 2: Solve a problem of appropriate difficulty
@@ -179,7 +97,7 @@ function generateDailyMissionTemplates(avgProblemsPerDay: number, userLevel: num
     category: 'dsa',
     targetCount: 1,
     xpReward: difficulty === 'easy' ? 15 : difficulty === 'medium' ? 25 : 40,
-    expiresInHours: 24,
+    key: 'solve-difficulty',
   });
 
   // Mission 3: Maintain your streak (always present)
@@ -190,7 +108,7 @@ function generateDailyMissionTemplates(avgProblemsPerDay: number, userLevel: num
     category: 'consistency',
     targetCount: 1,
     xpReward: 20,
-    expiresInHours: 24,
+    key: 'streak',
   });
 
   return missions;
@@ -208,7 +126,7 @@ function generateWeeklyMissionTemplates(avgProblemsPerDay: number, userLevel: nu
     category: 'dsa',
     targetCount: weeklyTarget,
     xpReward: weeklyTarget * 5,
-    expiresInHours: 7 * 24,
+    key: 'solve-count',
   });
 
   // Mission 2: Complete hard problems (for advanced users)
@@ -221,7 +139,7 @@ function generateWeeklyMissionTemplates(avgProblemsPerDay: number, userLevel: nu
       category: 'dsa',
       targetCount: hardTarget,
       xpReward: hardTarget * 20,
-      expiresInHours: 7 * 24,
+      key: 'hard-count',
     });
   }
 
@@ -233,7 +151,7 @@ function generateWeeklyMissionTemplates(avgProblemsPerDay: number, userLevel: nu
     category: 'dsa',
     targetCount: 1,
     xpReward: 100,
-    expiresInHours: 7 * 24,
+    key: 'contest',
   });
 
   return missions;
@@ -253,41 +171,32 @@ function calculateAvgProblemsPerDay(userXp: any): number {
   return Math.max(1, Math.round(avg));
 }
 
-async function createMission(userId: Types.ObjectId, template: MissionTemplate): Promise<IMission> {
-  const expiresAt = new Date(Date.now() + template.expiresInHours * 60 * 60 * 1000);
-
-  const mission = await Mission.create({
-    userId,
-    title: template.title,
-    description: template.description,
-    type: template.type,
-    category: template.category,
-    targetCount: template.targetCount,
-    currentCount: 0,
-    xpReward: template.xpReward,
-    status: 'pending',
-    expiresAt,
-  });
-
-  await cacheManager.invalidateDashboard(userId.toString());
-
-  // Emit SSE notification for new mission
-  eventBus.emitNotificationCreated(
-    userId.toString(),
-    mission._id.toString(),
-    'mission_created',
-    'New Mission Available',
-    template.title,
-    'calm',
-    'low'
-  );
-
-  logger.debug('[missions] Mission created', {
-    userId: userId.toString(),
-    missionId: mission._id.toString(),
-    title: template.title,
-    type: template.type,
-  });
-
+async function upsertMission(
+  userId: Types.ObjectId,
+  period: ReturnType<typeof getMissionPeriod>,
+  template: MissionTemplate,
+  generationCalibration?: IMission['generationCalibration'],
+): Promise<IMission> {
+  const { key: templateKey, ...fields } = template;
+  const identity = { userId, type: template.type, periodKey: period.key, templateKey };
+  let result;
+  try {
+    result = await Mission.findOneAndUpdate(identity, {
+      $setOnInsert: { ...fields, expiresAt: period.end, generationCalibration },
+    }, { upsert: true, new: true, includeResultMetadata: true, runValidators: true });
+  } catch (error) {
+    if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) throw error;
+    const winner = await Mission.findOne(identity);
+    if (!winner) throw error;
+    return winner;
+  }
+  const mission = result.value;
+  if (!mission) throw new Error('Mission upsert returned no document');
+  if (result.lastErrorObject?.upserted) {
+    await cacheManager.invalidateDashboard(userId.toString());
+    eventBus.emitNotificationCreated(
+      userId.toString(), mission._id.toString(), 'mission_created', 'New Mission Available', mission.title, 'calm', 'low',
+    );
+  }
   return mission;
 }

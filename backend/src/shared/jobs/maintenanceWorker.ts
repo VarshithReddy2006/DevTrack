@@ -7,7 +7,7 @@ import { getRedisClient } from '../redis/index.js';
 import { logger } from '../logger.js';
 import { createDlqWorker, dlqService, DLQ_QUEUE_NAMES } from './dlq.service.js';
 import { QueueNames, SystemMaintenanceJobData } from './types.js';
-import { generateDailyMissions, generateWeeklyMissions } from '../../modules/missions/missionGenerator.service.js';
+import { runScheduledMissionSweep } from '../scheduler/missionScheduler.js';
 import { cleanupStaleLocks } from '../redis/syncLock.service.js';
 import { User, UserAnalytics, UserStreakLog } from '../../db/models/index.js';
 import { AntiGamingWorker } from '../../modules/profile/antiGaming.worker.js';
@@ -110,7 +110,7 @@ async function runHealthCheck(): Promise<void> {
 async function runGenerateDailyMissions(): Promise<void> {
   logger.info('[maintenance] Generating daily missions');
   try {
-    await generateDailyMissions();
+    await runScheduledMissionSweep('daily');
     logger.info('[maintenance] Daily missions generated successfully');
   } catch (err) {
     logger.error('[maintenance] Daily mission generation failed', err);
@@ -120,7 +120,7 @@ async function runGenerateDailyMissions(): Promise<void> {
 async function runGenerateWeeklyMissions(): Promise<void> {
   logger.info('[maintenance] Generating weekly missions');
   try {
-    await generateWeeklyMissions();
+    await runScheduledMissionSweep('weekly');
     logger.info('[maintenance] Weekly missions generated successfully');
   } catch (err) {
     logger.error('[maintenance] Weekly mission generation failed', err);
