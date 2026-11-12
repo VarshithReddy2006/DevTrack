@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
-  connect: vi.fn(), start: vi.fn(), stop: vi.fn(), queuesClose: vi.fn(), redisClose: vi.fn(),
+  connect: vi.fn(), start: vi.fn(), stop: vi.fn(), queuesClose: vi.fn(), redisClose: vi.fn(), flush: vi.fn(),
   setSync: vi.fn(), setXp: vi.fn(), ready: true,
 }));
 vi.mock('../../config/env.js', () => ({ env: {} }));
 vi.mock('../../db/connection.js', () => ({ connectDatabase: state.connect }));
+vi.mock('../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { flushPendingEvents: state.flush } }));
 vi.mock('../../db/migrations/index-setup.js', () => ({ setupProductionIndexes: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../shared/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../../shared/sse/index.js', () => ({ eventBus: { shutdown: vi.fn() } }));
@@ -41,7 +42,9 @@ it('starts the shared registry and drains it before closing queue and Redis hand
   await shutdown();
   expect(state.stop).toHaveBeenCalledOnce();
   expect(state.queuesClose.mock.invocationCallOrder[0]).toBeGreaterThan(state.stop.mock.invocationCallOrder[0]);
-  expect(state.redisClose.mock.invocationCallOrder[0]).toBeGreaterThan(state.queuesClose.mock.invocationCallOrder[0]);
+  expect(state.flush).toHaveBeenCalledOnce();
+  expect(state.flush.mock.invocationCallOrder[0]).toBeGreaterThan(state.queuesClose.mock.invocationCallOrder[0]);
+  expect(state.redisClose.mock.invocationCallOrder[0]).toBeGreaterThan(state.flush.mock.invocationCallOrder[0]);
 });
 it.each(['disabled', 'offline'])('does not start consumers when %s', async reason => {
   if (reason === 'disabled') vi.stubEnv('ENABLE_WORKERS', 'false'); else state.ready = false;
@@ -62,6 +65,11 @@ it('closes infrastructure and propagates consumer drain failure', async () => {
   await expect(shutdown()).rejects.toThrow('deadline exceeded');
   expect(state.queuesClose).toHaveBeenCalledOnce(); expect(state.redisClose).toHaveBeenCalledOnce();
 });
+it('closes infrastructure and propagates runtime-state drain failure', async () => {
+  state.flush.mockRejectedValueOnce(new Error('runtime write failed'));
+  await expect(shutdown()).rejects.toThrow('runtime write failed');
+  expect(state.queuesClose).toHaveBeenCalledOnce(); expect(state.redisClose).toHaveBeenCalledOnce();
+});
 
 it('prevents late startup from creating workers after shutdown and drains once', async () => {
   let resolve!: () => void;
@@ -73,4 +81,5 @@ it('prevents late startup from creating workers after shutdown and drains once',
   resolve(); await interrupted;
   expect(state.start).not.toHaveBeenCalled(); expect(state.stop).toHaveBeenCalledOnce();
   expect(state.redisClose).toHaveBeenCalledOnce();
+  expect(state.flush).toHaveBeenCalledOnce();
 });

@@ -41,5 +41,5 @@ it.each([true, false])('does not duplicate coordinator notifications for success
 it('still reports and propagates exceptional worker failures for queue retry handling', async () => {
   mocks.sync.mockRejectedValueOnce(new Error('unexpected failure'));
   await expect(mocks.processor!(job)).rejects.toThrow('unexpected failure');
-  expect(mocks.failed).toHaveBeenCalledExactlyOnceWith('owner', 'leetcode', 'unexpected failure');
+  expect(mocks.failed).toHaveBeenCalledExactlyOnceWith('owner', 'leetcode', 'unexpected failure', 'synthetic');
 });

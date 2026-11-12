@@ -67,7 +67,7 @@ describe('DSA intelligence controller response validation', () => {
     const json = vi.fn();
     const next = vi.fn();
     await dsaController.getDSAIntelligence(
-      { query: { userId: 'synthetic-user', platform: 'manual' } } as unknown as Request,
+      { user: { id: 'synthetic-user' }, query: { platform: 'manual' } } as unknown as Request,
       { json } as unknown as Response,
       next as NextFunction,
     );
@@ -122,7 +122,7 @@ describe('DSA intelligence controller response validation', () => {
     const json = vi.fn();
     const next = vi.fn();
     await dsaController.getDSAIntelligence(
-      { query: { userId: 'synthetic-user' } } as unknown as Request,
+      { user: { id: 'synthetic-user' }, query: {} } as unknown as Request,
       { json } as unknown as Response,
       next as NextFunction,
     );
