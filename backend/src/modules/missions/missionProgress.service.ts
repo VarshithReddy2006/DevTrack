@@ -172,19 +172,32 @@ function shouldCountTowardMission(
 
 // ─── Public API for getting user missions ────────────────────────────────────
 
-export async function getUserMissions(userId: string): Promise<any[]> {
-  const userObjId = new Types.ObjectId(userId);
+export type MissionCategory = 'dsa' | 'project' | 'consistency' | 'learning';
+export type MissionHistoryStatus = 'completed' | 'expired' | 'all';
 
-  // Get active missions (not expired, not completed)
-  const missions = await Mission.find({
-    userId: userObjId,
-    status: { $in: ['pending', 'in_progress'] },
-    expiresAt: { $gte: new Date() },
-  })
-    .sort({ type: 1, createdAt: -1 }) // Daily first, then weekly
-    .lean();
+export const MISSION_CATEGORIES: readonly MissionCategory[] = ['dsa', 'project', 'consistency', 'learning'];
+export const MISSION_HISTORY_STATUSES: readonly MissionHistoryStatus[] = ['completed', 'expired', 'all'];
+const TERMINAL_HISTORY_STATUSES = new Set<string>(['completed', 'expired']);
 
-  return missions.map((m) => ({
+export interface MissionHistoryOptions {
+  status?: MissionHistoryStatus;
+  category?: MissionCategory;
+  limit?: number;
+  offset?: number;
+}
+
+export interface MissionHistoryResult {
+  missions: any[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+function serializeMission(m: any, includeCompletedAt = false) {
+  const progressPercent = m.targetCount > 0
+    ? Math.min(100, Math.round((m.currentCount / m.targetCount) * 100))
+    : 0;
+  return {
     id: m._id.toString(),
     title: m.title,
     description: m.description,
@@ -194,8 +207,73 @@ export async function getUserMissions(userId: string): Promise<any[]> {
     currentCount: m.currentCount,
     targetCount: m.targetCount,
     xpReward: m.xpReward,
-    progressPercent: Math.round((m.currentCount / m.targetCount) * 100),
+    progressPercent,
+    ...(includeCompletedAt ? { completedAt: m.completedAt } : {}),
     expiresAt: m.expiresAt,
     createdAt: m.createdAt,
-  }));
+  };
+}
+
+export async function getUserMissions(userId: string, category?: string): Promise<any[]> {
+  const userObjId = new Types.ObjectId(userId);
+
+  const query: Record<string, unknown> = {
+    userId: userObjId,
+    status: { $in: ['pending', 'in_progress'] },
+    expiresAt: { $gte: new Date() },
+  };
+
+  if (category) {
+    query.category = category;
+  }
+
+  // Get active missions (not expired, not completed)
+  const missions = await Mission.find(query)
+    .sort({ type: 1, createdAt: -1 }) // Daily first, then weekly
+    .lean();
+
+  return missions.map((m) => serializeMission(m));
+}
+
+export async function getUserMissionHistory(
+  userId: string,
+  options: MissionHistoryOptions = {}
+): Promise<MissionHistoryResult> {
+  const userObjId = new Types.ObjectId(userId);
+  const limit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+    ? Math.min(100, Math.max(1, Math.trunc(options.limit)))
+    : 20;
+  const offset = typeof options.offset === 'number' && Number.isFinite(options.offset)
+    ? Math.max(0, Math.trunc(options.offset))
+    : 0;
+
+  const query: Record<string, unknown> = {
+    userId: userObjId,
+  };
+
+  if (options.status && TERMINAL_HISTORY_STATUSES.has(options.status)) {
+    query.status = options.status;
+  } else {
+    query.status = { $in: ['completed', 'expired'] };
+  }
+
+  if (options.category) {
+    query.category = options.category;
+  }
+
+  const [total, missions] = await Promise.all([
+    Mission.countDocuments(query),
+    Mission.find(query)
+      .sort({ completedAt: -1, expiresAt: -1, createdAt: -1 })
+      .skip(offset)
+      .limit(limit)
+      .lean(),
+  ]);
+
+  return {
+    missions: missions.map((m) => serializeMission(m, true)),
+    total,
+    limit,
+    offset,
+  };
 }
