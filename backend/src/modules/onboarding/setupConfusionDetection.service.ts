@@ -4,7 +4,23 @@
 import mongoose from 'mongoose';
 import { OnboardingAnalytics } from '../../db/models/onboardingAnalytics.model.js';
 import { SessionReplay } from '../../db/models/sessionReplay.model.js';
-import { logger } from '../../shared/logger.js';
+import { numberOrZero, topDropOffs, type DropOffCount } from './onboardingMetricsAggregation.js';
+
+interface ConfusionTotals {
+  totalUsers: number;
+  confusedUsers: number;
+  platformSync: number;
+  authentication: number;
+  configuration: number;
+}
+
+type ActivationAverages = Pick<FirstSessionActivation,
+  'averageTimeToFirstAction' | 'averageTimeToFirstProblem' | 'averageTimeToFirstCompletion'
+  | 'confusionEventsPerSession' | 'helpRequestsPerSession'>;
+
+function positiveTiming(field: string) {
+  return { $avg: { $cond: [{ $gt: [field, 0] }, field, null] } };
+}
 
 export interface ConfusionDetection {
   totalUsers: number;
@@ -28,55 +44,47 @@ export interface FirstSessionActivation {
 export const setupConfusionDetection = {
   // ─── Detect Setup Confusion ────────────────────────────────────────────────
   async detectSetupConfusion(dateRange: { start: Date; end: Date }): Promise<ConfusionDetection> {
-    const onboardingData = await OnboardingAnalytics.find({
-      startedAt: { $gte: dateRange.start, $lte: dateRange.end },
-    });
-
-    const totalUsers = onboardingData.length;
-
-    // Identify confused users (high confusion events or setup friction)
-    const confusedUsers = onboardingData.filter(o => {
-      const confusionEvents = o.firstSessionMetrics?.confusionEvents || 0;
-      const setupIssues = o.setupFriction?.platformSyncIssues || 0 + o.setupFriction?.authenticationIssues || 0 + o.setupFriction?.configurationErrors || 0;
-      return confusionEvents > 3 || setupIssues > 1;
-    });
-
-    const confusionRate = totalUsers > 0 ? (confusedUsers.length / totalUsers) * 100 : 0;
-
-    // Identify common confusion points
-    const confusionPoints = new Map<string, number>();
-    onboardingData.forEach(o => {
-      if (o.dropOffReason) {
-        confusionPoints.set(o.dropOffReason, (confusionPoints.get(o.dropOffReason) || 0) + 1);
-      }
-    });
-
-    const commonConfusionPoints = Array.from(confusionPoints.entries())
-      .map(([point, count]) => ({
-        point,
-        count,
-        percentage: totalUsers > 0 ? (count / totalUsers) * 100 : 0,
-      }))
-      .sort((a, b) => b.percentage - a.percentage)
-      .slice(0, 10);
-
-    // Identify setup issues
-    const setupIssues = new Map<string, number>();
-    onboardingData.forEach(o => {
-      if (o.setupFriction?.platformSyncIssues > 0) {
-        setupIssues.set('platform_sync', (setupIssues.get('platform_sync') || 0) + o.setupFriction.platformSyncIssues);
-      }
-      if (o.setupFriction?.authenticationIssues > 0) {
-        setupIssues.set('authentication', (setupIssues.get('authentication') || 0) + o.setupFriction.authenticationIssues);
-      }
-      if (o.setupFriction?.configurationErrors > 0) {
-        setupIssues.set('configuration', (setupIssues.get('configuration') || 0) + o.setupFriction.configurationErrors);
-      }
-    });
-
-    const setupIssuesArray = Array.from(setupIssues.entries())
-      .map(([issue, count]) => ({ issue, count }))
-      .sort((a, b) => b.count - a.count);
+    const platformSync = numberOrZero('$setupFriction.platformSyncIssues');
+    const authentication = numberOrZero('$setupFriction.authenticationIssues');
+    const configuration = numberOrZero('$setupFriction.configurationErrors');
+    const confused = {
+      $or: [
+        { $gt: [numberOrZero('$firstSessionMetrics.confusionEvents'), 3] },
+        { $gt: [{ $add: [platformSync, authentication, configuration] }, 1] },
+      ],
+    };
+    const [result] = await OnboardingAnalytics.aggregate<{ totals: ConfusionTotals[]; dropOffs: DropOffCount[] }>([
+      { $match: { startedAt: { $gte: dateRange.start, $lte: dateRange.end } } },
+      {
+        $facet: {
+          dropOffs: topDropOffs('$dropOffReason'),
+          totals: [{
+            $group: {
+              _id: null,
+              totalUsers: { $sum: 1 },
+              confusedUsers: { $sum: { $cond: [confused, 1, 0] } },
+              platformSync: { $sum: { $max: [0, platformSync] } },
+              authentication: { $sum: { $max: [0, authentication] } },
+              configuration: { $sum: { $max: [0, configuration] } },
+            },
+          }],
+        },
+      },
+    ]);
+    const totals = result?.totals[0];
+    const totalUsers = totals?.totalUsers ?? 0;
+    const confusedUsers = totals?.confusedUsers ?? 0;
+    const confusionRate = totalUsers ? (confusedUsers / totalUsers) * 100 : 0;
+    const commonConfusionPoints = (result?.dropOffs ?? []).map(({ _id, count }) => ({
+      point: _id,
+      count,
+      percentage: (count / totalUsers) * 100,
+    }));
+    const setupIssuesArray = [
+      { issue: 'platform_sync', count: totals?.platformSync ?? 0 },
+      { issue: 'authentication', count: totals?.authentication ?? 0 },
+      { issue: 'configuration', count: totals?.configuration ?? 0 },
+    ].filter(({ count }) => count > 0).sort((a, b) => b.count - a.count);
 
     // Generate recommendations
     const recommendations = this.generateConfusionRecommendations(
@@ -87,7 +95,7 @@ export const setupConfusionDetection = {
 
     return {
       totalUsers,
-      confusedUsers: confusedUsers.length,
+      confusedUsers,
       confusionRate,
       commonConfusionPoints,
       setupIssues: setupIssuesArray,
@@ -126,37 +134,24 @@ export const setupConfusionDetection = {
 
   // ─── Analyze First Session Activation ───────────────────────────────────────
   async analyzeFirstSessionActivation(dateRange: { start: Date; end: Date }): Promise<FirstSessionActivation> {
-    const onboardingData = await OnboardingAnalytics.find({
-      startedAt: { $gte: dateRange.start, $lte: dateRange.end },
-    });
-
-    // Calculate average time to first action
-    const withFirstAction = onboardingData.filter(o => o.firstSessionMetrics?.timeToFirstAction > 0);
-    const averageTimeToFirstAction = withFirstAction.length > 0
-      ? withFirstAction.reduce((sum, o) => sum + (o.firstSessionMetrics?.timeToFirstAction || 0), 0) / withFirstAction.length
-      : 0;
-
-    // Calculate average time to first problem
-    const withFirstProblem = onboardingData.filter(o => o.firstSessionMetrics?.timeToFirstProblem > 0);
-    const averageTimeToFirstProblem = withFirstProblem.length > 0
-      ? withFirstProblem.reduce((sum, o) => sum + (o.firstSessionMetrics?.timeToFirstProblem || 0), 0) / withFirstProblem.length
-      : 0;
-
-    // Calculate average time to first completion
-    const withFirstCompletion = onboardingData.filter(o => o.firstSessionMetrics?.timeToFirstCompletion > 0);
-    const averageTimeToFirstCompletion = withFirstCompletion.length > 0
-      ? withFirstCompletion.reduce((sum, o) => sum + (o.firstSessionMetrics?.timeToFirstCompletion || 0), 0) / withFirstCompletion.length
-      : 0;
-
-    // Calculate average confusion events per session
-    const averageConfusionEvents = onboardingData.length > 0
-      ? onboardingData.reduce((sum, o) => sum + (o.firstSessionMetrics?.confusionEvents || 0), 0) / onboardingData.length
-      : 0;
-
-    // Calculate average help requests per session
-    const averageHelpRequests = onboardingData.length > 0
-      ? onboardingData.reduce((sum, o) => sum + (o.firstSessionMetrics?.helpRequests || 0), 0) / onboardingData.length
-      : 0;
+    const [averages] = await OnboardingAnalytics.aggregate<ActivationAverages>([
+      { $match: { startedAt: { $gte: dateRange.start, $lte: dateRange.end } } },
+      {
+        $group: {
+          _id: null,
+          averageTimeToFirstAction: positiveTiming('$firstSessionMetrics.timeToFirstAction'),
+          averageTimeToFirstProblem: positiveTiming('$firstSessionMetrics.timeToFirstProblem'),
+          averageTimeToFirstCompletion: positiveTiming('$firstSessionMetrics.timeToFirstCompletion'),
+          confusionEventsPerSession: { $avg: numberOrZero('$firstSessionMetrics.confusionEvents') },
+          helpRequestsPerSession: { $avg: numberOrZero('$firstSessionMetrics.helpRequests') },
+        },
+      },
+    ]);
+    const averageTimeToFirstAction = averages?.averageTimeToFirstAction ?? 0;
+    const averageTimeToFirstProblem = averages?.averageTimeToFirstProblem ?? 0;
+    const averageTimeToFirstCompletion = averages?.averageTimeToFirstCompletion ?? 0;
+    const averageConfusionEvents = averages?.confusionEventsPerSession ?? 0;
+    const averageHelpRequests = averages?.helpRequestsPerSession ?? 0;
 
     // Determine activation quality
     const activationQuality = this.determineActivationQuality(
