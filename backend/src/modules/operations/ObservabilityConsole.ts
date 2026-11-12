@@ -5,7 +5,6 @@ import { EvidenceChainSystem } from './EvidenceChainSystem.js';
 import { RecommendationStabilityTests, TestSuite } from '../readiness/testing/RecommendationStabilityTests.js';
 import { AIProviderAdapter } from '../ai/provider/AIProviderAdapter.js';
 import { AIResponseAuditLog } from '../ai/audit/AIResponseAuditLog.js';
-import { RecommendationMemory } from '../readiness/recommendation/RecommendationMemory.js';
 import { RecommendationLifecycleEngine } from '../readiness/recommendation/RecommendationLifecycleEngine.js';
 import { ReadinessOrchestratorService } from '../readiness/engine/ReadinessOrchestratorService.js';
 import { logger } from '../../shared/logger.js';
@@ -203,7 +202,7 @@ class ObservabilityConsoleClass {
     const p99ResponseTime = sortedResponseTimes.length > 0 ? sortedResponseTimes[p99Index] || 0 : 0;
 
     // Calculate recommendation metrics
-    const recommendationMetrics = this.calculateRecommendationMetrics();
+    const recommendationMetrics = await this.calculateRecommendationMetrics();
 
     // Calculate AI metrics
     const aiMetrics = this.calculateAIMetrics();
@@ -262,64 +261,20 @@ class ObservabilityConsoleClass {
   /**
    * Calculate recommendation metrics
    */
-  private calculateRecommendationMetrics(): RecommendationMetrics {
-    const memoryStats = RecommendationMemory.getStats();
-    // Get global lifecycle metrics (no userId needed)
-    const allLifecycles = Array.from((RecommendationLifecycleEngine as any).lifecycles.values()) as any[];
-    const totalRecommendations = allLifecycles.length;
-    const completedCount = allLifecycles.filter((l: any) => l.state === 'completed').length;
-    const acceptanceRate = totalRecommendations > 0 ? (allLifecycles.filter((l: any) => l.state === 'accepted' || l.state === 'completed').length / totalRecommendations) * 100 : 0;
-    const completionRate = totalRecommendations > 0 ? (completedCount / totalRecommendations) * 100 : 0;
-    
-    const effectivenessScores = allLifecycles.filter((l: any) => l.effectivenessScore !== undefined).map((l: any) => l.effectivenessScore);
-    const averageEffectiveness = effectivenessScores.length > 0 ? effectivenessScores.reduce((sum: number, s: number) => sum + s, 0) / effectivenessScores.length : 0;
-    
-    const timeToComplete = allLifecycles.filter((l: any) => l.timeToComplete).map((l: any) => l.timeToComplete);
-    const averageTimeToComplete = timeToComplete.length > 0 ? timeToComplete.reduce((sum: number, t: number) => sum + t, 0) / timeToComplete.length : 0;
-    
-    const decayedCount = allLifecycles.filter((l: any) => l.state === 'decayed').length;
-    
-    // Calculate by type metrics
-    const byType: Record<string, { total: number; accepted: number; completed: number; effectiveness: number }> = {};
-    allLifecycles.forEach((l: any) => {
-      if (!byType[l.type]) {
-        byType[l.type] = { total: 0, accepted: 0, completed: 0, effectiveness: 0 };
-      }
-      byType[l.type].total++;
-      if (l.state === 'accepted' || l.state === 'completed') byType[l.type].accepted++;
-      if (l.state === 'completed') byType[l.type].completed++;
-      if (l.effectivenessScore !== undefined) byType[l.type].effectiveness += l.effectivenessScore;
-    });
-    
-    // Calculate average effectiveness by type
-    Object.keys(byType).forEach(type => {
-      const completed = byType[type].completed;
-      if (completed > 0) {
-        byType[type].effectiveness = byType[type].effectiveness / completed;
-      }
-    });
-    
-    // Orchestration failures are tracked via logs in the engine version
-    const orchestrationFailures = 0; 
-    
-    // Calculate roadmap blocker frequency (mock - would come from actual data)
-    const roadmapBlockerFrequency = 0; // Would be calculated from DynamicRoadmapExperience
-    
-    // Calculate momentum anomalies (mock - would come from actual data)
-    const momentumAnomalies = 0; // Would be calculated from ReadinessMomentumEngine
-
+  private async calculateRecommendationMetrics(): Promise<RecommendationMetrics> {
+    const metrics = await RecommendationLifecycleEngine.getMetrics();
     return {
-      totalRecommendations: memoryStats.totalRecommendations,
-      acceptanceRate: Math.round(acceptanceRate),
-      completionRate: Math.round(completionRate),
-      averageEffectiveness: Math.round(averageEffectiveness),
-      averageTimeToComplete: Math.round(averageTimeToComplete),
-      staleRecommendations: memoryStats.averageAge > 24 ? memoryStats.totalRecommendations : 0,
-      decayedRecommendations: decayedCount,
-      byType,
-      orchestrationFailures,
-      roadmapBlockerFrequency,
-      momentumAnomalies,
+      totalRecommendations: metrics.totalRecommendations,
+      acceptanceRate: metrics.acceptanceRate,
+      completionRate: metrics.completionRate,
+      averageEffectiveness: metrics.averageEffectiveness,
+      averageTimeToComplete: metrics.averageTimeToComplete,
+      staleRecommendations: metrics.activeDecayedCount,
+      decayedRecommendations: metrics.decayedCount,
+      byType: metrics.byType,
+      orchestrationFailures: 0,
+      roadmapBlockerFrequency: 0,
+      momentumAnomalies: 0,
     };
   }
 

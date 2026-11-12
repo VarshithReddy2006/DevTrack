@@ -1,18 +1,19 @@
 // src/modules/recommendations/engines/atsGapDetector.ts
 import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
-import { Schema } from 'mongoose';
-import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
+import { Schema, type Types } from 'mongoose';
+import { saveGeneratedRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
 
 export class ATSGapDetectionEngine {
   
-  static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
+  static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<Types.ObjectId[]> {
+    const ids: Types.ObjectId[] = [];
     const analysis = await ATSAnalysis.findOne({ userId, resumeProfileId }).sort({ createdAt: -1 });
-    if (!analysis) return;
+    if (!analysis) return ids;
 
     // Detect missing keywords
     for (const keyword of analysis.keywordCoverage) {
       if (!keyword.found) {
-        await IntelligenceRecommendation.create({
+        ids.push(await saveGeneratedRecommendation({
           userId,
           resumeProfileId,
           category: 'ats',
@@ -24,14 +25,14 @@ export class ATSGapDetectionEngine {
             type: 'ats'
           },
           evidenceReferences: [`keyword_missing_${keyword.keyword}`]
-        });
+        }));
       }
     }
 
     // Detect formatting warnings
     for (const warning of analysis.formattingWarnings) {
       if (warning.impact === 'high' || warning.impact === 'medium') {
-         await IntelligenceRecommendation.create({
+         ids.push(await saveGeneratedRecommendation({
           userId,
           resumeProfileId,
           category: 'ats',
@@ -43,14 +44,14 @@ export class ATSGapDetectionEngine {
             type: 'ats'
           },
           evidenceReferences: [`formatting_warning_${warning.type}`]
-        });
+        }));
       }
     }
     
     // Detect parser warnings
     for (const warning of analysis.parserWarnings) {
       if (warning.severity === 'critical') {
-         await IntelligenceRecommendation.create({
+         ids.push(await saveGeneratedRecommendation({
           userId,
           resumeProfileId,
           category: 'ats',
@@ -62,14 +63,14 @@ export class ATSGapDetectionEngine {
             type: 'ats'
           },
           evidenceReferences: [`parser_warning_${warning.section}`]
-        });
+        }));
       }
     }
     
     // Check section integrity
     for (const section of analysis.sectionIntegrity) {
       if (!section.detected) {
-        await IntelligenceRecommendation.create({
+        ids.push(await saveGeneratedRecommendation({
           userId,
           resumeProfileId,
           category: 'ats',
@@ -81,8 +82,9 @@ export class ATSGapDetectionEngine {
             type: 'ats'
           },
           evidenceReferences: [`section_missing_${section.sectionName}`]
-        });
+        }));
       }
     }
+    return ids;
   }
 }

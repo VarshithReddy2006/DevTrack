@@ -536,13 +536,13 @@ export class ResumeProcessingOrchestrator {
 
     const targetRole = session.uploadMetadata.originalFilename.toLowerCase().includes('frontend') ? 'frontend engineer' : 'backend engineer';
 
-    await RecommendationIntelligenceService.generateIntelligence(
+    const currentIds = await RecommendationIntelligenceService.generateIntelligence(
       userId,
       session._id!,
       targetRole
     );
 
-    const activeRecs = await RecommendationIntelligenceService.getActiveRecommendations(userId, session._id!);
+    const activeRecs = await RecommendationIntelligenceService.getActiveRecommendations(userId, session._id!, currentIds);
     const recTitles = activeRecs.map(r => r.title);
 
     let credibilityScore = 85;

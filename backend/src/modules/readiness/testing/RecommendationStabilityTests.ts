@@ -1,3 +1,5 @@
+import { Types } from 'mongoose';
+import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
 import { IntelligentRecommendationEngine } from '../recommendation/IntelligentRecommendationEngine.js';
 import { RecommendationMemory } from '../recommendation/RecommendationMemory.js';
 import { RecommendationLifecycleEngine } from '../recommendation/RecommendationLifecycleEngine.js';
@@ -226,69 +228,51 @@ class RecommendationStabilityTestsClass {
   private async testRecommendationLifecycleTracking(): Promise<TestSuite> {
     const startTime = Date.now();
     const tests: TestResult[] = [];
-    const testUserId = 'test-user-lifecycle';
-    
+    const userId = new Types.ObjectId().toString();
+    const recommendationId = new Types.ObjectId().toString();
+
     try {
-      // Clear lifecycle data
-      RecommendationLifecycleEngine.clear();
-      
-      // Create a lifecycle
-      const lifecycle = RecommendationLifecycleEngine.createLifecycle(
-        'test-lifecycle-1',
-        testUserId,
-        'dsa',
-        'Test lifecycle'
-      );
-      
-      // Check if lifecycle was created
+      const lifecycle = await IntelligenceRecommendation.create({
+        _id: recommendationId, userId, resumeProfileId: new Types.ObjectId(),
+        category: 'ats', title: 'Test lifecycle', content: 'Test recommendation',
+      });
       tests.push({
         testName: 'Lifecycle creation',
-        passed: lifecycle.recommendationId === 'test-lifecycle-1' && lifecycle.state === 'active',
-        message: lifecycle.recommendationId === 'test-lifecycle-1' && lifecycle.state === 'active'
-          ? 'Lifecycle successfully created'
-          : 'Lifecycle creation failed',
+        passed: lifecycle.state === 'active',
+        message: 'Checks initial recommendation state',
       });
-      
-      // Test event recording
-      RecommendationLifecycleEngine.recordEvent('test-lifecycle-1', testUserId, 'accepted', {});
-      const updatedLifecycle = RecommendationLifecycleEngine.getLifecycle('test-lifecycle-1');
+
+      const accepted = await RecommendationLifecycleEngine.recordAction(recommendationId, userId, 'accept');
       tests.push({
         testName: 'Lifecycle event recording',
-        passed: updatedLifecycle?.state === 'accepted',
-        message: updatedLifecycle?.state === 'accepted'
-          ? 'Event correctly updated lifecycle state'
-          : 'Event recording failed',
+        passed: accepted.state === 'accepted',
+        message: 'Checks that acceptance updates the persisted state',
       });
-      
-      // Test effectiveness scoring
-      RecommendationLifecycleEngine.setEffectivenessScore('test-lifecycle-1', 90);
-      const scoredLifecycle = RecommendationLifecycleEngine.getLifecycle('test-lifecycle-1');
+
+      await RecommendationLifecycleEngine.setEffectivenessScore(recommendationId, userId, 90);
+      const scored = await RecommendationLifecycleEngine.getLifecycle(recommendationId, userId);
       tests.push({
         testName: 'Effectiveness scoring',
-        passed: scoredLifecycle?.effectivenessScore === 90,
-        message: scoredLifecycle?.effectivenessScore === 90
-          ? 'Effectiveness score correctly set'
-          : 'Effectiveness scoring failed',
+        passed: scored?.effectivenessScore === 90,
+        message: 'Checks persisted effectiveness',
       });
-      
-      // Test metrics calculation
-      const metrics = RecommendationLifecycleEngine.calculateMetrics();
+
+      const metrics = await RecommendationLifecycleEngine.getMetrics(userId);
       tests.push({
         testName: 'Lifecycle metrics calculation',
-        passed: metrics.totalRecommendations === 1,
-        message: metrics.totalRecommendations === 1
-          ? 'Metrics correctly calculated'
-          : 'Metrics calculation failed',
+        passed: metrics.totalRecommendations === 1 && metrics.acceptanceRate === 100,
+        message: 'Checks scoped metrics',
       });
-      
     } catch (error) {
       tests.push({
         testName: 'Recommendation lifecycle tracking',
         passed: false,
-        message: `Test failed with error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        message: error instanceof Error ? error.message : 'Unknown error',
       });
+    } finally {
+      await IntelligenceRecommendation.deleteOne({ _id: recommendationId, userId });
     }
-    
+
     const passedCount = tests.filter(t => t.passed).length;
     const failedCount = tests.length - passedCount;
     
