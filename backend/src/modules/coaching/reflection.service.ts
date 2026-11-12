@@ -1,10 +1,16 @@
 import { FocusSession } from '../../db/models/focusSession.model.js';
 import { UserDailyChallenge } from '../../db/models/userDailyChallenge.model.js';
+import { localDateString, localDayBounds } from '../../shared/date.js';
+import { getUserTimezone } from '../../shared/userTimezone.js';
 
 export class ReflectionService {
   static async generateWeeklyReflection(userId: string) {
-    const oneWeekAgo = new Date();
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    const timezone = await getUserTimezone(userId);
+    const today = localDateString(new Date(), timezone);
+    // Shift the calendar date in UTC, then resolve that date's midnight in the user's zone.
+    const cutoffDate = new Date(`${today}T00:00:00Z`);
+    cutoffDate.setUTCDate(cutoffDate.getUTCDate() - 7);
+    const { start: oneWeekAgo } = localDayBounds(cutoffDate.toISOString().slice(0, 10), timezone);
 
     const sessions = await FocusSession.find({ 
       userId, 

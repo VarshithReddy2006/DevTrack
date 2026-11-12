@@ -1,5 +1,6 @@
 import { FocusSession } from '../../db/models/focusSession.model.js';
-import { UserDailyChallenge } from '../../db/models/userDailyChallenge.model.js';
+import { createLocalHourReader, localDateString } from '../../shared/date.js';
+import { getUserTimezone } from '../../shared/userTimezone.js';
 
 export class CoachingService {
   /**
@@ -65,9 +66,7 @@ export class CoachingService {
       .sort({ startedAt: -1 })
       .limit(10)
       .lean();
-      
-    const currentHour = new Date().getHours();
-    
+
     const abandonedCount = recentSessions.filter(s => s.status === 'abandoned').length;
     const avgQuality = recentSessions.reduce((acc, s) => acc + (s.focusQualityScore || 0), 0) / (recentSessions.length || 1);
 
@@ -75,11 +74,12 @@ export class CoachingService {
       return 'burnout_risk';
     }
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const activeToday = recentSessions.some(s => new Date(s.startedAt) >= startOfDay);
+    const timezone = await getUserTimezone(userId);
+    const now = new Date();
+    const localToday = localDateString(now, timezone);
+    const activeToday = recentSessions.some(session => localDateString(session.startedAt, timezone) === localToday);
 
-    if (!activeToday && currentHour >= 20) {
+    if (!activeToday && createLocalHourReader(timezone)(now) >= 20) {
       return 'streak_risk';
     }
 

@@ -1,4 +1,5 @@
-import { Types } from 'mongoose';
+import { createLocalHourReader } from '../../shared/date.js';
+import { getUserTimezone } from '../../shared/userTimezone.js';
 import { FocusSession } from '../../db/models/focusSession.model.js';
 
 export interface FocusAnalytics {
@@ -13,7 +14,7 @@ export interface FocusAnalytics {
 
 export class FocusIntelligenceService {
   static async analyzeUserFocus(userId: string): Promise<FocusAnalytics> {
-    const sessions = await FocusSession.find({ userId: new Types.ObjectId(userId), status: 'completed' })
+    const sessions = await FocusSession.find({ userId, status: 'completed' })
       .sort({ startedAt: -1 })
       .limit(50)
       .lean();
@@ -65,8 +66,9 @@ export class FocusIntelligenceService {
       'Night': { count: 0, quality: 0 },
     };
 
+    const readLocalHour = createLocalHourReader(await getUserTimezone(userId));
     for (const s of sessions) {
-      const hour = new Date(s.startedAt).getHours();
+      const hour = readLocalHour(s.startedAt);
       let time = '';
       if (hour >= 5 && hour < 12) time = 'Morning';
       else if (hour >= 12 && hour < 17) time = 'Afternoon';

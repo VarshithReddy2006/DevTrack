@@ -1,11 +1,12 @@
 // src/modules/daily-challenge/daily-challenge.service.ts
 import { Types } from 'mongoose';
-import { DailyChallenge, DsaProblem, DsaSubmission, XpTransaction, UserAnalytics, User } from '../../db/models/index.js';
+import { DailyChallenge, DsaProblem, DsaSubmission, XpTransaction, UserAnalytics } from '../../db/models/index.js';
 import type { IDailyChallenge } from '../../db/models/dailyChallenge.model.js';
 import { processXpEvent } from '../xp/processor.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { logger } from '../../shared/logger.js';
-import { localDateString, localDayBounds, resolveTimezone } from './daily-challenge.time.js';
+import { localDateString, localDayBounds } from './daily-challenge.time.js';
+import { getUserTimezone } from '../../shared/userTimezone.js';
 
 // ---------------------------------------------------------------------------
 // Expanded Challenge Pool — organized by difficulty
@@ -109,11 +110,6 @@ function hashDateString(dateStr: string): number {
     hash = dateStr.charCodeAt(i) + ((hash << 5) - hash);
   }
   return Math.abs(hash);
-}
-
-async function getUserTimezone(userId: string): Promise<string> {
-  const user = await User.findById(userId).select('timezone').lean();
-  return resolveTimezone(user?.timezone);
 }
 
 async function seedChallenge(date: string, difficulty: IDailyChallenge['difficulty']) {
