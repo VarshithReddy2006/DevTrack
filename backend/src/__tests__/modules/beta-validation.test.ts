@@ -5,7 +5,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BetaAccessInfrastructure } from '../../modules/onboarding/BetaAccessInfrastructure.js';
 import { FeedbackIntelligenceLoop, FeedbackReport } from '../../modules/calibration/FeedbackIntelligenceLoop.js';
 import { ProductReadinessEvaluation } from '../../modules/calibration/ProductReadinessEvaluation.js';
-import { getRedisClient } from '../../shared/redis/client.js';
+import { ResumeCredibility } from '../../db/models/resumeCredibility.model.js';
+import { ResumeSession } from '../../db/models/resumeSession.model.js';
+import { User } from '../../db/models/user.model.js';
+import { getRedisClient, isRedisConfigured } from '../../shared/redis/client.js';
 
 // Mock Redis client singleton
 vi.mock('../../shared/redis/client.js', () => {
@@ -19,6 +22,7 @@ vi.mock('../../shared/redis/client.js', () => {
   };
   return {
     getRedisClient: () => mockRedis,
+    isRedisConfigured: vi.fn(() => true),
     disconnectRedis: vi.fn(),
   };
 });
@@ -263,38 +267,107 @@ describe('FeedbackIntelligenceLoop', () => {
 });
 
 describe('ProductReadinessEvaluation', () => {
-  let mockRedis: any;
+  const redisGet = vi.mocked(getRedisClient().get);
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockRedis = getRedisClient();
+    vi.restoreAllMocks();
+    vi.mocked(isRedisConfigured).mockReturnValue(true);
+    redisGet.mockReset().mockResolvedValue(null);
   });
 
-  describe('executeDiagnosticSuite', () => {
-    it('should run full system checkups and compile correct scorecard index values', async () => {
-      mockRedis.get.mockImplementation((key: string) => {
-        if (key === 'beta:telemetry:onboard_starts') return Promise.resolve('150');
-        if (key === 'beta:telemetry:onboard_completes') return Promise.resolve('135'); // 90% onboarding
-        if (key === 'observability:latency:p95') return Promise.resolve('140'); // p95 < 200 ms => 95%
-        if (key === 'calibration:mismatches:semantic_mismatch') return Promise.resolve('15'); // 15 mismatches / 150 searches => 90%
-        if (key === 'calibration:mismatches:recommendation') return Promise.resolve('30'); // 30 mismatches / 300 recommendations => 90%
-        if (key === 'calibration:mismatches:ats') return Promise.resolve('4'); // 100 - 4*5 = 80%
-        return Promise.resolve(null);
-      });
+  it('reports a cold start when telemetry and database records are absent', async () => {
+    const result = await ProductReadinessEvaluation.executeDiagnosticSuite();
 
-      const result = await ProductReadinessEvaluation.executeDiagnosticSuite();
+    expect(Object.values(result.scorecard)).toEqual(Array(7).fill(0));
+    expect(result.overallScore).toBe(0);
+    expect(result.report.match(/Telemetry Awaiting Data/g)).toHaveLength(8);
+    expect(result.report).not.toContain('BETA READY');
+  });
 
-      expect(result.overallScore).toBeGreaterThanOrEqual(80);
-      expect(result.scorecard.onboardingMaturity).toBe(90);
-      expect(result.scorecard.operationalMaturity).toBe(95);
-      expect(result.scorecard.semanticMaturity).toBe(90);
-      expect(result.scorecard.recommendationMaturity).toBe(90);
-      expect(result.scorecard.atsMaturity).toBe(80);
-      
-      expect(result.report).toContain('# Product Maturity & Readiness Report');
-      expect(result.report).toContain('gantt');
-      expect(result.report).toContain('section Onboarding');
-      expect(result.report).toContain('140ms');
+  it('falls back to MongoDB as a pair and reports only domains with data', async () => {
+    const users = await User.insertMany(['first', 'second', 'third'].map((name) => ({
+      clerkId: name,
+      email: `${name}@example.test`,
+      username: name,
+      displayName: name,
+    })));
+    const userId = users[0]._id;
+    await ResumeSession.collection.insertMany([
+      {
+        sessionId: 'replayed',
+        userId,
+        currentStage: 'COMPLETED',
+        replayState: { generated: true, timeline: [{ type: 'runtime_event' }] },
+        semanticState: { analyzed: true, retrievalResults: [{ id: 'match', score: 0.8 }] },
+        recommendationState: { generated: true },
+        atsState: { analyzed: true },
+      },
+      { sessionId: 'duplicate-user', userId, currentStage: 'COMPLETED' },
+      { sessionId: 'failed', userId: users[1]._id, currentStage: 'FAILED' },
+      { sessionId: 'anonymous', currentStage: 'UPLOADED' },
+    ]);
+    await ResumeCredibility.create({ sessionId: 'replayed', overallCredibility: 80, summary: 'Credibility reviewed' });
+
+    redisGet.mockImplementation(async (key) => {
+      if (key === 'beta:telemetry:onboard_starts') return '200';
+      if (key === 'calibration:mismatches:semantic_mismatch') return '1';
+      return null;
     });
+
+    const result = await ProductReadinessEvaluation.executeDiagnosticSuite();
+
+    expect(result.scorecard).toEqual({
+      onboardingMaturity: 33,
+      operationalMaturity: 0,
+      semanticMaturity: 0,
+      recommendationMaturity: 100,
+      atsMaturity: 100,
+      replayMaturity: 50,
+      recruiterMaturity: 80,
+    });
+    expect(result.overallScore).toBe(61);
+    expect(result.report).toContain('6 of 7 domains measured');
+    expect(result.report).toContain('MongoDB registered users');
+    expect(result.report).toContain('1 completions / 3 starts or registrations');
+  });
+
+  it('uses recorded volume and bounds high-volume mismatch spikes and conversion overcounts', async () => {
+    const readings: Record<string, string> = {
+      'beta:telemetry:onboard_starts': '1000000',
+      'beta:telemetry:onboard_completes': '1100000',
+      'observability:latency:p95': '140',
+      'calibration:mismatches:semantic_mismatch': '1100000',
+      'calibration:mismatches:recommendation': '100000',
+      'calibration:mismatches:ats': '0',
+    };
+    redisGet.mockImplementation(async (key) => readings[String(key)] ?? null);
+    vi.spyOn(ResumeSession, 'countDocuments').mockImplementation((filter) => Promise.resolve(
+      filter && 'currentStage' in filter ? 0 : 1_000_000,
+    ) as ReturnType<typeof ResumeSession.countDocuments>);
+
+    const result = await ProductReadinessEvaluation.executeDiagnosticSuite();
+
+    expect(result.scorecard).toEqual({
+      onboardingMaturity: 100,
+      operationalMaturity: 95,
+      semanticMaturity: 0,
+      recommendationMaturity: 90,
+      atsMaturity: 100,
+      replayMaturity: 0,
+      recruiterMaturity: 0,
+    });
+    expect(result.overallScore).toBe(77);
+    expect(result.report).toContain('Semantic retrieval:** 0%');
+    expect(result.report).toContain('Redis P95 latency (140ms)');
+  });
+
+  it('uses MongoDB telemetry when Redis is disabled', async () => {
+    vi.mocked(isRedisConfigured).mockReturnValue(false);
+
+    const result = await ProductReadinessEvaluation.executeDiagnosticSuite();
+
+    expect(redisGet).not.toHaveBeenCalled();
+    expect(result.report).toContain('Redis mismatch reports (unavailable)');
+    expect(result.report).toContain('Telemetry Awaiting Data');
   });
 });
