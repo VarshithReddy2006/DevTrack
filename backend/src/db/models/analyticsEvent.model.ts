@@ -14,4 +14,7 @@ const analyticsEventSchema = new Schema<IAnalyticsEvent>({
   createdAt: { type: Date, default: Date.now, index: true }
 });
 
+// Supports the date-windowed funnel aggregation in getDashboardMetrics
+analyticsEventSchema.index({ eventName: 1, createdAt: -1 });
+
 export const AnalyticsEvent = mongoose.model<IAnalyticsEvent>('AnalyticsEvent', analyticsEventSchema);
