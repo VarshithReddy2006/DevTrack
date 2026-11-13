@@ -1,0 +1,45 @@
+name: DCO Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+
+# Ensure minimal read-only permissions for fork-safety and secret isolation
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  validate-dco:
+    name: Verify DCO Sign-off
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Fetch full history so base and head SHAs are available for commit inspection
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+
+      - name: Run DCO validator test suite
+        run: node scripts/verify-dco.test.js
+
+      - name: Validate Pull Request Commits
+        if: github.event_name == 'pull_request'
+        run: |
+          node scripts/verify-dco.js --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
