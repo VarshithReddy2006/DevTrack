@@ -1,7 +1,7 @@
 // src/features/resume-tracker/types/recommendation.types.ts
 
 export type RecommendationCategory = 'ats' | 'semantic' | 'credibility' | 'infrastructure' | 'role_alignment';
-export type RecommendationState = 'active' | 'ignored' | 'completed';
+export type RecommendationState = 'active' | 'accepted' | 'ignored' | 'completed' | 'decayed' | 'retired';
 
 export interface IIntelligenceRecommendation {
   id: string;

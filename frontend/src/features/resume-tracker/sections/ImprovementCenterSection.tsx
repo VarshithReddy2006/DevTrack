@@ -9,6 +9,8 @@ export const ImprovementCenterSection: React.FC = () => {
   const { currentSession } = useSessionState();
   const [recommendations, setRecommendations] = useState<IIntelligenceRecommendation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const report = currentSession?.reportData;
@@ -37,6 +39,21 @@ export const ImprovementCenterSection: React.FC = () => {
 
     fetchIntelligence();
   }, [currentSession?.sessionId, isPending, isProcessing]);
+
+  const updateRecommendation = async (id: string, action: 'accept' | 'complete' | 'dismiss') => {
+    setPendingAction(id);
+    setActionError(null);
+    try {
+      const { data } = await api.post<{ data: IIntelligenceRecommendation }>(`/recommendations/intelligence/${id}/${action}`);
+      setRecommendations(rows => action === 'dismiss'
+        ? rows.filter(row => row.id !== id)
+        : rows.map(row => row.id === id ? { ...row, state: data.data.state } : row));
+    } catch {
+      setActionError('Could not update the recommendation. Try again.');
+    } finally {
+      setPendingAction(null);
+    }
+  };
 
   const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.05 } } };
   const fadeUp = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } };
@@ -161,6 +178,7 @@ export const ImprovementCenterSection: React.FC = () => {
       {recommendations.length > 0 && (
         <div>
           <p className="text-section-label mb-4">Recommendations</p>
+          {actionError && <p role="alert" className="mb-3 text-sm text-rose-700">{actionError}</p>}
           <div className="flex flex-col gap-3">
             <AnimatePresence>
               {recommendations.map((rec) => {
@@ -175,7 +193,12 @@ export const ImprovementCenterSection: React.FC = () => {
                     className="bg-white rounded-2xl border border-[rgba(124,92,252,0.08)] shadow-[0_2px_12px_rgba(0,0,0,0.02)] overflow-hidden"
                   >
                     <button
-                      onClick={() => setExpandedId(isExpanded ? null : rec.id)}
+                      onClick={() => {
+                        setExpandedId(isExpanded ? null : rec.id);
+                        if (!isExpanded && rec.state !== 'completed') {
+                          void api.post(`/recommendations/intelligence/${rec.id}/view`).catch(() => {});
+                        }
+                      }}
                       className="w-full flex items-center justify-between p-5 text-left hover:bg-[rgba(124,92,252,0.01)] transition-colors"
                     >
                       <div className="flex items-center gap-3 min-w-0">
@@ -245,6 +268,28 @@ export const ImprovementCenterSection: React.FC = () => {
                               </div>
                             )}
                           </div>
+                          {rec.state !== 'completed' && (
+                            <div className="mt-4 flex flex-wrap items-center gap-3">
+                              {rec.state === 'active' && (
+                                <button type="button" disabled={pendingAction !== null}
+                                  onClick={() => void updateRecommendation(rec.id, 'accept')}
+                                  className="text-sm font-semibold text-dt-primary disabled:opacity-50">
+                                  Accept
+                                </button>
+                              )}
+                              <button type="button" disabled={pendingAction !== null}
+                                onClick={() => void updateRecommendation(rec.id, 'complete')}
+                                className="text-sm font-semibold text-emerald-700 disabled:opacity-50">
+                                Mark complete
+                              </button>
+                              <button type="button" disabled={pendingAction !== null}
+                                onClick={() => void updateRecommendation(rec.id, 'dismiss')}
+                                className="text-sm font-semibold text-dt-textMuted disabled:opacity-50">
+                                Dismiss
+                              </button>
+                              {rec.state === 'accepted' && <span className="text-sm text-dt-textMuted">Accepted</span>}
+                            </div>
+                          )}
                         </motion.div>
                       )}
                     </AnimatePresence>

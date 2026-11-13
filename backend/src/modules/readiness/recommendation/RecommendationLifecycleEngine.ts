@@ -1,396 +1,154 @@
-import { logger } from '../../../shared/logger.js';
+import { Types, type FilterQuery } from 'mongoose';
+import {
+  IntelligenceRecommendation,
+  type IIntelligenceRecommendation,
+  type RecommendationState,
+} from '../../../db/models/intelligenceRecommendation.model.js';
 
-export interface LifecycleEvent {
-  eventId: string;
-  recommendationId: string;
-  userId: string;
-  eventType: 'generated' | 'accepted' | 'completed' | 'ignored' | 'decayed' | 'retired';
-  timestamp: Date;
-  metadata: Record<string, any>;
+export type RecommendationAction = 'view' | 'accept' | 'complete' | 'dismiss';
+const transitions = {
+  accept: { from: ['active'], state: 'accepted', timestamp: 'acceptedAt' },
+  complete: { from: ['active', 'accepted'], state: 'completed', timestamp: 'completedAt' },
+  dismiss: { from: ['active', 'accepted'], state: 'ignored', timestamp: 'ignoredAt' },
+  decay: { from: ['active'], state: 'decayed', timestamp: 'decayedAt' },
+  retire: { from: ['active', 'decayed'], state: 'retired', timestamp: 'retiredAt' },
+} as const;
+const hour = 60 * 60 * 1000;
+const historyLimit = 50;
+
+function eventUpdate(eventType: string, timestamp: Date) {
+  return { lifecycleEvents: { $each: [{ eventType, timestamp }], $slice: -historyLimit } };
 }
 
-export interface RecommendationLifecycle {
-  recommendationId: string;
-  userId: string;
-  type: string;
-  title: string;
-  state: 'active' | 'accepted' | 'completed' | 'ignored' | 'decayed' | 'retired';
-  generatedAt: Date;
-  acceptedAt?: Date;
-  completedAt?: Date;
-  ignoredAt?: Date;
-  decayedAt?: Date;
-  retiredAt?: Date;
-  effectivenessScore?: number; // 0-100
-  timeToAccept?: number; // hours
-  timeToComplete?: number; // hours
-  viewCount: number;
-  lifecycleEvents: LifecycleEvent[];
-  currentDecay: number; // 0-100, higher = more decayed
-}
-
-export interface LifecycleMetrics {
-  totalRecommendations: number;
-  acceptanceRate: number;
-  completionRate: number;
-  averageTimeToAccept: number;
-  averageTimeToComplete: number;
-  averageEffectiveness: number;
-  decayedCount: number;
-  retiredCount: number;
-  byType: Record<string, {
-    total: number;
-    accepted: number;
-    completed: number;
-    effectiveness: number;
-  }>;
-}
-
-class RecommendationLifecycleEngineClass {
-  private lifecycles: Map<string, RecommendationLifecycle> = new Map();
-  private events: Map<string, LifecycleEvent> = new Map();
-  private decayThreshold: number = 0.7; // 70% decay triggers retirement
-  private maxAge: number = 30 * 24 * 60 * 60 * 1000; // 30 days
-
-  /**
-   * Create new recommendation lifecycle
-   */
-  createLifecycle(
-    recommendationId: string,
-    userId: string,
-    type: string,
-    title: string
-  ): RecommendationLifecycle {
-    const lifecycle: RecommendationLifecycle = {
-      recommendationId,
-      userId,
-      type,
-      title,
-      state: 'active',
-      generatedAt: new Date(),
-      viewCount: 0,
-      lifecycleEvents: [],
-      currentDecay: 0,
-    };
-
-    this.lifecycles.set(recommendationId, lifecycle);
-    
-    // Record generation event
-    this.recordEvent(recommendationId, userId, 'generated', {});
-
-    logger.info('[RecommendationLifecycleEngine] Lifecycle created', { 
-      recommendationId, 
-      userId, 
-      type 
-    });
-
-    return lifecycle;
-  }
-
-  /**
-   * Record lifecycle event
-   */
-  recordEvent(
-    recommendationId: string,
-    userId: string,
-    eventType: LifecycleEvent['eventType'],
-    metadata: Record<string, any> = {}
-  ): LifecycleEvent {
-    const lifecycle = this.lifecycles.get(recommendationId);
-    if (!lifecycle) {
-      throw new Error(`Lifecycle not found for recommendation: ${recommendationId}`);
-    }
-
-    const event: LifecycleEvent = {
-      eventId: this.generateEventId(recommendationId, eventType),
-      recommendationId,
-      userId,
-      eventType,
-      timestamp: new Date(),
-      metadata,
-    };
-
-    this.events.set(event.eventId, event);
-    lifecycle.lifecycleEvents.push(event);
-
-    // Update lifecycle state based on event
-    this.updateLifecycleState(lifecycle, eventType);
-
-    this.lifecycles.set(recommendationId, lifecycle);
-
-    return event;
-  }
-
-  /**
-   * Update lifecycle state based on event
-   */
-  private updateLifecycleState(lifecycle: RecommendationLifecycle, eventType: LifecycleEvent['eventType']): void {
+export class RecommendationLifecycleEngineClass {
+  async recordAction(recommendationId: string, userId: string, action: RecommendationAction) {
+    const owned = { _id: recommendationId, userId };
     const now = new Date();
+    const updated = action === 'view'
+      ? await IntelligenceRecommendation.findOneAndUpdate(
+        { ...owned, state: { $in: ['active', 'accepted'] } },
+        { $inc: { viewCount: 1 }, $set: { lastViewedAt: now }, $push: eventUpdate('viewed', now) },
+        { new: true },
+      )
+      : await this.transition(owned, action, now);
 
-    switch (eventType) {
-      case 'accepted':
-        lifecycle.state = 'accepted';
-        lifecycle.acceptedAt = now;
-        lifecycle.timeToAccept = (now.getTime() - lifecycle.generatedAt.getTime()) / (1000 * 60 * 60);
-        break;
+    if (updated) return updated;
 
-      case 'completed':
-        lifecycle.state = 'completed';
-        lifecycle.completedAt = now;
-        lifecycle.timeToComplete = lifecycle.acceptedAt
-          ? (now.getTime() - lifecycle.acceptedAt.getTime()) / (1000 * 60 * 60)
-          : (now.getTime() - lifecycle.generatedAt.getTime()) / (1000 * 60 * 60);
-        break;
+    const current = await IntelligenceRecommendation.findOne(owned);
+    if (!current) throw Object.assign(new Error('Recommendation not found'), { statusCode: 404 });
+    if (action !== 'view' && current.state === transitions[action].state) return current;
+    throw Object.assign(new Error('Recommendation state does not allow this action'), { statusCode: 409 });
+  }
 
-      case 'ignored':
-        lifecycle.state = 'ignored';
-        lifecycle.ignoredAt = now;
-        break;
+  private transition(
+    filter: FilterQuery<IIntelligenceRecommendation>,
+    action: keyof typeof transitions,
+    now: Date,
+    currentDecay?: number,
+  ) {
+    const { from, state, timestamp } = transitions[action];
+    return IntelligenceRecommendation.findOneAndUpdate(
+      { ...filter, state: { $in: from } },
+      {
+        $set: { state, [timestamp]: now, ...(currentDecay === undefined ? {} : { currentDecay }) },
+        $push: eventUpdate(state, now),
+      },
+      { new: true },
+    );
+  }
 
-      case 'decayed':
-        lifecycle.state = 'decayed';
-        lifecycle.decayedAt = now;
-        break;
+  async updateDecay(scope: Pick<FilterQuery<IIntelligenceRecommendation>, 'userId' | 'resumeProfileId'>, now = new Date()) {
+    const candidates = IntelligenceRecommendation.find({
+      ...scope, state: { $in: ['active', 'decayed'] },
+      createdAt: { $lte: new Date(now.getTime() - 7 * 24 * hour * 0.7) },
+    }).select('_id userId state createdAt viewCount currentDecay').lean().cursor();
 
-      case 'retired':
-        lifecycle.state = 'retired';
-        lifecycle.retiredAt = now;
-        break;
+    for await (const row of candidates) {
+      const ageHours = (now.getTime() - row.createdAt.getTime()) / hour;
+      const viewCount = row.viewCount ?? 0;
+      const filter = {
+        ...scope, _id: row._id, userId: row.userId,
+        viewCount: viewCount === 0 ? { $in: [null, 0] } : viewCount,
+      };
+      const decay = Math.max(0, Math.min(1, ageHours / (7 * 24)) - Math.min(0.5, viewCount * 0.1));
+      if (ageHours >= 30 * 24) {
+        await this.transition(filter, 'retire', now, decay);
+      } else if (row.state === 'active' && decay >= 0.7) {
+        await this.transition(filter, 'decay', now, decay);
+      } else if (row.state === 'active' && decay !== row.currentDecay) {
+        await IntelligenceRecommendation.updateOne({ ...filter, state: 'active' }, { $set: { currentDecay: decay } });
+      }
     }
   }
 
-  /**
-   * Increment view count
-   */
-  incrementViewCount(recommendationId: string): void {
-    const lifecycle = this.lifecycles.get(recommendationId);
-    if (!lifecycle) return;
-
-    lifecycle.viewCount++;
-    this.lifecycles.set(recommendationId, lifecycle);
+  getLifecycle(recommendationId: string, userId: string) {
+    return IntelligenceRecommendation.findOne({ _id: recommendationId, userId }).lean();
   }
 
-  /**
-   * Set effectiveness score
-   */
-  setEffectivenessScore(recommendationId: string, score: number): void {
-    const lifecycle = this.lifecycles.get(recommendationId);
-    if (!lifecycle) return;
-
-    lifecycle.effectivenessScore = Math.min(100, Math.max(0, score));
-    this.lifecycles.set(recommendationId, lifecycle);
-
-    logger.info('[RecommendationLifecycleEngine] Effectiveness score set', { 
-      recommendationId, 
-      score 
-    });
+  setEffectivenessScore(recommendationId: string, userId: string, score: number) {
+    return IntelligenceRecommendation.updateOne(
+      { _id: recommendationId, userId },
+      { $set: { effectivenessScore: Math.min(100, Math.max(0, score)) } },
+      { runValidators: true },
+    );
   }
 
-  /**
-   * Calculate and update decay for all active recommendations
-   */
-  updateDecay(): void {
-    const now = new Date();
-
-    this.lifecycles.forEach((lifecycle, id) => {
-      if (lifecycle.state !== 'active') return;
-
-      // Calculate decay based on age and view count
-      const ageInHours = (now.getTime() - lifecycle.generatedAt.getTime()) / (1000 * 60 * 60);
-      const ageDecay = Math.min(1, ageInHours / (24 * 7)); // 1 week to full decay
-      
-      // View count reduces decay
-      const viewReduction = Math.min(0.5, lifecycle.viewCount * 0.1);
-      
-      lifecycle.currentDecay = Math.max(0, ageDecay - viewReduction);
-
-      // Check if decay threshold reached
-      if (lifecycle.currentDecay >= this.decayThreshold) {
-        this.recordEvent(id, lifecycle.userId, 'decayed', { decay: lifecycle.currentDecay });
-      }
-
-      // Check if max age reached
-      if (ageInHours * 60 * 60 * 1000 > this.maxAge) {
-        this.recordEvent(id, lifecycle.userId, 'retired', { age: ageInHours });
-      }
-
-      this.lifecycles.set(id, lifecycle);
-    });
-  }
-
-  /**
-   * Get lifecycle for a recommendation
-   */
-  getLifecycle(recommendationId: string): RecommendationLifecycle | undefined {
-    return this.lifecycles.get(recommendationId);
-  }
-
-  /**
-   * Get all lifecycles for a user
-   */
-  getUserLifecycles(userId: string): RecommendationLifecycle[] {
-    return Array.from(this.lifecycles.values())
-      .filter(l => l.userId === userId)
-      .sort((a, b) => b.generatedAt.getTime() - a.generatedAt.getTime());
-  }
-
-  /**
-   * Get active lifecycles for a user
-   */
-  getActiveLifecycles(userId: string): RecommendationLifecycle[] {
-    return this.getUserLifecycles(userId).filter(l => l.state === 'active');
-  }
-
-  /**
-   * Calculate lifecycle metrics
-   */
-  calculateMetrics(userId?: string): LifecycleMetrics {
-    const lifecycles = userId
-      ? this.getUserLifecycles(userId)
-      : Array.from(this.lifecycles.values());
-
-    const totalRecommendations = lifecycles.length;
-    const acceptedCount = lifecycles.filter(l => l.state === 'accepted' || l.state === 'completed').length;
-    const completedCount = lifecycles.filter(l => l.state === 'completed').length;
-    const decayedCount = lifecycles.filter(l => l.state === 'decayed').length;
-    const retiredCount = lifecycles.filter(l => l.state === 'retired').length;
-
-    const acceptanceRate = totalRecommendations > 0 ? (acceptedCount / totalRecommendations) * 100 : 0;
-    const completionRate = acceptedCount > 0 ? (completedCount / acceptedCount) * 100 : 0;
-
-    const timeToAccept = lifecycles
-      .filter(l => l.timeToAccept)
-      .map(l => l.timeToAccept!);
-    const averageTimeToAccept = timeToAccept.length > 0
-      ? timeToAccept.reduce((sum, t) => sum + t, 0) / timeToAccept.length
-      : 0;
-
-    const timeToComplete = lifecycles
-      .filter(l => l.timeToComplete)
-      .map(l => l.timeToComplete!);
-    const averageTimeToComplete = timeToComplete.length > 0
-      ? timeToComplete.reduce((sum, t) => sum + t, 0) / timeToComplete.length
-      : 0;
-
-    const effectivenessScores = lifecycles
-      .filter(l => l.effectivenessScore !== undefined)
-      .map(l => l.effectivenessScore!);
-    const averageEffectiveness = effectivenessScores.length > 0
-      ? effectivenessScores.reduce((sum, s) => sum + s, 0) / effectivenessScores.length
-      : 0;
-
-    // Calculate metrics by type
-    const byType: Record<string, { total: number; accepted: number; completed: number; effectiveness: number }> = {};
-    lifecycles.forEach(l => {
-      if (!byType[l.type]) {
-        byType[l.type] = { total: 0, accepted: 0, completed: 0, effectiveness: 0 };
-      }
-      byType[l.type].total++;
-      if (l.state === 'accepted' || l.state === 'completed') byType[l.type].accepted++;
-      if (l.state === 'completed') byType[l.type].completed++;
-      if (l.effectivenessScore !== undefined) {
-        byType[l.type].effectiveness += l.effectivenessScore;
-      }
-    });
-
-    // Calculate average effectiveness by type
-    Object.keys(byType).forEach(type => {
-      const completed = byType[type].completed;
-      if (completed > 0) {
-        byType[type].effectiveness = byType[type].effectiveness / completed;
-      }
-    });
-
+  async getMetrics(userId?: string) {
+    const count = (states: RecommendationState[]) => ({ $sum: { $cond: [{ $in: ['$state', states] }, 1, 0] } });
+    const rollup = {
+      total: { $sum: 1 },
+      accepted: { $sum: { $cond: [{
+        $or: [
+          { $in: ['$state', ['accepted', 'completed']] },
+          { $ne: [{ $ifNull: ['$acceptedAt', null] }, null] },
+        ],
+      }, 1, 0] } },
+      completed: count(['completed']),
+      decayed: { $sum: { $cond: [{
+        $or: [
+          { $eq: ['$state', 'decayed'] },
+          { $ne: [{ $ifNull: ['$decayedAt', null] }, null] },
+        ],
+      }, 1, 0] } },
+      retired: count(['retired']),
+      activeDecayed: count(['decayed']),
+      effectiveness: { $avg: '$effectivenessScore' },
+      timeToAccept: { $avg: { $divide: [{ $subtract: ['$acceptedAt', '$createdAt'] }, hour] } },
+      timeToComplete: { $avg: { $divide: [
+        { $subtract: ['$completedAt', { $ifNull: ['$acceptedAt', '$createdAt'] }] }, hour,
+      ] } },
+    };
+    type Summary = {
+      total: number; accepted: number; completed: number; decayed: number; retired: number; activeDecayed: number;
+      effectiveness: number | null; timeToAccept: number | null; timeToComplete: number | null;
+    };
+    const [metrics] = await IntelligenceRecommendation.aggregate<{
+      overall: Summary[];
+      byCategory: Array<Summary & { _id: string }>;
+    }>([
+      ...(userId ? [{ $match: { userId: new Types.ObjectId(userId) } }] : []),
+      { $facet: {
+        overall: [{ $group: { _id: null, ...rollup } }],
+        byCategory: [{ $group: { _id: '$category', ...rollup } }],
+      } },
+    ]);
+    const overall = metrics?.overall[0];
+    const rate = (numerator: number, denominator: number) => denominator ? Math.round(numerator / denominator * 100) : 0;
     return {
-      totalRecommendations,
-      acceptanceRate: Math.round(acceptanceRate),
-      completionRate: Math.round(completionRate),
-      averageTimeToAccept: Math.round(averageTimeToAccept),
-      averageTimeToComplete: Math.round(averageTimeToComplete),
-      averageEffectiveness: Math.round(averageEffectiveness),
-      decayedCount,
-      retiredCount,
-      byType,
+      totalRecommendations: overall?.total ?? 0,
+      acceptanceRate: rate(overall?.accepted ?? 0, overall?.total ?? 0),
+      completionRate: rate(overall?.completed ?? 0, overall?.accepted ?? 0),
+      decayRate: rate(overall?.decayed ?? 0, overall?.total ?? 0),
+      averageTimeToAccept: Math.round(overall?.timeToAccept ?? 0),
+      averageTimeToComplete: Math.round(overall?.timeToComplete ?? 0),
+      averageEffectiveness: Math.round(overall?.effectiveness ?? 0),
+      decayedCount: overall?.decayed ?? 0,
+      activeDecayedCount: overall?.activeDecayed ?? 0,
+      retiredCount: overall?.retired ?? 0,
+      byType: Object.fromEntries((metrics?.byCategory ?? []).map(row => [row._id, {
+        total: row.total, accepted: row.accepted, completed: row.completed, effectiveness: row.effectiveness ?? 0,
+      }])),
     };
-  }
-
-  /**
-   * Get lifecycle events for a recommendation
-   */
-  getLifecycleEvents(recommendationId: string): LifecycleEvent[] {
-    const lifecycle = this.lifecycles.get(recommendationId);
-    if (!lifecycle) return [];
-
-    return lifecycle.lifecycleEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  }
-
-  /**
-   * Get recommendation effectiveness by type
-   */
-  getEffectivenessByType(userId: string, type: string): number {
-    const userLifecycles = this.getUserLifecycles(userId);
-    const typeLifecycles = userLifecycles.filter(l => l.type === type && l.state === 'completed');
-
-    if (typeLifecycles.length === 0) return 50;
-
-    const avgEffectiveness = typeLifecycles.reduce(
-      (sum, l) => sum + (l.effectivenessScore || 50),
-      0
-    ) / typeLifecycles.length;
-
-    return Math.round(avgEffectiveness);
-  }
-
-  /**
-   * Clean up old lifecycles
-   */
-  cleanup(): number {
-    const now = new Date();
-    let cleanedCount = 0;
-
-    this.lifecycles.forEach((lifecycle, id) => {
-      // Remove retired lifecycles older than max age
-      if (lifecycle.state === 'retired' && lifecycle.retiredAt) {
-        const age = now.getTime() - lifecycle.retiredAt.getTime();
-        if (age > this.maxAge * 2) {
-          this.lifecycles.delete(id);
-          cleanedCount++;
-        }
-      }
-
-      // Remove completed lifecycles older than max age
-      if (lifecycle.state === 'completed' && lifecycle.completedAt) {
-        const age = now.getTime() - lifecycle.completedAt.getTime();
-        if (age > this.maxAge * 2) {
-          this.lifecycles.delete(id);
-          cleanedCount++;
-        }
-      }
-    });
-
-    if (cleanedCount > 0) {
-      logger.info('[RecommendationLifecycleEngine] Cleaned up old lifecycles', { cleanedCount });
-    }
-
-    return cleanedCount;
-  }
-
-  /**
-   * Generate event ID
-   */
-  private generateEventId(recommendationId: string, eventType: string): string {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 8);
-    return `${recommendationId}-${eventType}-${timestamp}-${random}`;
-  }
-
-  /**
-   * Clear all data (for testing)
-   */
-  clear(): void {
-    this.lifecycles.clear();
-    this.events.clear();
-    logger.info('[RecommendationLifecycleEngine] All data cleared');
   }
 }
 

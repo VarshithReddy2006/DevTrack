@@ -27,8 +27,23 @@ router.get('/intelligence/:resumeReference', async (req: AuthenticatedRequest, r
 
     res.status(200).json({
       success: true,
-      data: recommendations
+      data: recommendations.map(row => ({ ...row, id: String(row._id) }))
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const actionParams = z.object({
+  recommendationId: z.string().regex(/^[a-f\d]{24}$/i),
+  action: z.enum(['view', 'accept', 'complete', 'dismiss']),
+});
+
+router.post('/intelligence/:recommendationId/:action', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { recommendationId, action } = actionParams.parse(req.params);
+    const recommendation = await RecommendationIntelligenceService.applyAction(req.user!.id, recommendationId, action);
+    res.json({ success: true, data: recommendation });
   } catch (error) {
     next(error);
   }

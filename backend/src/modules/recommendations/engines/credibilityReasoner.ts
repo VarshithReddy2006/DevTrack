@@ -1,13 +1,14 @@
 // src/modules/recommendations/engines/credibilityReasoner.ts
-import { Schema } from 'mongoose';
-import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
+import { Schema, type Types } from 'mongoose';
+import { saveGeneratedRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
 import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
 
 export class CredibilityReasoner {
   
-  static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<void> {
+  static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<Types.ObjectId[]> {
+    const ids: Types.ObjectId[] = [];
     const claims = await ResumeEvidenceClaim.find({ userId, resumeProfileId });
-    if (!claims || claims.length === 0) return;
+    if (claims.length === 0) return ids;
 
     let hasDistributedSystems = false;
     let hasDeploymentEvidence = false;
@@ -37,7 +38,7 @@ export class CredibilityReasoner {
          // Confidence calculation based on missing provenance
          const confidence = claim.provenance.length === 0 ? 95 : 75;
          
-         await IntelligenceRecommendation.create({
+         ids.push(await saveGeneratedRecommendation({
           userId,
           resumeProfileId,
           category: 'credibility',
@@ -49,7 +50,7 @@ export class CredibilityReasoner {
             type: 'credibility'
           },
           evidenceReferences: [claim._id.toString()]
-        });
+        }));
       }
     }
 
@@ -59,7 +60,7 @@ export class CredibilityReasoner {
       const totalInfraClaims = claims.filter(c => c.provenance.includes('infra')).length;
       const confidence = totalInfraClaims === 0 ? 98 : 85;
 
-      await IntelligenceRecommendation.create({
+      ids.push(await saveGeneratedRecommendation({
         userId,
         resumeProfileId,
         category: 'infrastructure',
@@ -71,13 +72,13 @@ export class CredibilityReasoner {
           type: 'credibility'
         },
         evidenceReferences: ['system_level_reasoning_infra']
-      });
+      }));
     }
 
     if (hasDistributedSystems && !hasObservability) {
       const confidence = hasDeploymentEvidence ? 90 : 70; // if they don't even have deployment, observability is a secondary gap
 
-      await IntelligenceRecommendation.create({
+      ids.push(await saveGeneratedRecommendation({
         userId,
         resumeProfileId,
         category: 'infrastructure',
@@ -89,7 +90,8 @@ export class CredibilityReasoner {
           type: 'credibility'
         },
         evidenceReferences: ['system_level_reasoning']
-      });
+      }));
     }
+    return ids;
   }
 }

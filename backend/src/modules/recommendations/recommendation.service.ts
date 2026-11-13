@@ -1,5 +1,5 @@
 // src/modules/recommendations/recommendation.service.ts
-import { isObjectIdOrHexString, type Schema } from 'mongoose';
+import { isObjectIdOrHexString, type Schema, type Types } from 'mongoose';
 import { ATSGapDetectionEngine } from './engines/atsGapDetector.js';
 import { SemanticGapAnalyzer } from './engines/semanticGapAnalyzer.js';
 import { CredibilityReasoner } from './engines/credibilityReasoner.js';
@@ -7,6 +7,9 @@ import { RecommendationDependencyGraph } from './engines/dependencyGraph.js';
 import { RecommendationImpactEngine } from './engines/impactModel.js';
 import { IntelligenceRecommendation } from '../../db/models/intelligenceRecommendation.model.js';
 
+import {
+  RecommendationLifecycleEngine, type RecommendationAction,
+} from '../readiness/recommendation/RecommendationLifecycleEngine.js';
 import { ResumeProfile } from '../../db/models/resumeProfile.model.js';
 import { ResumeSession } from '../../db/models/resumeSession.model.js';
 
@@ -26,37 +29,51 @@ export class RecommendationIntelligenceService {
     }
 
     const resumeId = String(ownerResourceId);
-    await this.generateIntelligence(userId, resumeId);
-    return this.getActiveRecommendations(userId, resumeId);
+    const currentIds = await this.generateIntelligence(userId, resumeId);
+    return this.getActiveRecommendations(userId, resumeId, currentIds, true);
+  }
+
+  static applyAction(userId: string, recommendationId: string, action: RecommendationAction) {
+    return RecommendationLifecycleEngine.recordAction(recommendationId, userId, action);
   }
 
   /**
    * Generates or updates the intelligence recommendations for a given resume.
-   * This is an idempotent operation that drops active recommendations and regenerates them based on current evidence.
+   * Findings are matched to existing recommendations so repeated analysis preserves their lifecycle.
    */
-  static async generateIntelligence(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId, targetRole: string = 'Backend Engineer'): Promise<void> {
-    // 1. Clear existing active recommendations to regenerate
-    await IntelligenceRecommendation.deleteMany({ userId, resumeProfileId, state: 'active' });
+  static async generateIntelligence(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId, targetRole: string = 'Backend Engineer'): Promise<Types.ObjectId[]> {
+    await IntelligenceRecommendation.init();
+    await RecommendationLifecycleEngine.updateDecay({ userId, resumeProfileId });
 
-    // 2. Run independent gap detection engines
-    await Promise.all([
+    // Run independent gap detection engines
+    const generated = await Promise.all([
       ATSGapDetectionEngine.analyze(userId, resumeProfileId),
       SemanticGapAnalyzer.analyze(userId, resumeProfileId, targetRole),
       CredibilityReasoner.analyze(userId, resumeProfileId)
     ]);
 
-    // 3. Resolve dependencies (e.g. ATS blocks Credibility)
-    await RecommendationDependencyGraph.resolveDependencies(userId, resumeProfileId);
-
-    // 4. Calculate impact and cull low confidence
-    await RecommendationImpactEngine.evaluateImpact(userId, resumeProfileId);
+    const currentIds = generated.flat();
+    await RecommendationImpactEngine.evaluateImpact(userId, resumeProfileId, currentIds);
+    await RecommendationDependencyGraph.resolveDependencies(userId, resumeProfileId, currentIds);
+    return currentIds;
   }
 
   /**
-   * Retrieves all active recommendations for a resume, sorted by impact and dependencies.
+   * Retrieves current findings plus accepted work, with completed history on request.
    */
-  static async getActiveRecommendations(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId) {
-    const recs = await IntelligenceRecommendation.find({ userId, resumeProfileId, state: 'active' })
+  static async getActiveRecommendations(
+    userId: string | Schema.Types.ObjectId,
+    resumeProfileId: string | Schema.Types.ObjectId,
+    currentIds?: Types.ObjectId[],
+    includeCompleted = false,
+  ) {
+    const recs = await IntelligenceRecommendation.find({
+      userId, resumeProfileId,
+      $or: [
+        { state: 'active', ...(currentIds ? { _id: { $in: currentIds } } : {}) },
+        { state: { $in: includeCompleted ? ['accepted', 'completed'] : ['accepted'] } },
+      ],
+    })
       .populate({ path: 'dependencies', match: { userId, resumeProfileId } })
       .lean();
 

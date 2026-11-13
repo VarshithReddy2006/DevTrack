@@ -1,5 +1,5 @@
-import { Schema } from 'mongoose';
-import { IntelligenceRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
+import { Schema, type Types } from 'mongoose';
+import { saveGeneratedRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
 import { embeddingScopeFilter } from '../../ai/embedding/embeddingScope.js';
 import { Embedding } from '../../../db/models/embedding.model.js';
 import { SemanticSimilarityService } from '../../ai/retrieval/SemanticSimilarityService.js';
@@ -18,7 +18,8 @@ const ROLE_PROFILES: Record<string, any[]> = {
 
 export class SemanticGapAnalyzer {
   
-  static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId, targetRole: string): Promise<void> {
+  static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId, targetRole: string): Promise<Types.ObjectId[]> {
+    const ids: Types.ObjectId[] = [];
     const owner = embeddingScopeFilter({ scope: 'user', userId: String(userId) });
     const resumeEmbedding = await Embedding.findOne({ ...owner, contentType: 'resume', chunkIndex: 0 }).sort({ createdAt: -1 });
     
@@ -26,7 +27,7 @@ export class SemanticGapAnalyzer {
     const missingConcepts = this.executeSemanticRetrieval(targetRole, resumeEmbedding?.vector);
 
     for (const concept of missingConcepts) {
-      await IntelligenceRecommendation.create({
+      ids.push(await saveGeneratedRecommendation({
         userId,
         resumeProfileId,
         category: 'semantic',
@@ -34,12 +35,13 @@ export class SemanticGapAnalyzer {
         content: `Your resume lacks semantic alignment with the concept of ${concept.name}. ${concept.reasoning}`,
         confidence: concept.confidence,
         impact: {
-          scoreImprovement: concept.impact,
+          scoreImprovement: concept.confidence > 85 ? Math.round(concept.impact * 1.5) : concept.impact,
           type: 'semantic'
         },
         evidenceReferences: [`semantic_gap_${concept.name.toLowerCase().replace(/ /g, '_')}`, `similarity_score_${concept.score.toFixed(2)}`]
-      });
+      }));
     }
+    return ids;
   }
 
   private static executeSemanticRetrieval(targetRole: string, resumeVector?: number[]) {

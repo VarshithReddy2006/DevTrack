@@ -23,7 +23,7 @@ export const ResumeRecommendationPanel: React.FC = () => {
         // Explicitly hitting the new recommendations endpoints
         const res = await api.get(`/recommendations/intelligence/${currentSession.sessionId}`);
         if (res.data?.success) {
-          setRecommendations(res.data.data);
+          setRecommendations(res.data.data.filter((rec: IIntelligenceRecommendation) => rec.state !== 'completed'));
         }
       } catch (error) {
         console.error('Failed to fetch intelligence recommendations', error);
