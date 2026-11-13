@@ -2,12 +2,18 @@
 // Fine-tuning pipelines for DistilBERT, semantic classifiers, ranking, recommendations.
 // Fine-tuning ONLY after evaluation baselines exist.
 
+import { randomUUID } from 'node:crypto';
+import { FineTuneRunModel } from '../../../db/models/fineTuneRun.model.js';
+import { MLModelBaselineModel } from '../../../db/models/mlBaseline.model.js';
 import { logger } from '../../../shared/logger.js';
-import type { EvaluationMetrics, TrainingSample, TrainingConfig } from '../types.js';
+import type { EvaluationMetrics, TrainingSample } from '../types.js';
+
+const defaultBaselineVersion = 'default';
 
 interface FineTuneConfig {
   modelType: 'distilbert' | 'classifier' | 'ranker' | 'recommender';
   baseModelId: string;
+  baseModelVersion?: string;
   datasetId: string;
   learningRate: number;
   epochs: number;
@@ -17,10 +23,11 @@ interface FineTuneConfig {
   freezeLayers?: number[];
 }
 
-interface FineTuneResult {
+export interface FineTuneResult {
   runId: string;
   modelType: string;
   baseModelId: string;
+  baseModelVersion: string;
   baselineMetrics: EvaluationMetrics;
   fineTunedMetrics: EvaluationMetrics;
   improvement: Record<string, number>;
@@ -44,9 +51,6 @@ interface FineTuneResult {
  * Every fine-tuning run must compare against baseline metrics.
  */
 export class FineTuningInfrastructure {
-  private baselines: Map<string, EvaluationMetrics> = new Map();
-  private fineTuneHistory: FineTuneResult[] = [];
-
   constructor() {
     logger.info('[FineTuningInfrastructure] Initialized');
   }
@@ -54,8 +58,17 @@ export class FineTuningInfrastructure {
   /**
    * Register a baseline for a model (required before fine-tuning).
    */
-  registerBaseline(modelId: string, metrics: EvaluationMetrics): void {
-    this.baselines.set(modelId, metrics);
+  async registerBaseline(
+    modelId: string,
+    metrics: EvaluationMetrics,
+    version = defaultBaselineVersion,
+  ): Promise<void> {
+    await MLModelBaselineModel.init();
+    await MLModelBaselineModel.updateOne(
+      { modelId, version },
+      { $set: { metrics } },
+      { upsert: true, runValidators: true },
+    );
     logger.info(`[FineTuningInfrastructure] Baseline registered for ${modelId}`, { metrics });
   }
 
@@ -70,16 +83,20 @@ export class FineTuningInfrastructure {
     trainStepFn: (batch: TrainingSample[], lr: number) => Promise<number>,
     evalFn: (data: TrainingSample[]) => Promise<EvaluationMetrics>,
   ): Promise<FineTuneResult> {
-    // Check baseline exists
-    const baseline = this.baselines.get(config.baseModelId);
+    const baseModelVersion = config.baseModelVersion ?? defaultBaselineVersion;
+    const baselineRecord = await MLModelBaselineModel.findOne({
+      modelId: config.baseModelId,
+      version: baseModelVersion,
+    }).lean();
+    const baseline = baselineRecord?.metrics;
     if (!baseline) {
       throw new Error(
-        `No baseline exists for model ${config.baseModelId}. ` +
+        `No baseline exists for model ${config.baseModelId} (version ${baseModelVersion}). ` +
         'Register baseline metrics before fine-tuning.',
       );
     }
 
-    const runId = `ft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const runId = `ft-${randomUUID()}`;
     logger.info(`[FineTuningInfrastructure] Starting fine-tune run ${runId} for ${config.modelType}`);
 
     const trainingLoss: number[] = [];
@@ -106,14 +123,15 @@ export class FineTuningInfrastructure {
         totalSteps++;
       }
 
-      trainingLoss.push(epochLoss / batches.length);
+      const averageLoss = batches.length === 0 ? 0 : epochLoss / batches.length;
+      trainingLoss.push(averageLoss);
 
       // Validation
       const valMetrics = await evalFn(valData);
       const valLoss = valMetrics.logloss ?? valMetrics.mae ?? 0;
       validationLoss.push(valLoss);
 
-      logger.info(`[FineTuningInfrastructure] Epoch ${epoch}: train_loss=${(epochLoss / batches.length).toFixed(4)}, val_loss=${valLoss.toFixed(4)}`);
+      logger.info(`[FineTuningInfrastructure] Epoch ${epoch}: train_loss=${averageLoss.toFixed(4)}, val_loss=${valLoss.toFixed(4)}`);
     }
 
     // Final evaluation
@@ -132,6 +150,7 @@ export class FineTuningInfrastructure {
       runId,
       modelType: config.modelType,
       baseModelId: config.baseModelId,
+      baseModelVersion,
       baselineMetrics: baseline,
       fineTunedMetrics,
       improvement,
@@ -142,7 +161,7 @@ export class FineTuningInfrastructure {
       timestamp: new Date().toISOString(),
     };
 
-    this.fineTuneHistory.push(result);
+    await FineTuneRunModel.create(result);
     logger.info(`[FineTuningInfrastructure] Fine-tune ${runId} complete`, { improvement });
 
     return result;
@@ -159,15 +178,20 @@ export class FineTuningInfrastructure {
   /**
    * Get fine-tuning history.
    */
-  getHistory(): FineTuneResult[] {
-    return this.fineTuneHistory;
+  async getHistory(): Promise<FineTuneResult[]> {
+    return FineTuneRunModel.find({}, { _id: 0, __v: 0 }).sort({ timestamp: 1, _id: 1 }).lean();
+  }
+
+  async getRun(runId: string): Promise<FineTuneResult | null> {
+    return FineTuneRunModel.findOne({ runId }, { _id: 0, __v: 0 }).lean();
   }
 
   /**
    * Get baselines.
    */
-  getBaselines(): Map<string, EvaluationMetrics> {
-    return new Map(this.baselines);
+  async getBaselines(version = defaultBaselineVersion): Promise<Map<string, EvaluationMetrics>> {
+    const records = await MLModelBaselineModel.find({ version }).lean();
+    return new Map(records.map(({ modelId, metrics }) => [modelId, metrics]));
   }
 
   // ---------------------------------------------------------------------------
