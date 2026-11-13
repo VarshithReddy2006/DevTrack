@@ -10,6 +10,7 @@ import { QueueNames, SystemMaintenanceJobData } from './types.js';
 import { runScheduledMissionSweep } from '../scheduler/missionScheduler.js';
 import { cleanupStaleLocks } from '../redis/syncLock.service.js';
 import { User, UserAnalytics, UserStreakLog } from '../../db/models/index.js';
+import { focusEngine } from '../../modules/activity/focusEngine.service.js';
 import { AntiGamingWorker } from '../../modules/profile/antiGaming.worker.js';
 import { getNotificationQueue } from './queueFactory.js';
 import { seedDailyChallengeWindow } from '../../modules/daily-challenge/daily-challenge.service.js';
@@ -250,6 +251,9 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
         case 'audit_public_profiles':
           await AntiGamingWorker.startAuditJob(new Date(job.opts.prevMillis ?? job.timestamp));
           break;
+        case 'reap_stale_focus_sessions':
+          await focusEngine.reapStaleSessions();
+          break;
         default:
           logger.warn('[maintenance] Unknown task type', { task });
       }
@@ -361,6 +365,18 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
       jobId: 'maintenance-streak-at-risk',
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 10 },
+    }
+  );
+
+  // Close focus sessions that stopped heartbeating
+  await _queue.add(
+    'reap-stale-focus-sessions',
+    { task: 'reap_stale_focus_sessions' },
+    {
+      repeat: { every: 5 * 60 * 1000 },
+      jobId: 'maintenance-reap-focus-sessions',
+      removeOnComplete: { count: 3 },
+      removeOnFail: { count: 5 },
     }
   );
 

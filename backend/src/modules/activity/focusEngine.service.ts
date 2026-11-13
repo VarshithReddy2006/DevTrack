@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { Types } from 'mongoose';
-import { FocusSession } from '../../db/models/index.js';
+import { FocusSession, UnifiedRuntimeState } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 
 export interface FocusSessionResult {
@@ -56,59 +56,143 @@ export interface FocusSummaryResult {
   modeBreakdown: Record<string, { sessions: number; totalMinutes: number }>;
 }
 
+/** A running session with no sign of life for this long is considered abandoned. */
+export const RUNNING_STALE_MS = 15 * 60 * 1000;
+/** A paused session is given far longer, since the user may step away on purpose. */
+export const PAUSED_STALE_MS = 12 * 60 * 60 * 1000;
+
+export class FocusSessionConflictError extends Error {
+  statusCode = 409;
+  code = 'FOCUS_SESSION_ACTIVE';
+  constructor() {
+    super('A focus session is already active. Stop or cancel it before starting a new one.');
+    this.name = 'FocusSessionConflictError';
+  }
+}
+
+function isDuplicateKeyError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000;
+}
+
+function staleFilter(now: Date, runningMs: number, pausedMs: number) {
+  const runningCutoff = new Date(now.getTime() - runningMs);
+  const pausedCutoff = new Date(now.getTime() - pausedMs);
+  // Sessions written before lastHeartbeatAt existed fall back to startedAt.
+  const idle = (cutoff: Date) => ({
+    $or: [{ lastHeartbeatAt: { $lt: cutoff } }, { lastHeartbeatAt: { $exists: false }, startedAt: { $lt: cutoff } }],
+  });
+  return {
+    $or: [
+      { status: 'running', ...idle(runningCutoff) },
+      { status: 'paused', ...idle(pausedCutoff) },
+    ],
+  };
+}
+
 export class FocusEngine {
   /**
-   * Starts a new focus session and persists it.
+   * Starts a new focus session and persists it. A user may hold only one live
+   * (running or paused) session; the partial unique index enforces that even
+   * for simultaneous requests, and a stale one of the user's own is reaped
+   * first so an abandoned session never locks them out.
+   * Throws FocusSessionConflictError (409) when another session is still live.
    */
   async startSession(userId: string, mode: string, durationMinutes: number): Promise<{ sessionId: string; startedAt: Date }> {
+    const userObjId = new Types.ObjectId(userId);
+    await this.reapStaleSessions({ userId });
     const startedAt = new Date();
-    const session = await FocusSession.create({
-      userId: new Types.ObjectId(userId),
-      mode,
-      status: 'running',
-      startedAt,
-      lastResumedAt: startedAt,
-      activeDurationMs: 0,
-      plannedDurationMinutes: durationMinutes,
-    });
-    return { sessionId: session._id.toString(), startedAt };
+    try {
+      const session = await FocusSession.create({
+        userId: userObjId,
+        mode,
+        status: 'running',
+        startedAt,
+        lastResumedAt: startedAt,
+        lastHeartbeatAt: startedAt,
+        activeDurationMs: 0,
+        plannedDurationMinutes: durationMinutes,
+      });
+      return { sessionId: session._id.toString(), startedAt };
+    } catch (err) {
+      if (isDuplicateKeyError(err)) throw new FocusSessionConflictError();
+      throw err;
+    }
   }
 
-  async pauseSession(sessionId: string): Promise<FocusTiming | null> {
-    const session = await FocusSession.findById(sessionId);
+  /**
+   * Marks stale running/paused sessions abandoned and clears the matching
+   * runtime-state context. Each session is flipped with a conditional update,
+   * so concurrent or repeated runs are safe and a second run finds nothing.
+   * Pass `userId` to limit it to one user (session-start self-healing).
+   */
+  async reapStaleSessions(
+    options: { userId?: string; now?: Date; runningMs?: number; pausedMs?: number } = {}
+  ): Promise<number> {
+    const now = options.now ?? new Date();
+    const filter = {
+      ...(options.userId ? { userId: new Types.ObjectId(options.userId) } : {}),
+      ...staleFilter(now, options.runningMs ?? RUNNING_STALE_MS, options.pausedMs ?? PAUSED_STALE_MS),
+    };
+    const candidates = await FocusSession.find(filter).select('_id').lean();
+    const reaped: Types.ObjectId[] = [];
+    for (const { _id } of candidates) {
+      // Re-check staleness in the update itself: a heartbeat that landed after
+      // the scan makes the filter miss and the session survives.
+      const done = await FocusSession.findOneAndUpdate(
+        { _id, ...filter },
+        { $set: { status: 'abandoned', completedAt: now, lastResumedAt: null } },
+        { new: true }
+      );
+      if (done) reaped.push(done._id);
+    }
+    if (reaped.length) {
+      await UnifiedRuntimeState.updateMany(
+        { 'sessionContext.sessionId': { $in: reaped.map(String) }, 'sessionContext.isActive': true },
+        { $set: { 'sessionContext.isActive': false, 'sessionContext.status': 'abandoned', 'sessionContext.lastResumedAt': null } }
+      );
+      logger.info('[focus] Reaped stale focus sessions', { count: reaped.length, userId: options.userId });
+    }
+    return reaped.length;
+  }
+
+  async pauseSession(sessionId: string, userId: string): Promise<FocusTiming | null> {
+    const session = await FocusSession.findOne({ _id: sessionId, userId: new Types.ObjectId(userId) });
     if (!session || session.status !== 'running') return null;
     const now = new Date();
-    session.activeDurationMs = (session.activeDurationMs ?? 0) + Math.max(0, now.getTime() - (session.lastResumedAt ?? session.startedAt).getTime());
-    session.lastResumedAt = null;
-    session.status = 'paused';
-    await session.save();
-    return { activeDurationMs: session.activeDurationMs, lastResumedAt: null };
+    const activeDurationMs = (session.activeDurationMs ?? 0) + Math.max(0, now.getTime() - (session.lastResumedAt ?? session.startedAt).getTime());
+    const paused = await FocusSession.findOneAndUpdate(
+      { _id: session._id, userId: session.userId, status: 'running' },
+      { $set: { status: 'paused', activeDurationMs, lastResumedAt: null, lastHeartbeatAt: now } },
+      { new: true }
+    );
+    return paused ? { activeDurationMs, lastResumedAt: null } : null;
   }
 
-  async resumeSession(sessionId: string): Promise<FocusTiming | null> {
-    const session = await FocusSession.findById(sessionId);
-    if (!session || session.status !== 'paused') return null;
-    session.lastResumedAt = new Date();
-    session.status = 'running';
-    await session.save();
-    return { activeDurationMs: session.activeDurationMs ?? 0, lastResumedAt: session.lastResumedAt };
+  async resumeSession(sessionId: string, userId: string): Promise<FocusTiming | null> {
+    const now = new Date();
+    const resumed = await FocusSession.findOneAndUpdate(
+      { _id: sessionId, userId: new Types.ObjectId(userId), status: 'paused' },
+      { $set: { status: 'running', lastResumedAt: now, lastHeartbeatAt: now } },
+      { new: true }
+    );
+    return resumed ? { activeDurationMs: resumed.activeDurationMs ?? 0, lastResumedAt: now } : null;
   }
 
   /**
    * Records a heartbeat to verify active focus.
    */
-  async recordHeartbeat(sessionId: string): Promise<void> {
+  async recordHeartbeat(sessionId: string, userId: string): Promise<void> {
     await FocusSession.updateOne(
-      { _id: new Types.ObjectId(sessionId) },
-      { $inc: { heartbeatCount: 1 } }
+      { _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId), status: { $in: ['running', 'paused'] } },
+      { $inc: { heartbeatCount: 1 }, $set: { lastHeartbeatAt: new Date() } }
     );
   }
 
   /**
    * Completes a focus session and calculates the quality score.
    */
-  async completeSession(sessionId: string): Promise<FocusSessionResult | null> {
-    const session = await FocusSession.findById(sessionId);
+  async completeSession(sessionId: string, userId: string): Promise<FocusSessionResult | null> {
+    const session = await FocusSession.findOne({ _id: sessionId, userId: new Types.ObjectId(userId) });
     if (!session || !['running', 'paused'].includes(session.status)) return null;
 
     const completedAt = new Date();
@@ -141,7 +225,7 @@ export class FocusEngine {
     // cancelled) this session between the read above and now, the filter no
     // longer matches and exactly one caller gets a result.
     const completed = await FocusSession.findOneAndUpdate(
-      { _id: session._id, status: session.status },
+      { _id: session._id, userId: session.userId, status: session.status },
       {
         $set: {
           status: 'completed',
@@ -167,9 +251,9 @@ export class FocusEngine {
   /**
    * Aborts a focus session (e.g. user manually cancelled early).
    */
-  async abortSession(sessionId: string): Promise<void> {
+  async abortSession(sessionId: string, userId: string): Promise<void> {
     await FocusSession.updateOne(
-      { _id: new Types.ObjectId(sessionId), status: { $in: ['running', 'paused'] } },
+      { _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId), status: { $in: ['running', 'paused'] } },
       { status: 'abandoned', completedAt: new Date() }
     );
   }

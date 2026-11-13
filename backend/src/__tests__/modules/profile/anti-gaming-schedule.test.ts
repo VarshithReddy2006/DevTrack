@@ -44,6 +44,11 @@ it('registers and dispatches a daily UTC audit using the original scheduled time
       { task: 'audit_public_profiles' },
       expect.objectContaining({ repeat: { pattern: '0 3 * * *', tz: 'UTC' }, attempts: 3 })
     );
+    expect(queue.add).toHaveBeenCalledWith(
+      'reap-stale-focus-sessions',
+      { task: 'reap_stale_focus_sessions' },
+      expect.objectContaining({ repeat: { every: 300_000 } }),
+    );
     const processor = queue.process.mock.lastCall?.[0];
     expect(processor).toBeTypeOf('function');
     await processor({

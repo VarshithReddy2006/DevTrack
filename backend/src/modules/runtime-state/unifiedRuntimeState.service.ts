@@ -298,7 +298,7 @@ export class UnifiedRuntimeStateService {
     const state = await this.getRuntimeStateFresh(userId);
     if (!state?.sessionContext?.isActive || !state.sessionContext.sessionId) return null;
     const { focusEngine } = await import('../activity/focusEngine.service.js');
-    const timing = await focusEngine.pauseSession(state.sessionContext.sessionId);
+    const timing = await focusEngine.pauseSession(state.sessionContext.sessionId, userId);
     if (!timing) return null;
     return this.updateFromEvent({
       eventId: `focus_pause_${userId}_${Date.now()}`,
@@ -310,7 +310,7 @@ export class UnifiedRuntimeStateService {
     const state = await this.getRuntimeStateFresh(userId);
     if (!state?.sessionContext?.isActive || !state.sessionContext.sessionId) return null;
     const { focusEngine } = await import('../activity/focusEngine.service.js');
-    const timing = await focusEngine.resumeSession(state.sessionContext.sessionId);
+    const timing = await focusEngine.resumeSession(state.sessionContext.sessionId, userId);
     if (!timing) return null;
     return this.updateFromEvent({
       eventId: `focus_resume_${userId}_${Date.now()}`,
@@ -322,7 +322,7 @@ export class UnifiedRuntimeStateService {
     const state = await this.getRuntimeStateFresh(userId);
     if (!state?.sessionContext?.isActive || !state.sessionContext.sessionId) return null;
     const { focusEngine } = await import('../activity/focusEngine.service.js');
-    await focusEngine.abortSession(state.sessionContext.sessionId);
+    await focusEngine.abortSession(state.sessionContext.sessionId, userId);
     return this.updateFromEvent({
       eventId: `focus_cancel_${userId}_${Date.now()}`,
       eventType: 'focus_session_cancelled', userId, timestamp: new Date(), data: {},
@@ -333,7 +333,7 @@ export class UnifiedRuntimeStateService {
     const state = await this.getRuntimeStateFresh(userId);
     if (state?.sessionContext?.sessionId) {
       const { focusEngine } = await import('../activity/focusEngine.service.js');
-      await focusEngine.recordHeartbeat(state.sessionContext.sessionId);
+      await focusEngine.recordHeartbeat(state.sessionContext.sessionId, userId);
     }
 
     return await this.updateFromEvent({
@@ -358,7 +358,7 @@ export class UnifiedRuntimeStateService {
 
     if (sessionId) {
       const { focusEngine } = await import('../activity/focusEngine.service.js');
-      completed = await focusEngine.completeSession(sessionId);
+      completed = await focusEngine.completeSession(sessionId, userId);
     }
 
     // Nothing was running and the stored context is already inactive: no-op.
