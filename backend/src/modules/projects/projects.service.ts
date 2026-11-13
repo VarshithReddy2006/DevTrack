@@ -149,42 +149,57 @@ export async function updateProject(
 }
 
 export async function deleteProject(userId: string, projectId: string): Promise<boolean> {
-  // Read project name before deleting
-  const project = await Project.findOne({
-    _id: new Types.ObjectId(projectId),
-    userId: new Types.ObjectId(userId),
-  }).lean();
+  const projectObjId = new Types.ObjectId(projectId);
+  const userObjId = new Types.ObjectId(userId);
 
-  if (!project) return false;
+  let deletedProject: { name: string; repoUrl?: string | null } | null = null;
 
-  // Delete associated tasks first
-  await ProjectTask.deleteMany({ projectId: new Types.ObjectId(projectId) });
+  try {
+    await Project.db.transaction(async (session) => {
+      const project = await Project.findOneAndDelete(
+        { _id: projectObjId, userId: userObjId },
+        { session }
+      ).lean();
 
-  const result = await Project.deleteOne({
-    _id: new Types.ObjectId(projectId),
-    userId: new Types.ObjectId(userId),
-  });
+      if (!project) return;
 
-  if (result.deletedCount > 0) {
-    if (parseGitHubRepositoryUrl(project.repoUrl)) await VerifiedProjectIngestionService.queueRefresh(userId);
-    await cacheManager.invalidateDashboard(userId);
-    createActivity(userId, {
-      type: 'project_deleted',
-      title: `Deleted project ${project.name}`,
-      description: `Removed project "${project.name}" and its tasks`,
-      platform: 'devtrack',
-      url: null,
-      tags: ['project', 'delete'],
-      metadata: {
-        projectId,
-        projectName: project.name,
-      },
-    }).catch((err: unknown) => {
-      logger.warn('Failed to log project delete activity', { error: err instanceof Error ? err.message : String(err) });
+      deletedProject = {
+        name: project.name as string,
+        repoUrl: (project.repoUrl as string) || null,
+      };
+
+      await ProjectTask.deleteMany({ projectId: projectObjId }, { session });
     });
+  } catch (error) {
+    logger.error('Failed to delete project atomically', {
+      projectId,
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
 
-  return result.deletedCount > 0;
+  if (!deletedProject) return false;
+
+  const { name, repoUrl } = deletedProject;
+  if (parseGitHubRepositoryUrl(repoUrl)) await VerifiedProjectIngestionService.queueRefresh(userId);
+  await cacheManager.invalidateDashboard(userId);
+  createActivity(userId, {
+    type: 'project_deleted',
+    title: `Deleted project ${name}`,
+    description: `Removed project "${name}" and its tasks`,
+    platform: 'devtrack',
+    url: null,
+    tags: ['project', 'delete'],
+    metadata: {
+      projectId,
+      projectName: name,
+    },
+  }).catch((err: unknown) => {
+    logger.warn('Failed to log project delete activity', { error: err instanceof Error ? err.message : String(err) });
+  });
+
+  return true;
 }
 
 export async function getProjectStats(userId: string): Promise<ApiProjectStats> {
@@ -332,44 +347,57 @@ export async function createProjectTask(
   projectId: string,
   payload: Omit<ApiProjectTask, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'completedAt' | 'rank'>
 ): Promise<ApiProjectTask | null> {
-  // Verify project exists and belongs to user
-  const project = await Project.findOne({
-    _id: new Types.ObjectId(projectId),
-    userId: new Types.ObjectId(userId),
+  const projectObjId = new Types.ObjectId(projectId);
+  const userObjId = new Types.ObjectId(userId);
+
+  return await Project.db.transaction(async (session) => {
+    // Verify project exists and belongs to user within transaction, locking parent record
+    const project = await Project.findOneAndUpdate(
+      { _id: projectObjId, userId: userObjId },
+      { $set: { updatedAt: new Date() } },
+      { session, new: true }
+    );
+
+    if (!project) return null;
+
+    // New tasks go to the bottom of their column
+    const last = await ProjectTask.findOne({
+      projectId: projectObjId,
+      status: payload.status,
+      rank: { $ne: null },
+    })
+      .session(session)
+      .sort({ rank: -1 });
+
+    const [task] = await ProjectTask.create(
+      [
+        {
+          projectId: projectObjId,
+          ...payload,
+          rank: rankBetween(last?.rank ?? null, null),
+          completedAt: payload.status === 'done' ? new Date() : null,
+        },
+      ],
+      { session }
+    );
+
+    return {
+      id: task._id.toString(),
+      projectId: task.projectId.toString(),
+      milestoneId: task.milestoneId,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority,
+      assigneeId: task.assigneeId,
+      labels: task.labels,
+      dueDate: task.dueDate?.toISOString() || null,
+      completedAt: task.completedAt?.toISOString() || null,
+      rank: task.rank ?? null,
+      createdAt: task.createdAt.toISOString(),
+      updatedAt: task.updatedAt.toISOString(),
+    };
   });
-
-  if (!project) return null;
-
-  // New tasks go to the bottom of their column
-  const last = await ProjectTask.findOne({
-    projectId: new Types.ObjectId(projectId),
-    status: payload.status,
-    rank: { $ne: null },
-  }).sort({ rank: -1 });
-
-  const task = await ProjectTask.create({
-    projectId: new Types.ObjectId(projectId),
-    ...payload,
-    rank: rankBetween(last?.rank ?? null, null),
-    completedAt: payload.status === 'done' ? new Date() : null,
-  });
-
-  return {
-    id: task._id.toString(),
-    projectId: task.projectId.toString(),
-    milestoneId: task.milestoneId,
-    title: task.title,
-    description: task.description,
-    status: task.status,
-    priority: task.priority,
-    assigneeId: task.assigneeId,
-    labels: task.labels,
-    dueDate: task.dueDate?.toISOString() || null,
-    completedAt: task.completedAt?.toISOString() || null,
-    rank: task.rank ?? null,
-    createdAt: task.createdAt.toISOString(),
-    updatedAt: task.updatedAt.toISOString(),
-  };
 }
 
 export async function updateProjectTask(
