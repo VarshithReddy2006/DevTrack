@@ -26,6 +26,7 @@ export interface ISectionIntegrity {
   sectionName: string;
   detected: boolean;
   confidence: number;
+  matchedHeading?: string;
   issues: string[];
 }
 
@@ -95,6 +96,7 @@ const sectionIntegritySchema = new Schema<ISectionIntegrity>(
     sectionName: { type: String, required: true },
     detected: { type: Boolean, required: true },
     confidence: { type: Number, default: 0, min: 0, max: 100 },
+    matchedHeading: { type: String },
     issues: { type: [String], default: [] },
   },
   { _id: false }

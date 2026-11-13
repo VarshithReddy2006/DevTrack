@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ATSCompatibilityEngine } from '../../../modules/resume/ats/ATSCompatibilityEngine.js';
 import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
+import type { ISectionIntegrity } from '../../../db/models/atsAnalysis.model.js';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { Types } from 'mongoose';
@@ -51,6 +52,60 @@ describe('ATSCompatibilityEngine', () => {
       w.message.toLowerCase().includes('multi-column')
     );
     expect(hasMultiColumnWarning).toBe(true);
+  });
+
+  it('recognizes standalone section aliases and reports the matching headings', async () => {
+    const content = [
+      'Professional Summary',
+      'Backend engineer building developer tools.',
+      '## Professional Experience',
+      'Engineer at Example',
+      'Selected Projects',
+      'Built a deployment tool.',
+      '  Core Competencies:  ',
+      'TypeScript, MongoDB',
+      'Education & Credentials',
+      'BSc Computer Science',
+      'CERTIFICATIONS',
+      'AWS Certified Developer',
+    ].join('\r\n');
+
+    const result = await engine.analyze({ userId, resumeProfileId, content });
+
+    expect(result.sectionIntegrity).toEqual([
+      { sectionName: 'summary', detected: true, confidence: 90, matchedHeading: 'Professional Summary', issues: [] },
+      { sectionName: 'experience', detected: true, confidence: 100, matchedHeading: '## Professional Experience', issues: [] },
+      { sectionName: 'projects', detected: true, confidence: 90, matchedHeading: 'Selected Projects', issues: [] },
+      { sectionName: 'skills', detected: true, confidence: 100, matchedHeading: 'Core Competencies:', issues: [] },
+      { sectionName: 'education', detected: true, confidence: 90, matchedHeading: 'Education & Credentials', issues: [] },
+      { sectionName: 'certifications', detected: true, confidence: 100, matchedHeading: 'CERTIFICATIONS', issues: [] },
+    ]);
+  });
+
+  it('ignores body mentions and list items and scores the missing sections accordingly', async () => {
+    const lines = [
+      'Summary',
+      'Experience with distributed systems',
+      '- Professional Experience',
+      '1. Projects',
+      '\u2022 Skills',
+      'Collaborated with education providers',
+      'Education.',
+      'Certifications: AWS',
+    ];
+    const analyze = (content: string) => engine.analyze({ userId, resumeProfileId, content });
+    const incomplete = await analyze(lines.join('\n'));
+    const complete = await analyze([
+      ...lines, 'Experience', 'Projects', 'Skills', 'Education', 'Certifications',
+    ].join('\n'));
+
+    const sections: ISectionIntegrity[] = incomplete.sectionIntegrity;
+    expect(sections.filter(section => section.detected).map(section => section.sectionName))
+      .toEqual(['summary']);
+    expect(sections.find(section => section.sectionName === 'education'))
+      .toEqual({ sectionName: 'education', detected: false, confidence: 0, issues: ['Section "education" not found'] });
+    expect(incomplete.atsScore).toBeLessThan(complete.atsScore);
+    expect(incomplete.extractionConfidence).toBeLessThan(complete.extractionConfidence);
   });
 
   it('should detect tables layout warning in resume text', async () => {
