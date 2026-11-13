@@ -1,6 +1,8 @@
+import { Types } from 'mongoose';
 import { ProviderHealthRegistry } from '../provider/ProviderHealthRegistry.js';
 import { IntelligentRecommendationEngine } from '../recommendation/IntelligentRecommendationEngine.js';
-import { NextBestActionEngine } from '../action/NextBestActionEngine.js';
+import { ConnectedPlatform } from '../../../db/models/connectedPlatform.model.js';
+import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { logger } from '../../../shared/logger.js';
 
 export interface TrustAwareInput {
@@ -55,6 +57,9 @@ export interface TrustWarning {
   actionable: boolean;
 }
 
+const benchmarkPlatforms = ['github', 'leetcode'] as const;
+const benchmarkFreshnessMs = 24 * 60 * 60 * 1000;
+
 class TrustAwareGuidanceLayerClass {
   /**
    * Generate trust-aware guidance
@@ -77,7 +82,7 @@ class TrustAwareGuidanceLayerClass {
       });
       
       // Calculate trust factors
-      const trustFactors = this.calculateTrustFactors(userId, healthSummary, degradedProviders);
+      const trustFactors = await this.calculateTrustFactors(userId, healthSummary, degradedProviders);
       
       // Calculate overall trust score
       const overallTrustScore = this.calculateOverallTrustScore(trustFactors);
@@ -119,11 +124,11 @@ class TrustAwareGuidanceLayerClass {
   /**
    * Calculate trust factors
    */
-  private calculateTrustFactors(
+  private async calculateTrustFactors(
     userId: string,
     healthSummary: any,
     degradedProviders: any[]
-  ): TrustFactor[] {
+  ): Promise<TrustFactor[]> {
     const factors: TrustFactor[] = [];
     
     // Provider health factor
@@ -157,24 +162,49 @@ class TrustAwareGuidanceLayerClass {
         : 'No stale providers',
     });
     
-    // Evidence coverage factor (mock - would come from actual readiness data)
-    const evidenceCoverageScore = 85; // Default high coverage
+    const [claimCounts, platforms] = await Promise.all([
+      ResumeEvidenceClaim.aggregate<{ total: number; verified: number }>([
+        { $match: { userId: new Types.ObjectId(userId) } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            verified: { $sum: { $cond: [{ $eq: ['$verificationStatus', 'verified'] }, 1, 0] } },
+          },
+        },
+      ]),
+      ConnectedPlatform.find({ userId, platformName: { $in: benchmarkPlatforms }, isConnected: true })
+        .select('platformName lastSyncedAt syncStatus')
+        .lean(),
+    ]);
+
+    const { total: totalClaims, verified: verifiedClaims } = claimCounts[0] ?? { total: 0, verified: 0 };
+    const evidenceCoverageScore = totalClaims > 0 ? Math.round(verifiedClaims / totalClaims * 100) : 20;
     factors.push({
       factor: 'evidence-coverage',
       value: evidenceCoverageScore,
-      impact: evidenceCoverageScore < 70 ? 'medium' : 'low',
-      description: `Evidence coverage: ${evidenceCoverageScore}%`,
+      impact: evidenceCoverageScore < 30 ? 'high' : evidenceCoverageScore < 70 ? 'medium' : 'low',
+      description: totalClaims > 0
+        ? `${verifiedClaims} of ${totalClaims} resume evidence claims verified`
+        : 'No resume evidence claims recorded',
     });
-    
-    // Benchmark confidence factor (mock - would come from actual benchmark data)
-    const benchmarkConfidenceScore = 80; // Default good confidence
+
+    const now = Date.now();
+    const freshPlatforms = benchmarkPlatforms.filter(name => platforms.some(platform => {
+      if (platform.platformName !== name || platform.syncStatus !== 'success' || !platform.lastSyncedAt) return false;
+      const age = now - platform.lastSyncedAt.getTime();
+      return age >= 0 && age <= benchmarkFreshnessMs;
+    }));
+    const benchmarkConfidenceScore = Math.round(freshPlatforms.length / benchmarkPlatforms.length * 100);
     factors.push({
       factor: 'benchmark-confidence',
       value: benchmarkConfidenceScore,
-      impact: benchmarkConfidenceScore < 70 ? 'medium' : 'low',
-      description: `Benchmark confidence: ${benchmarkConfidenceScore}%`,
+      impact: benchmarkConfidenceScore === 0 ? 'high' : benchmarkConfidenceScore < 70 ? 'medium' : 'low',
+      description: freshPlatforms.length
+        ? `Successful sync within 24 hours for ${freshPlatforms.join(' and ')} (${freshPlatforms.length} of ${benchmarkPlatforms.length} platforms)`
+        : 'No successful GitHub or LeetCode sync within 24 hours',
     });
-    
+
     return factors;
   }
 
@@ -268,6 +298,18 @@ class TrustAwareGuidanceLayerClass {
         adjustedConfidence = adj.adjustedValue;
       });
       
+      const evidenceCoverage = trustFactors.find(f => f.factor === 'evidence-coverage');
+      if (evidenceCoverage && evidenceCoverage.value < 70) {
+        const evidenceAdjustedConfidence = Math.max(0, adjustedConfidence - (100 - evidenceCoverage.value) * 0.2);
+        trustAdjustments.push({
+          factor: evidenceCoverage.factor,
+          originalValue: adjustedConfidence,
+          adjustedValue: evidenceAdjustedConfidence,
+          reason: `Limited verified evidence reduced confidence. ${evidenceCoverage.description}.`,
+        });
+        adjustedConfidence = evidenceAdjustedConfidence;
+      }
+
       // Ensure confidence stays within bounds
       adjustedConfidence = Math.max(0, Math.min(100, adjustedConfidence));
       
@@ -295,7 +337,7 @@ class TrustAwareGuidanceLayerClass {
    */
   private generateTrustReasoning(adjustments: TrustAdjustment[], overallTrustScore: number): string {
     if (adjustments.length === 0) {
-      return 'Confidence based on full provider health and evidence coverage.';
+      return 'No recommendation confidence adjustments were applied.';
     }
     
     const reasons = adjustments.map(adj => adj.reason);
@@ -345,6 +387,26 @@ class TrustAwareGuidanceLayerClass {
       });
     }
     
+    const evidenceCoverage = trustFactors.find(f => f.factor === 'evidence-coverage');
+    if (evidenceCoverage && evidenceCoverage.value < 70) {
+      warnings.push({
+        severity: 'warning',
+        message: 'Limited verified resume evidence',
+        context: evidenceCoverage.description,
+        actionable: true,
+      });
+    }
+
+    const benchmarkConfidence = trustFactors.find(f => f.factor === 'benchmark-confidence');
+    if (benchmarkConfidence && benchmarkConfidence.value < 70) {
+      warnings.push({
+        severity: 'warning',
+        message: 'Benchmark data is incomplete or stale',
+        context: benchmarkConfidence.description,
+        actionable: true,
+      });
+    }
+
     // Add specific warnings for each degraded provider
     degradedProviders.forEach(provider => {
       warnings.push({
