@@ -10,14 +10,14 @@
 [![MongoDB](https://img.shields.io/badge/mongodb-v7-47a248?style=for-the-badge&logo=mongodb)](https://www.mongodb.com/)
 [![Redis](https://img.shields.io/badge/redis-v7-dc382d?style=for-the-badge&logo=redis)](https://redis.io/)
 [![CI Status](https://img.shields.io/badge/ci-passing-brightgreen?style=for-the-badge&logo=githubactions)](https://github.com/VarshithReddy2006/DevTrack/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 
 <p align="center">
   <b>Turn raw software engineering activity into an adaptive, gamified career growth journey.</b><br />
   DevTrack connects competitive programming telemetry, GitHub contributions, project velocity, and ATS resume audits with real-time skill gap analysis and personalized roadmap intelligence.
 </p>
 
-[Features](#key-features) • [Growth Loop](#the-growth-loop-workflow) • [Architecture](#system-architecture) • [Tech Stack](#tech-stack) • [Quick Start](#quick-start--installation) • [Testing](#testing--verification) • [API Routes](#canonical-api-routes-apiv1) • [Acknowledgements](#acknowledgements) • [Contributing](#contributing)
+[Features](#key-features) • [Growth Loop](#the-growth-loop-workflow) • [Architecture](#system-architecture) • [Tech Stack](#tech-stack) • [Quick Start](#quick-start--installation) • [Testing](#testing--verification) • [API Routes](#canonical-api-routes-apiv1) • [Acknowledgements](#acknowledgements) • [Contributing](#contributing) • [License](#license)
 
 </div>
 
@@ -373,7 +373,12 @@ We welcome contributions from the community!
 
 ---
 
-## License & Status
+## Status
 
-* **Status:** **Beta Candidate** — Software is actively undergoing testing, verification, and hardening.
-* **License:** Released under the **[MIT License](https://opensource.org/licenses/MIT)**.
+DevTrack is currently a **Beta Candidate** — software is actively undergoing testing, verification, and hardening.
+
+---
+
+## License
+
+DevTrack is licensed under the [MIT License](LICENSE).

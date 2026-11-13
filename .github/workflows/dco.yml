@@ -1,0 +1,81 @@
+name: DCO Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+
+# Enforce minimal read-only permissions for fork safety and secret isolation
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  validate-dco:
+    name: Verify DCO Sign-off
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Check out the target base branch into a separate directory to obtain the trusted validator
+      # This prevents PR authors from tampering with the validation script or test suite to bypass DCO checks.
+      - name: Checkout trusted base repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.base_ref || github.ref_name }}
+          path: .trusted-base
+
+      # Step 2: Check out the PR repository into the root workspace to evaluate its commit range
+      - name: Checkout PR repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+
+      # Step 3: Run the validator test suite using the trusted copy when available
+      - name: Run DCO validator test suite
+        run: |
+          if [ -f ".trusted-base/scripts/verify-dco.test.js" ]; then
+            echo "🔒 Executing trusted test suite from .trusted-base/scripts/verify-dco.test.js"
+            node .trusted-base/scripts/verify-dco.test.js
+          else
+            echo "⚠️ Base branch does not contain test suite yet (bootstrap mode). Running workspace copy."
+            node scripts/verify-dco.test.js
+          fi
+
+      # Step 4: Validate PR commits using the trusted validator script
+      # Context expressions are passed strictly via environment variables to prevent shell injection.
+      - name: Validate Pull Request Commits
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Fetch full commit objects for base and head to guarantee range completeness on forks
+          echo "Fetching base commit ($PR_BASE_SHA) and head commit ($PR_HEAD_SHA)..."
+          git fetch origin "$PR_BASE_SHA" --depth=200 || true
+          git fetch origin "$PR_HEAD_SHA" --depth=200 || true
+
+          # Select the trusted validator script
+          if [ -f ".trusted-base/scripts/verify-dco.js" ]; then
+            echo "🔒 Using trusted base validator from .trusted-base/scripts/verify-dco.js"
+            VALIDATOR=".trusted-base/scripts/verify-dco.js"
+          else
+            echo "⚠️ Base branch does not contain verify-dco.js yet (bootstrap mode). Using workspace validator."
+            VALIDATOR="scripts/verify-dco.js"
+          fi
+
+          node "$VALIDATOR" --base "$PR_BASE_SHA" --head "$PR_HEAD_SHA"

@@ -17,6 +17,8 @@
     "build:backend": "echo 'Use --prefix backend'",
     "lint": "npm run lint --prefix frontend",
     "test": "npm test --prefix backend",
+    "dco:check": "node scripts/verify-dco.js",
+    "dco:test": "node scripts/verify-dco.test.js",
     "install-all": "npm install && npm run install:orchestrator && npm run install:frontend && npm run install:backend",
     "install:orchestrator": "npm install --prefix dev-orchestrator",
     "install:frontend": "npm install --prefix frontend",

@@ -55,7 +55,9 @@ cursor/
 !RELEASE_MANIFEST.md
 
 # Local documentation (not needed for production)
-docs/
+docs/*
+!docs/licensing/
+!docs/licensing/**
 claude/
 
 # Local scripts (dev helpers)
@@ -65,6 +67,8 @@ scripts/
 !/scripts/OwnedRuntime.ps1
 !/scripts/OwnedRuntime.test.ps1
 !/scripts/README.md
+!/scripts/verify-dco.js
+!/scripts/verify-dco.test.js
 
 # Temporary files
 *.tmp

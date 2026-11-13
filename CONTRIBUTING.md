@@ -18,10 +18,11 @@ This repository participates in Nexus Winter of Code (NWoC) 2026 only where conf
 6. [NWoC 2026 Issue Labels and Points](#nwoc-2026-issue-labels-and-points)
 7. [NWoC 2026 Issue and PR Workflow](#nwoc-2026-issue-and-pr-workflow)
 8. [Pull Request Requirements](#pull-request-requirements)
-9. [Code Review and Quality Control](#code-review-and-quality-control)
-10. [Commit and Branch Conventions](#commit-and-branch-conventions)
-11. [Security and Environment Variables](#security-and-environment-variables)
-12. [Questions and Support](#questions-and-support)
+9. [Developer Certificate of Origin (DCO)](#developer-certificate-of-origin-dco)
+10. [Code Review and Quality Control](#code-review-and-quality-control)
+11. [Commit and Branch Conventions](#commit-and-branch-conventions)
+12. [Security and Environment Variables](#security-and-environment-variables)
+13. [Questions and Support](#questions-and-support)
 
 ---
 
@@ -347,7 +348,143 @@ Before requesting review, confirm that:
 - [ ] Environment variable changes are reflected in the appropriate `.env.example` file.
 - [ ] No secrets or credentials have been committed.
 - [ ] The PR includes a clear summary and testing evidence.
+- [ ] All commits include a valid Developer Certificate of Origin (DCO) sign-off (`git commit -s`).
 - [ ] The required NWoC labels are applied before merging.
+
+## Developer Certificate of Origin (DCO)
+
+To safeguard the intellectual property rights of contributors and downstream users, DevTrack enforces the **Developer Certificate of Origin (DCO) Version 1.1**.
+
+DevTrack accepts contributions under the repository's [MIT Licence](LICENSE), subject to the contributor possessing the legal rights to make that submission. Every future contribution submitted to this repository must include a valid DCO sign-off trailer.
+
+### The DCO Agreement
+
+The full, official text of the Developer Certificate of Origin 1.1 (also available at [developercertificate.org](https://developercertificate.org/)) is provided below:
+
+```text
+Developer Certificate of Origin
+Version 1.1
+
+Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+
+Developer's Certificate of Origin 1.1
+
+By making a contribution to this project, I certify that:
+
+(a) The contribution was created in whole or in part by me and I
+    have the right to submit it under the open source license
+    indicated in the file; or
+
+(b) The contribution is based upon previous work that, to the best
+    of my knowledge, is covered under an appropriate open source
+    license and I have the right under that license to submit that
+    work with modifications, whether created in whole or in part
+    by me, under the same open source license (unless I am
+    permitted to submit under a different license), as indicated
+    in the file; or
+
+(c) The contribution was provided directly to me by some other
+    person who certified (a), (b) or (c) and I have not modified
+    it.
+
+(d) I understand and agree that this project and the contribution
+    are public and that a record of the contribution (including all
+    personal information I submit with it, including my sign-off) is
+    maintained indefinitely and may be redistributed consistent with
+    this project or the open source license(s) involved.
+```
+
+### Contributor Responsibilities
+
+When submitting contributions:
+
+- **Licensing Certification:** By signing off, you certify that you created the work or have the legitimate legal right to submit it under the project's MIT Licence.
+- **No Copyright Assignment:** Signing the DCO does **not** transfer or assign copyright ownership to DevTrack, the maintainer, or any third party. Contributors retain copyright in their original creative work while licensing it under the terms of the project's MIT Licence.
+- **No Incompatible or Unlicensed Code:** You must not submit code copied or adapted from proprietary, incompatible, or unlicensed external sources.
+- **Attribution & Notices:** You must retain all applicable third-party copyright notices, license headers, and attribution metadata for any permissible third-party code.
+- **Identity Integrity:** You must sign off using your own real name or recognized identity and verifiable email. You must never sign off on behalf of another individual.
+- **Quality Gates:** DCO sign-off does not replace code review, automated testing, security validation, or other repository contribution requirements.
+- **Non-Retroactivity Notice:** DCO sign-off applies to all commits submitted moving forward. DCO sign-off does not retroactively resolve licensing permissions or provide automatic copyright assignment for contributions merged before this policy was enacted.
+
+### How to Sign Off Commits
+
+Configure your Git author identity so that it reflects your real name and email:
+
+```bash
+git config user.name "Your Name"
+git config user.email "your-email@example.com"
+```
+
+When creating a commit, pass the `-s` (or `--signoff`) flag:
+
+```bash
+git commit -s -m "feat(scope): describe your change"
+```
+
+This automatically appends a standard `Signed-off-by` trailer to the end of your commit message:
+
+```text
+feat(dsa): add topic progress analytics
+
+Signed-off-by: Contributor Name <contributor@example.com>
+```
+
+### Fixing Unsigned Commits
+
+If you have already committed changes locally without signing off:
+
+#### 1. Signing off your latest unpublished commit
+
+If only the most recent commit is missing a sign-off:
+
+```bash
+git commit --amend -s --no-edit
+```
+
+#### 2. Signing off multiple commits on your feature branch
+
+If multiple commits in your pull request require sign-offs, rebase interactively to add the sign-off trailer across the range:
+
+```bash
+git rebase -i --signoff <base-branch-or-commit>
+```
+
+> [!WARNING]
+> Do not rewrite or force-push commits that have already been shared with others or merged into shared branches without coordinating first.
+
+### Automated DCO Verification in Pull Requests
+
+DevTrack validates DCO sign-offs on all incoming pull requests via automated CI (`.github/workflows/dco.yml`).
+
+- Every commit in the pull request branch must contain a valid `Signed-off-by:` trailer matching the author's identity.
+- Pull requests containing unsigned, malformed, or identity-mismatched commits will fail automated status checks and cannot be merged until all commits are appropriately signed off.
+
+#### Co-Authored Commits
+
+If a commit represents pair programming or collaborative work across multiple contributors:
+
+- Add standard `Co-authored-by:` trailers for each co-author.
+- In addition, **each co-author must also provide a corresponding `Signed-off-by:` trailer** certifying their contribution under DCO 1.1:
+
+```text
+feat(dsa): add graph traversal engine
+
+Co-authored-by: Bob Partner <bob@example.com>
+Signed-off-by: Alice Author <alice@example.com>
+Signed-off-by: Bob Partner <bob@example.com>
+```
+
+A `Co-authored-by:` trailer alone does not constitute a legal certification or DCO sign-off.
+
+#### Branch Protection & Required Status Checks
+
+- The CI workflow executes under the check name: **`Verify DCO Sign-off`**.
+- Once the workflow has completed at least one run on a repository pull request, repository administrators can configure branch protection rules on `main` and `develop` to require `Verify DCO Sign-off` before merging.
+- Optionally, administrators may also install the Probot DCO GitHub App (`https://github.com/apps/dco`), which provides an additional status check named `DCO`.
 
 ## Code Review and Quality Control
 
