@@ -38,6 +38,7 @@ import '../../db/models/evidenceChainRecord.model.js';
 import '../../db/models/featureUsageAnalytics.model.js';
 import '../../db/models/focusSession.model.js';
 import '../../db/models/intelligenceRecommendation.model.js';
+import '../../db/models/mlExperiment.model.js';
 import '../../db/models/mission.model.js';
 import '../../db/models/notification.model.js';
 import '../../db/models/onboardingAnalytics.model.js';
