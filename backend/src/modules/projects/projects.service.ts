@@ -5,6 +5,7 @@ import { Project, ProjectTask, ActivityEvent } from '../../db/models/index.js';
 import { rankBetween } from '../../db/models/projectTask.model.js';
 import { createActivity } from '../activity/activity.service.js';
 import { logger } from '../../shared/logger.js';
+import { escapeRegExp } from '../../shared/regex.js';
 import type {
   ApiProjectListResponse,
   ApiProject,
@@ -23,6 +24,9 @@ import { VerifiedProjectIngestionService } from '../readiness/services/VerifiedP
 
 const ALLOWED_SORT_FIELDS = ['name', 'createdAt', 'updatedAt', 'stars', 'lastCommitAt'];
 
+/** Longest project search term that is used; the route rejects anything longer. */
+export const MAX_PROJECT_SEARCH_LENGTH = 100;
+
 export async function getProjects(userId: string, filters: ApiProjectFilters): Promise<ApiProjectListResponse> {
   const { page, pageSize } = parsePaginationParams({
     page: filters.page?.toString(),
@@ -34,22 +38,25 @@ export async function getProjects(userId: string, filters: ApiProjectFilters): P
   if (filters.status) query.status = filters.status;
   if (filters.visibility) query.visibility = filters.visibility;
   if (filters.language) query.language = filters.language;
-  if (filters.search) {
+  const search = typeof filters.search === 'string'
+    ? filters.search.trim().slice(0, MAX_PROJECT_SEARCH_LENGTH)
+    : '';
+  if (search) {
+    const pattern = escapeRegExp(search);
     query.$or = [
-      { name: { $regex: filters.search, $options: 'i' } },
-      { description: { $regex: filters.search, $options: 'i' } },
+      { name: { $regex: pattern, $options: 'i' } },
+      { description: { $regex: pattern, $options: 'i' } },
     ];
   }
 
   const skip = getSkipCount({ page, pageSize });
   const sort = buildSortOptions(filters.sortBy, filters.sortOrder, ALLOWED_SORT_FIELDS);
 
-  const [projects, totalCount] = await Promise.all([
+  const [projects, totalCount, stats] = await Promise.all([
     Project.find(query).sort(sort).skip(skip).limit(pageSize).lean(),
     Project.countDocuments(query),
+    getProjectStats(userId),
   ]);
-
-  const stats = await getProjectStats(userId);
   const pagination: ApiPagination = createPagination(totalCount, { page, pageSize });
 
   return {
@@ -188,39 +195,56 @@ export async function deleteProject(userId: string, projectId: string): Promise<
 }
 
 export async function getProjectStats(userId: string): Promise<ApiProjectStats> {
-  const stats = await Project.aggregate([
+  // One pipeline over the user's projects: totals and the per-language counts
+  // are computed in MongoDB, so no list of every project's language is pulled into Node.
+  const [facets] = await Project.aggregate<{
+    totals: Array<{
+      totalProjects: number;
+      activeProjects: number;
+      completedProjects: number;
+      totalCommits: number;
+      totalPullRequests: number;
+      totalIssues: number;
+    }>;
+    languages: Array<{ _id: string; count: number }>;
+  }>([
     { $match: { userId: new Types.ObjectId(userId) } },
     {
-      $group: {
-        _id: null,
-        totalProjects: { $sum: 1 },
-        activeProjects: { $sum: { $cond: [{ $eq: ['$status', 'in_progress'] }, 1, 0] } },
-        completedProjects: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
-        totalCommits: { $sum: '$totalCommits' },
-        totalPullRequests: { $sum: '$totalPullRequests' },
-        totalIssues: { $sum: '$totalIssues' },
-        languages: { $push: '$language' },
+      $facet: {
+        totals: [
+          {
+            $group: {
+              _id: null,
+              totalProjects: { $sum: 1 },
+              activeProjects: { $sum: { $cond: [{ $eq: ['$status', 'in_progress'] }, 1, 0] } },
+              completedProjects: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
+              totalCommits: { $sum: '$totalCommits' },
+              totalPullRequests: { $sum: '$totalPullRequests' },
+              totalIssues: { $sum: '$totalIssues' },
+            },
+          },
+        ],
+        languages: [
+          { $match: { language: { $type: 'string', $ne: '' } } },
+          { $group: { _id: '$language', count: { $sum: 1 } } },
+        ],
       },
     },
   ]);
 
-  const data = stats[0] || {
+  const data = facets?.totals[0] || {
     totalProjects: 0,
     activeProjects: 0,
     completedProjects: 0,
     totalCommits: 0,
     totalPullRequests: 0,
     totalIssues: 0,
-    languages: [],
   };
 
-  // Calculate language distribution
   const languageDistribution: Record<string, number> = {};
-  data.languages?.forEach((lang: string) => {
-    if (lang) {
-      languageDistribution[lang] = (languageDistribution[lang] || 0) + 1;
-    }
-  });
+  for (const { _id, count } of facets?.languages ?? []) {
+    languageDistribution[_id] = count;
+  }
 
   // Get commit history for last 30 days
   const thirtyDaysAgo = new Date();

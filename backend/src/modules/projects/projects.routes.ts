@@ -4,6 +4,7 @@ import { asyncHandler, authMiddleware, validateBody } from '../../middleware/ind
 import { validateParams, validateQuery, objectIdSchema } from '../../middleware/validation.js';
 import * as controller from './projects.controller.js';
 import { z } from 'zod';
+import { MAX_PROJECT_SEARCH_LENGTH } from './projects.service.js';
 
 const router = Router();
 
@@ -53,6 +54,11 @@ const taskUpdateSchema = z.object({
   { message: 'prevRank must sort before nextRank', path: ['prevRank'] }
 );
 
+// Only `search` is validated here; the other filters keep their existing handling.
+const projectListQuerySchema = z.object({
+  search: z.string().trim().max(MAX_PROJECT_SEARCH_LENGTH).optional(),
+}).passthrough();
+
 const projectIdParamsSchema = z.object({ id: objectIdSchema });
 const taskParamsSchema = z.object({ id: objectIdSchema, taskId: objectIdSchema });
 const taskQuerySchema = z.object({
@@ -62,7 +68,7 @@ const taskQuerySchema = z.object({
   overdueOnly: z.enum(['true', 'false']).optional(),
 });
 
-router.get('/', authMiddleware, asyncHandler(controller.getProjects));
+router.get('/', authMiddleware, validateQuery(projectListQuerySchema), asyncHandler(controller.getProjects));
 router.get('/stats', authMiddleware, asyncHandler(controller.getProjectStats));
 router.post('/', authMiddleware, validateBody(projectCreateSchema), asyncHandler(controller.createProject));
 router.get('/:id', authMiddleware, validateParams(projectIdParamsSchema), asyncHandler(controller.getProjectById));
