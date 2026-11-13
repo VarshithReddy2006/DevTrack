@@ -17,8 +17,12 @@ This document records an objective, factual audit of historical commits merged p
 
 - **Total Historical Commits Audited:** 283
 - **Total Historical Pull Requests Merged:** ~125
-- **Signed-off Commits (DCO `Signed-off-by`):** 12 (4.2%)
+- **Commits Carrying DCO Sign-offs:** 12 (4.2%)
 - **Unsigned Commits:** 271 (95.8%)
+- **Contributors Who Signed Off At Least One Commit:** 3 (Sarbajit Sengupta, anubaghel, Abhishek Choudhary)
+- **Contributors Whose Entire Contribution History Is Signed Off:** 1 (Sarbajit Sengupta — 6 of 6 commits)
+- **Historical Contributions with No Verified Licence Grant:** 271 commits
+- **Contributions with Undetermined / Unverified Legal Status:** All external contributions where no express CLA or DCO was recorded
 - **Formal Contributor Licence Agreement (CLA) on File:** **None**
 - **Developer Certificate of Origin (DCO) Enforced Historically:** **No**
 - **Program-Specific Copyright Assignment:** **None documented**
@@ -150,3 +154,4 @@ flowchart TD
    Merge and activate the DCO validation CI workflow (`.github/workflows/dco.yml`) and optionally enable the Probot DCO GitHub App (`https://github.com/apps/dco`) to prevent any future unsigned PRs from merging.
 5. **Add Trademark & Dataset Disclaimers:**
    Include clear disclaimer notes in `README.md` and dataset documentation clarifying that platform logos remain the property of their trademark owners and that datasets are governed by their respective source terms.
+

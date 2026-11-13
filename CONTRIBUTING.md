@@ -403,6 +403,7 @@ By making a contribution to this project, I certify that:
 When submitting contributions:
 
 - **Licensing Certification:** By signing off, you certify that you created the work or have the legitimate legal right to submit it under the project's MIT Licence.
+- **No Copyright Assignment:** Signing the DCO does **not** transfer or assign copyright ownership to DevTrack, the maintainer, or any third party. Contributors retain copyright in their original creative work while licensing it under the terms of the project's MIT Licence.
 - **No Incompatible or Unlicensed Code:** You must not submit code copied or adapted from proprietary, incompatible, or unlicensed external sources.
 - **Attribution & Notices:** You must retain all applicable third-party copyright notices, license headers, and attribution metadata for any permissible third-party code.
 - **Identity Integrity:** You must sign off using your own real name or recognized identity and verifiable email. You must never sign off on behalf of another individual.
@@ -461,6 +462,29 @@ DevTrack validates DCO sign-offs on all incoming pull requests via automated CI 
 
 - Every commit in the pull request branch must contain a valid `Signed-off-by:` trailer matching the author's identity.
 - Pull requests containing unsigned, malformed, or identity-mismatched commits will fail automated status checks and cannot be merged until all commits are appropriately signed off.
+
+#### Co-Authored Commits
+
+If a commit represents pair programming or collaborative work across multiple contributors:
+
+- Add standard `Co-authored-by:` trailers for each co-author.
+- In addition, **each co-author must also provide a corresponding `Signed-off-by:` trailer** certifying their contribution under DCO 1.1:
+
+```text
+feat(dsa): add graph traversal engine
+
+Co-authored-by: Bob Partner <bob@example.com>
+Signed-off-by: Alice Author <alice@example.com>
+Signed-off-by: Bob Partner <bob@example.com>
+```
+
+A `Co-authored-by:` trailer alone does not constitute a legal certification or DCO sign-off.
+
+#### Branch Protection & Required Status Checks
+
+- The CI workflow executes under the check name: **`Verify DCO Sign-off`**.
+- Once the workflow has completed at least one run on a repository pull request, repository administrators can configure branch protection rules on `main` and `develop` to require `Verify DCO Sign-off` before merging.
+- Optionally, administrators may also install the Probot DCO GitHub App (`https://github.com/apps/dco`), which provides an additional status check named `DCO`.
 
 ## Code Review and Quality Control
 
