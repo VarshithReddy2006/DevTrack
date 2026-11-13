@@ -84,10 +84,14 @@ export class ResumeIntelligenceService {
     logger.info(`[ResumeIntelligence] Generating resume for user ${userId}`);
 
     const result = await this.orchestrationEngine.orchestrate(userId);
+    const recommendations = await this.mlService.optimizeRecommendations(userId.toString()).catch(() => {
+      logger.warn('[ResumeIntelligence] Personalized recommendations unavailable');
+      return [];
+    });
 
     return {
       profile: result.resumeProfile,
-      recommendations: result.recommendations,
+      recommendations: [...new Set([...recommendations, ...result.recommendations])],
     };
   }
 
