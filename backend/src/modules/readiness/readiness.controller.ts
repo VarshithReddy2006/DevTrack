@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CareerIntent } from '../../db/models/careerIntent.model.js';
+import { CareerIntentService } from './services/CareerIntentService.js';
 import { ReadinessOrchestratorService } from './engine/ReadinessOrchestratorService.js';
 import { DomainIntelligenceService } from './engine/ReadinessOrchestratorService.js';
 import { UserSkillProgress } from '../../db/models/userSkillProgress.model.js';
@@ -62,7 +62,9 @@ export const ReadinessController = {
       weeklyHours: z.union([z.number(), z.string().regex(/^\d+$/).transform(Number)]).optional(),
       targetPackage: z.string().optional(),
       targetCompanyTier: z.string().optional(),
-      timelineGoals: z.any().optional(),
+      timelineGoals: z.string().optional(),
+      currentStrongestSkills: z.array(z.string()).optional(),
+      desiredSkills: z.array(z.string()).optional(),
     });
 
     const validationResult = SetCareerIntentSchema.safeParse(req.body);
@@ -71,22 +73,26 @@ export const ReadinessController = {
       return;
     }
 
-    const { dreamRole, targetRole, goal, experienceLevel, weeklyHours, targetPackage, targetCompanyTier, timelineGoals } = validationResult.data;
-    const resolvedRole = dreamRole || targetRole || '';
+    const { dreamRole, targetRole, goal, experienceLevel, weeklyHours, targetPackage, targetCompanyTier, timelineGoals,
+      currentStrongestSkills, desiredSkills } = validationResult.data;
+    const resolvedRole = dreamRole?.trim() || targetRole?.trim();
+    if (!resolvedRole) {
+      ApiResponse.badRequest(res, 'A career role is required');
+      return;
+    }
 
-    const intent = await CareerIntent.findOneAndUpdate(
-      { userId },
-      {
-        dreamRole: resolvedRole,
-        targetPackage: targetPackage || '',
-        targetCompanyTier: targetCompanyTier || '',
-        timelineGoals: timelineGoals || '',
-        goal: goal || '',
-        experienceLevel: experienceLevel || '',
-        weeklyHours: weeklyHours !== undefined ? Number(weeklyHours) : 0
-      },
-      { upsert: true, new: true }
-    );
+    const intent = await CareerIntentService.upsertCareerIntent({
+      userId,
+      dreamRole: resolvedRole,
+      targetPackage: targetPackage || '',
+      targetCompanyTier: targetCompanyTier || '',
+      timelineGoals: timelineGoals || '',
+      goal: goal || '',
+      experienceLevel: experienceLevel || '',
+      weeklyHours: weeklyHours ?? 0,
+      currentStrongestSkills,
+      desiredSkills,
+    });
 
     res.json({ success: true, data: intent });
   }),

@@ -46,7 +46,7 @@ const CareerIntentSchema = new Schema<ICareerIntent>(
       },
     ],
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency: true }
 );
 
 CareerIntentSchema.index({ dreamRole: 1, targetCompanyTier: 1, experienceLevel: 1 });
