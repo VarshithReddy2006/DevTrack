@@ -4,7 +4,7 @@ import { ReadinessSkills } from '../../../db/models/readinessSkills.model.js';
 import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js';
 import { ReadinessRoadmap } from '../../../db/models/readinessRoadmap.model.js';
 import { ReadinessBenchmarks, type IReadinessBenchmarks } from '../../../db/models/readinessBenchmarks.model.js';
-import { CareerIntent } from '../../../db/models/careerIntent.model.js';
+import { CareerIntentService } from '../services/CareerIntentService.js';
 import { logger } from '../../../shared/logger.js';
 import { ReadinessSnapshotService } from '../snapshot/ReadinessSnapshotService.js';
 
@@ -58,7 +58,7 @@ export const TrustAwareReadinessScoringEngine = {
         readInput(ReadinessProjects.findOne({ userId })),
         readInput(ReadinessRoadmap.findOne({ userId })),
         readInput(ReadinessBenchmarks.findOne({ userId })),
-        readInput(CareerIntent.findOne({ userId })),
+        readInput(CareerIntentService.getCareerIntent(userId)),
       ]);
 
       const missingPillars: string[] = [];
@@ -351,8 +351,8 @@ export const TrustAwareReadinessScoringEngine = {
     
     // Check confidence state
     const confidenceState = careerIntent.confidenceState || 'exploring';
-    if (confidenceState === 'committed') score += 20;
-    else if (confidenceState === 'exploring') score += 10;
+    if (confidenceState === 'high' || confidenceState === 'committed') score += 20;
+    else if (confidenceState === 'medium' || confidenceState === 'exploring') score += 10;
     
     return Math.min(100, Math.round(score));
   },
