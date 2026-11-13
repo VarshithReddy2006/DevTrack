@@ -33,7 +33,13 @@ export { AIDegradedHandler } from './degradation/AIDegradedHandler.js';
 // ---------------------------------------------------------------------------
 // Safety & Trust
 // ---------------------------------------------------------------------------
-export { PromptSafetyLayer } from './safety/PromptSafetyLayer.js';
+export {
+  PromptSafetyLayer,
+  MAX_INPUT_LENGTH,
+  HOMOGLYPH_MAP,
+  type SafetyCheckResult,
+  type SafetyPolicy,
+} from './safety/PromptSafetyLayer.js';
 export { TrustAwareAIResponse } from './trust/TrustAwareAIResponse.js';
 
 // ---------------------------------------------------------------------------
