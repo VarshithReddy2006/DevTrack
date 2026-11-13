@@ -120,12 +120,14 @@ export const SettingsWorkspace: React.FC = () => {
     updateField(id, value);
   };
 
-  const handleCommandPaletteNavigate = (sectionId: string, fieldId?: string) => {
+  const handleCommandPaletteNavigate = (sectionId: string, fieldId?: string, focusField = false) => {
     setActiveSection(sectionId);
     if (fieldId) {
       // Scroll to field after render
       setTimeout(() => {
-        document.getElementById(`field-${fieldId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const field = document.getElementById(`field-${fieldId}`);
+        field?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (focusField) field?.querySelector('input')?.focus({ preventScroll: true });
       }, 100);
     }
     setSearchQuery('');
@@ -153,7 +155,7 @@ export const SettingsWorkspace: React.FC = () => {
       {saveError && <p role="alert">{saveError}</p>}
       <p className="px-4 text-sm text-dt-textSecondary">Platform usernames save to your account. Theme is saved in this browser. Other settings are not available yet.</p>
       {/* Top Header */}
-      <div className="sticky top-0 z-30 pt-6 pb-6 bg-dt-bg/90 backdrop-blur-xl border-b border-dt-primary/5 flex items-center justify-between mb-8 px-4">
+      <div className="sticky top-0 z-30 pt-6 pb-6 bg-dt-bg/90 backdrop-blur-xl border-b border-dt-primary/5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-8 px-4">
         <div>
           <h1 className="text-3xl font-black text-dt-text tracking-tight">Settings</h1>
           <p className="text-sm font-medium text-dt-textSecondary/70 mt-1">Manage your developer workspace</p>
@@ -170,12 +172,12 @@ export const SettingsWorkspace: React.FC = () => {
           </button>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4 sm:flex-nowrap">
           {/* PHASE 5: System Health Bar */}
-          <SystemHealthBar />
+          <SystemHealthBar onConfigurePlatform={fieldId => handleCommandPaletteNavigate('account', fieldId, true)} />
 
           {/* Search with Command Palette trigger */}
-          <div className="relative group">
+          <div className="relative group min-w-0 w-full sm:w-64">
             <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-dt-textSecondary/50 group-focus-within:text-dt-primary transition-colors z-10" />
             <input
               ref={searchInputRef}
@@ -184,7 +186,7 @@ export const SettingsWorkspace: React.FC = () => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => setShowCommandPalette(true)}
-              className="pl-9 pr-14 py-2.5 bg-white/60 border border-dt-primary/10 rounded-2xl text-sm font-medium text-dt-text focus:outline-none focus:ring-2 focus:ring-dt-primary/20 focus:bg-white transition-all w-64 shadow-sm hover:shadow-md"
+              className="pl-9 pr-14 py-2.5 bg-white/60 border border-dt-primary/10 rounded-2xl text-sm font-medium text-dt-text focus:outline-none focus:ring-2 focus:ring-dt-primary/20 focus:bg-white transition-all w-full shadow-sm hover:shadow-md"
             />
             <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 pointer-events-none opacity-50 group-focus-within:opacity-0 transition-opacity">
               <kbd className="px-1.5 py-0.5 rounded bg-black/5 text-[10px] font-black border border-black/10">⌘</kbd>

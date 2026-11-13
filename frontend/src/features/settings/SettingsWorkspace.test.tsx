@@ -7,7 +7,10 @@ import { getSettings, updateSettings, type UserSettingsResponse } from '../../se
 
 vi.mock('@clerk/clerk-react', () => ({ useClerk: () => ({ signOut: vi.fn() }) }));
 vi.mock('../../services/settingsService', () => ({ getSettings: vi.fn(), updateSettings: vi.fn() }));
-vi.mock('./components/SystemHealthBar', () => ({ SystemHealthBar: () => null }));
+vi.mock('../../services/systemHealthService', () => ({
+  getApiHealth: async () => ({ health: { status: 'ok', degraded: false }, latencyMs: 82 }),
+  getPlatformSyncStatuses: async () => [{ platformName: 'GitHub', isConnected: true, syncStatus: 'failed' }],
+}));
 // Exercise the real controls/save flow without waiting on exit animation frames.
 vi.mock('framer-motion', async original => ({
   ...await original<typeof import('framer-motion')>(),
@@ -39,6 +42,21 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('settings save workflow', () => {
+  it.each([
+    ['GitHub', 'Enter GitHub username'],
+    ['Codeforces', 'Enter Codeforces handle'],
+  ])('opens and focuses the settings field for %s', async (platform, placeholder) => {
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: 'Appearance' }));
+    const toggle = screen.getByRole('button', { name: 'Show system status' });
+    fireEvent.click(toggle);
+    fireEvent.click(await screen.findByRole('button', { name: `Configure ${platform}` }));
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByPlaceholderText(placeholder)));
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
   it('submits only a changed supported field and retains it on reload', async () => {
     const stored = initial();
     vi.mocked(getSettings).mockImplementation(async () => structuredClone(stored));

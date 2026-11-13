@@ -276,7 +276,7 @@ export const AppShell = () => {
       </AnimatePresence>
 
       {/* ─── MAIN CONTENT AREA ─── */}
-      <main className={cn('flex-1 min-h-screen flex flex-col transition-all duration-300', mainMargin)}>
+      <main className={cn('flex-1 min-w-0 min-h-screen flex flex-col transition-all duration-300', mainMargin)}>
         {/* ─── TOPBAR (72px sticky with refined center layer) ─── */}
         <header className="sticky top-0 z-30 h-[72px] bg-gradient-to-b from-[#F8FAFC] to-[#F8FAFC]/90 dark:from-[#09090B] dark:to-[#09090B]/90 backdrop-blur-2xl border-b border-slate-200/50 dark:border-zinc-800/80 shadow-sm flex items-center transition-colors duration-300">
           <div className="w-full max-w-[1440px] mx-auto px-4 md:px-8 flex items-center justify-between gap-4">
@@ -293,16 +293,16 @@ export const AppShell = () => {
             </div>
 
             {/* Central Unified Grouped Action Command Layer */}
-            <div className="flex-1 flex items-center justify-center max-w-4xl mx-auto w-full gap-4">
+            <div className="flex-1 min-w-0 flex items-center justify-center max-w-4xl mx-auto w-full gap-2 sm:gap-4">
               {/* Search Command Bar */}
               <button
                 type="button"
                 onClick={() => setCommandOpen(true)}
-                className="flex items-center gap-2.5 flex-1 max-w-lg px-4 py-2 rounded-full border border-slate-200 bg-white/80 text-slate-500 text-sm hover:border-[#8B5CF6]/40 focus:outline focus:outline-2 focus:outline-[#8B5CF6]/40 hover:bg-[#8B5CF6]/5 transition-all duration-300 shadow-sm group"
+                className="flex items-center gap-2.5 flex-1 min-w-0 max-w-lg px-3 sm:px-4 py-2 rounded-full border border-slate-200 bg-white/80 text-slate-500 text-sm hover:border-[#8B5CF6]/40 focus:outline focus:outline-2 focus:outline-[#8B5CF6]/40 hover:bg-[#8B5CF6]/5 transition-all duration-300 shadow-sm group"
               >
-                <Search size={14} className="text-slate-400 group-hover:text-[#8B5CF6] transition-colors" />
-                <span className="text-[12px] font-semibold text-slate-600 tracking-tight">Show my hardest problems…</span>
-                <kbd className="ml-auto text-[9px] px-1.5 py-0.5 rounded-[5px] bg-slate-100 border border-slate-200 text-slate-500 font-mono tracking-widest flex items-center justify-center">⌘K</kbd>
+                <Search size={14} className="shrink-0 text-slate-400 group-hover:text-[#8B5CF6] transition-colors" />
+                <span className="truncate text-[12px] font-semibold text-slate-600 tracking-tight">Show my hardest problems…</span>
+                <kbd className="hidden sm:flex ml-auto shrink-0 text-[9px] px-1.5 py-0.5 rounded-[5px] bg-slate-100 border border-slate-200 text-slate-500 font-mono tracking-widest items-center justify-center">⌘K</kbd>
               </button>
 
               {/* Realtime Status Dot */}

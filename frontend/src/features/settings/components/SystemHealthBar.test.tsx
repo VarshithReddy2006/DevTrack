@@ -6,10 +6,6 @@ import { getApiHealth, getPlatformSyncStatuses } from '../../../services/systemH
 vi.mock('../../../services/systemHealthService', () => ({
   getApiHealth: vi.fn(), getPlatformSyncStatuses: vi.fn(),
 }));
-vi.mock('framer-motion', async original => ({
-  ...await original<typeof import('framer-motion')>(),
-  AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
-}));
 
 const syncedAt = new Date(Date.now() - 5 * 60_000).toISOString();
 const github = { platformName: 'GitHub', isConnected: true, syncStatus: 'success', lastSyncedAt: syncedAt };
@@ -22,6 +18,32 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('system health status', () => {
+  it('dismisses on outside pointer presses and keeps the panel open for inside presses', async () => {
+    render(<><button type="button">Outside</button><SystemHealthBar /></>);
+    await screen.findByText('2/5 healthy');
+    const toggle = screen.getByRole('button', { name: 'Show system status' });
+    fireEvent.click(toggle);
+    fireEvent.pointerDown(screen.getByRole('heading', { name: 'System Status' }));
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Outside' }));
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('heading', { name: 'System Status' })).toBeNull();
+  });
+
+  it('dismisses on Escape and restores focus to the toggle', async () => {
+    render(<SystemHealthBar />);
+    await screen.findByText('2/5 healthy');
+    const toggle = screen.getByRole('button', { name: 'Show system status' });
+    fireEvent.click(toggle);
+    const refresh = screen.getByRole('button', { name: 'Refresh' });
+    refresh.focus();
+    fireEvent.keyDown(refresh, { key: 'Escape' });
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(toggle);
+  });
+
   it('shows measured API latency, actual sync time and disconnected platforms', async () => {
     render(<SystemHealthBar />);
     await waitFor(() => expect(screen.getByText('2/5 healthy')).toBeTruthy());
@@ -40,7 +62,7 @@ describe('system health status', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show system status' }));
     expect(screen.getByText('Health check unavailable')).toBeTruthy();
     expect(screen.getAllByText('Sync status unavailable')).toHaveLength(4);
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry API check' }));
     await waitFor(() => expect(screen.getByText('2/5 healthy')).toBeTruthy());
     expect(getApiHealth).toHaveBeenCalledTimes(2);
     expect(getPlatformSyncStatuses).toHaveBeenCalledTimes(2);
