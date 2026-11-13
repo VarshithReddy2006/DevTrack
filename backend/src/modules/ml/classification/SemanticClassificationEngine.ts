@@ -1,6 +1,5 @@
 // src/modules/ml/classification/SemanticClassificationEngine.ts
 // Streamlined semantic classification engine using deterministic heuristics.
-// Preserves working interface, confidence levels, and evidence metrics.
 
 import { logger } from '../../../shared/logger.js';
 import type { ClassificationPrediction } from '../types.js';
@@ -44,6 +43,17 @@ const TASK_LABELS: Record<ClassificationTask, string[]> = {
   ],
 };
 
+const RESUME_SECTION_SIGNALS: Record<string, { heading: RegExp; body: RegExp }> = {
+  summary: { heading: /^(?:(?:professional|career) )?(?:summary|profile|objective)$|^about me$/i, body: /\b(?:professional summary|career objective|years of experience)\b/i },
+  experience: { heading: /^(?:(?:professional|work|relevant) )?experience$|^(?:work|employment|career) history$/i, body: /\b(?:worked at|employed by|responsible for|internship)\b/i },
+  education: { heading: /^(?:education|academic background|education & credentials)$/i, body: /\b(?:bachelor(?:'s)?|master(?:'s)?|degree|university|gpa)\b/i },
+  skills: { heading: /^(?:skills|technical skills|technical stack|core competencies|technologies & tools)$/i, body: /\b(?:programming languages|proficient in|frameworks|technical skills)\b/i },
+  projects: { heading: /^(?:(?:selected|personal|key) )?projects$|^(?:portfolio|open source contributions)$/i, body: /\b(?:personal project|side project|project repository|open source contribution)\b/i },
+  certifications: { heading: /^(?:certifications?|certificates|licenses & certifications)$/i, body: /\b(?:certified|certification|certificate|credential id)\b/i },
+  awards: { heading: /^(?:awards|honou?rs|honou?rs & awards|awards & honou?rs)$/i, body: /\b(?:award(?:ed)?|first place|winner|honou?rable mention)\b/i },
+  publications: { heading: /^(?:publications?|research publications|selected publications)$/i, body: /\b(?:published in|doi|journal article|conference paper)\b/i },
+};
+
 /**
  * SemanticClassificationEngine
  * 
@@ -58,34 +68,27 @@ export class SemanticClassificationEngine {
    * Classify text for a specific task using deterministic heuristic score calculations.
    */
   classify(text: string, task: ClassificationTask): ClassificationWithEvidence {
-    const evidence = this.extractEvidence(text, task);
-    const evidenceCoverage = this.computeEvidenceCoverage(evidence, task);
     const labels = TASK_LABELS[task];
+    let evidence: string[];
+    let evidenceCoverage: number;
+    let weights: number[];
 
-    // Map heuristic coverage and text attributes to a clean label index
-    let selectedIndex = 0;
-    if (evidenceCoverage > 0.8) {
-      selectedIndex = 0; // Top label (e.g. 'highly_optimized' or 'expert')
-    } else if (evidenceCoverage > 0.5) {
-      selectedIndex = 1;
-    } else if (evidenceCoverage > 0.3) {
-      selectedIndex = 2;
+    if (task === 'resume_section') {
+      const result = this.scoreResumeSections(text, labels);
+      ({ evidence, evidenceCoverage, weights } = result);
     } else {
-      selectedIndex = labels.length - 1; // Lowest label
+      evidence = this.extractEvidence(text, task);
+      const maxEvidence = task === 'infra_maturity' ? 5 : labels.length - 1;
+      evidenceCoverage = Math.min(1, evidence.length / maxEvidence);
+      // Nearby tiers get more weight, with lower confidence at tier boundaries.
+      const position = (1 - evidenceCoverage) * (labels.length - 1);
+      weights = labels.map((_, index) => Math.exp(-2 * Math.abs(position - index)));
     }
 
-    const label = labels[selectedIndex] || labels[0];
-    const probability = Math.min(0.99, 0.4 + (evidenceCoverage * 0.59));
-
-    const allLabels = labels.map((lbl, idx) => {
-      let prob = 0.1;
-      if (idx === selectedIndex) {
-        prob = probability;
-      } else {
-        prob = (1 - probability) / (labels.length - 1 || 1);
-      }
-      return { label: lbl, probability: Math.max(0, prob) };
-    });
+    const selectedIndex = weights.reduce((best, weight, index) => weight > weights[best] ? index : best, 0);
+    const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+    const allLabels = labels.map((label, index) => ({ label, probability: weights[index] / totalWeight }));
+    const { label, probability } = allLabels[selectedIndex];
 
     return {
       label,
@@ -97,7 +100,7 @@ export class SemanticClassificationEngine {
       latencyMs: 1,
       timestamp: new Date().toISOString(),
       task,
-      evidence,
+      evidence: evidence.length ? evidence : ['Limited context signal for classification'],
       evidenceCoverage,
     };
   }
@@ -137,7 +140,29 @@ export class SemanticClassificationEngine {
     return TASK_LABELS[task];
   }
 
-  private extractEvidence(text: string, task: ClassificationTask): string[] {
+  private scoreResumeSections(text: string, labels: string[]) {
+    const heading = text.trim().split(/\r?\n/, 1)[0]
+      .replace(/^#{1,6}\s+/, '').replace(/:$/, '').trim();
+    const evidence: string[] = [];
+    let strongestScore = 0;
+    const scores = labels.map(label => {
+      const signals = RESUME_SECTION_SIGNALS[label];
+      if (!signals) return 0;
+      const headingMatches = signals.heading.test(heading);
+      const bodyMatches = signals.body.test(text);
+      if (headingMatches) evidence.push(`Section heading matches ${label}`);
+      if (bodyMatches) evidence.push(`Section text matches ${label}`);
+      const score = Number(headingMatches) * 3 + Number(bodyMatches);
+      strongestScore = Math.max(strongestScore, score);
+      return score;
+    });
+    const weights = scores.map((score, index) => Math.exp(
+      labels[index] === 'other' && strongestScore === 0 ? 1 : score
+    ));
+    return { evidence, evidenceCoverage: strongestScore / 4, weights };
+  }
+
+  private extractEvidence(text: string, task: Exclude<ClassificationTask, 'resume_section'>): string[] {
     const evidence: string[] = [];
     const lower = text.toLowerCase();
 
@@ -147,7 +172,7 @@ export class SemanticClassificationEngine {
         if (/deployed|production|live/i.test(lower)) evidence.push('Deployment evidence found');
         if (/\d+ (users|requests|commits)/i.test(lower)) evidence.push('Quantified metrics present');
         if (/test|testing|jest|vitest|mocha/i.test(lower)) evidence.push('Testing evidence found');
-        if (/tutorial|course|udemy|follow/i.test(lower)) evidence.push('Tutorial signals detected');
+        if (/\b(?:maintained|maintainer|contributors?|releases?)\b/.test(lower)) evidence.push('Maintenance evidence found');
         break;
 
       case 'infra_maturity':
@@ -169,29 +194,17 @@ export class SemanticClassificationEngine {
         if (/\d+%|\d+x/i.test(lower)) evidence.push('Quantified achievements');
         if (/(built|designed|implemented|architected)\s/i.test(lower)) evidence.push('Action verbs present');
         if (text.length > 100) evidence.push('Sufficient detail');
+        if (/\b(?:reduced|increased|improved|saved|delivered)\b/.test(lower)) evidence.push('Outcome described');
         break;
 
-      default:
-        evidence.push('Text density verification validated');
+      case 'ats_semantic':
+        if (/^\s*(?:professional experience|work experience|experience|education|skills|projects)\s*:?\s*$/im.test(text)) evidence.push('Standard resume heading present');
+        if (/\b(?:built|designed|implemented|led|developed)\b/.test(lower)) evidence.push('Action verbs present');
+        if (/\b\d+(?:\.\d+)?(?:%|x\b|\s+(?:users|requests|projects)\b)/.test(lower)) evidence.push('Quantified achievement present');
+        if (/\b(?:typescript|python|java|sql|react|docker|kubernetes|aws)\b/.test(lower)) evidence.push('Specific technical keywords present');
         break;
-    }
-
-    if (evidence.length === 0) {
-      evidence.push('Limited context signal for classification');
     }
 
     return evidence;
-  }
-
-  private computeEvidenceCoverage(evidence: string[], task: ClassificationTask): number {
-    const expectedEvidence: Record<ClassificationTask, number> = {
-      resume_section: 2,
-      project_authenticity: 4,
-      ats_semantic: 3,
-      recruiter_quality: 3,
-      infra_maturity: 5,
-      engineering_depth: 4,
-    };
-    return Math.min(1, evidence.length / (expectedEvidence[task] ?? 3));
   }
 }
