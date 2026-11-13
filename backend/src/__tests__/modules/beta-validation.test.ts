@@ -1,7 +1,7 @@
 // src/__tests__/modules/beta-validation.test.ts
 // Unit tests for closed beta onboarding, telemetry, feedback calibration loops, and product readiness reporting.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BetaAccessInfrastructure } from '../../modules/onboarding/BetaAccessInfrastructure.js';
 import { FeedbackIntelligenceLoop, FeedbackReport } from '../../modules/calibration/FeedbackIntelligenceLoop.js';
 import { ProductReadinessEvaluation } from '../../modules/calibration/ProductReadinessEvaluation.js';
@@ -16,6 +16,7 @@ vi.mock('../../shared/redis/client.js', () => {
     ltrim: vi.fn(),
     hset: vi.fn(),
     incr: vi.fn(),
+    eval: vi.fn(),
   };
   return {
     getRedisClient: () => mockRedis,
@@ -40,38 +41,21 @@ describe('BetaAccessInfrastructure', () => {
   });
 
   describe('validateInviteCode', () => {
-    it('should validate invite code successfully and increment usage', async () => {
-      const inviteData = {
-        code: 'valid_code',
-        maxUses: 5,
-        usesCount: 2,
-        cohortId: 'cohort-a-standard',
-        createdBy: 'admin',
-      };
-      mockRedis.get.mockResolvedValue(JSON.stringify(inviteData));
+    it('should redeem an issued invite code through one atomic eval call', async () => {
+      mockRedis.eval.mockResolvedValue([1, 'cohort-a-standard', 3, 5]);
 
-      const result = await BetaAccessInfrastructure.validateInviteCode('valid_code');
+      const result = await BetaAccessInfrastructure.validateInviteCode('Valid_Code');
 
-      expect(result.valid).toBe(true);
-      expect(result.cohortId).toBe('cohort-a-standard');
-      expect(mockRedis.get).toHaveBeenCalledWith('beta:invite:valid_code');
-      expect(mockRedis.set).toHaveBeenCalled();
-      
-      const setCallArgs = mockRedis.set.mock.calls[0];
-      expect(setCallArgs[0]).toBe('beta:invite:valid_code');
-      const updatedInvite = JSON.parse(setCallArgs[1]);
-      expect(updatedInvite.usesCount).toBe(3);
+      expect(result).toEqual({ valid: true, cohortId: 'cohort-a-standard' });
+      expect(mockRedis.eval).toHaveBeenCalledTimes(1);
+      expect(mockRedis.eval).toHaveBeenCalledWith(expect.any(String), 1, 'beta:invite:valid_code');
+      // No separate read-modify-write on the invite key
+      expect(mockRedis.get).not.toHaveBeenCalled();
+      expect(mockRedis.set).not.toHaveBeenCalled();
     });
 
     it('should fail validation when invite code has reached maximum uses', async () => {
-      const inviteData = {
-        code: 'expired_code',
-        maxUses: 3,
-        usesCount: 3,
-        cohortId: 'cohort-a-standard',
-        createdBy: 'admin',
-      };
-      mockRedis.get.mockResolvedValue(JSON.stringify(inviteData));
+      mockRedis.eval.mockResolvedValue([2, '', 3, 3]);
 
       const result = await BetaAccessInfrastructure.validateInviteCode('expired_code');
 
@@ -80,24 +64,90 @@ describe('BetaAccessInfrastructure', () => {
       expect(mockRedis.set).not.toHaveBeenCalled();
     });
 
-    it('should fall back to dev simulation for DEVTRACK_BETA_ keys', async () => {
-      mockRedis.get.mockResolvedValue(null);
-
-      const resultInfra = await BetaAccessInfrastructure.validateInviteCode('DEVTRACK_BETA_INFRA');
-      expect(resultInfra.valid).toBe(true);
-      expect(resultInfra.cohortId).toBe('cohort-b-heavy-infra');
-
-      const resultStd = await BetaAccessInfrastructure.validateInviteCode('DEVTRACK_BETA_ANY');
-      expect(resultStd.valid).toBe(true);
-      expect(resultStd.cohortId).toBe('cohort-a-standard');
-    });
-
     it('should return invalid for unknown codes', async () => {
-      mockRedis.get.mockResolvedValue(null);
+      mockRedis.eval.mockResolvedValue([0, '', 0, 0]);
 
       const result = await BetaAccessInfrastructure.validateInviteCode('unknown_code');
       expect(result.valid).toBe(false);
       expect(result.error).toBe('Invalid invite code');
+    });
+  });
+
+  describe('validateInviteCode against a fake invite store', () => {
+    // In-memory stand-in for Redis. get/set yield to the event loop like a network call, so a
+    // read-modify-write implementation interleaves. eval runs the script's logic synchronously,
+    // which is what Redis guarantees for a Lua script (no other command runs in between).
+    let store: Map<string, string>;
+    const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    beforeEach(() => {
+      store = new Map();
+      mockRedis = getRedisClient();
+      mockRedis.get.mockImplementation(async (key: string) => {
+        await tick();
+        return store.get(key) ?? null;
+      });
+      mockRedis.set.mockImplementation(async (key: string, value: string) => {
+        await tick();
+        store.set(key, value);
+        return 'OK';
+      });
+      mockRedis.eval.mockImplementation(async (_script: string, _numKeys: number, key: string) => {
+        await tick();
+        const data = store.get(key);
+        if (!data) return [0, '', 0, 0];
+        const invite = JSON.parse(data);
+        if (invite.usesCount >= invite.maxUses) return [2, '', invite.usesCount, invite.maxUses];
+        invite.usesCount += 1;
+        store.set(key, JSON.stringify(invite));
+        return [1, invite.cohortId, invite.usesCount, invite.maxUses];
+      });
+    });
+
+    afterEach(() => {
+      mockRedis.get.mockReset();
+      mockRedis.set.mockReset();
+      mockRedis.eval.mockReset();
+    });
+
+    it('should reject an unissued code that starts with DEVTRACK_BETA_', async () => {
+      const infra = await BetaAccessInfrastructure.validateInviteCode('DEVTRACK_BETA_INFRA');
+      expect(infra).toEqual({ valid: false, cohortId: '', error: 'Invalid invite code' });
+
+      const any = await BetaAccessInfrastructure.validateInviteCode('DEVTRACK_BETA_ANY');
+      expect(any).toEqual({ valid: false, cohortId: '', error: 'Invalid invite code' });
+    });
+
+    it('should still accept a DEVTRACK_BETA_ code once it has actually been issued', async () => {
+      await BetaAccessInfrastructure.createInviteCode('DEVTRACK_BETA_REAL', 'cohort-b-heavy-infra', 1);
+
+      const result = await BetaAccessInfrastructure.validateInviteCode('DEVTRACK_BETA_REAL');
+      expect(result).toEqual({ valid: true, cohortId: 'cohort-b-heavy-infra' });
+    });
+
+    it('should allow exactly one of 10 concurrent redemptions on a maxUses: 1 invite', async () => {
+      await BetaAccessInfrastructure.createInviteCode('single_use', 'cohort-a-standard', 1);
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => BetaAccessInfrastructure.validateInviteCode('single_use')),
+      );
+
+      expect(results.filter((r) => r.valid)).toHaveLength(1);
+      const rejected = results.filter((r) => !r.valid);
+      expect(rejected).toHaveLength(9);
+      expect(rejected.every((r) => r.error === 'Invite code maximum usage reached')).toBe(true);
+      expect(JSON.parse(store.get('beta:invite:single_use')!).usesCount).toBe(1);
+    });
+
+    it('should never exceed maxUses when more concurrent redemptions arrive than uses remain', async () => {
+      await BetaAccessInfrastructure.createInviteCode('three_use', 'cohort-a-standard', 3);
+
+      const results = await Promise.all(
+        Array.from({ length: 12 }, () => BetaAccessInfrastructure.validateInviteCode('three_use')),
+      );
+
+      expect(results.filter((r) => r.valid)).toHaveLength(3);
+      expect(JSON.parse(store.get('beta:invite:three_use')!).usesCount).toBe(3);
     });
   });
 
