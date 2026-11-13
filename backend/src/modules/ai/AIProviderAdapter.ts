@@ -1,5 +1,5 @@
 import { logger } from '../../shared/logger.js';
-import { AIResponseAuditLog } from '../../db/models/aiResponseAuditLog.model.js';
+import { AIResponseAuditLog } from './audit/AIResponseAuditLog.js';
 
 export const AIProviderAdapter = {
   /**
@@ -37,17 +37,21 @@ export const AIProviderAdapter = {
 
     const latencyMs = Date.now() - start;
 
-    // Audit log (fire and forget)
-    AIResponseAuditLog.create({
+    void AIResponseAuditLog.log({
       userId,
-      prompt: userPrompt,
-      response,
+      requestType: 'legacy-generation',
       provider,
-      latencyMs,
+      model: 'legacy-mock',
+      latency: latencyMs,
       tokensUsed: 150, // mock
+      cached: false,
+      contextVersion: '',
+      responseConfidence: 0,
       moderationFlags: flags,
-      hallucinationFlags: []
-    }).catch(err => logger.error('[AIProviderAdapter] Failed to save audit log', { err }));
+      hallucinationFlags: [],
+      safetyViolations: [],
+      success: provider !== 'fallback',
+    });
 
     return response;
   }

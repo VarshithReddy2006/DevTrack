@@ -206,7 +206,7 @@ class ObservabilityConsoleClass {
     const recommendationMetrics = this.calculateRecommendationMetrics();
 
     // Calculate AI metrics
-    const aiMetrics = this.calculateAIMetrics();
+    const aiMetrics = await this.calculateAIMetrics();
 
     return {
       systemHealth,
@@ -233,10 +233,10 @@ class ObservabilityConsoleClass {
   /**
    * Calculate AI metrics
    */
-  private calculateAIMetrics(): AIMetrics {
+  private async calculateAIMetrics(): Promise<AIMetrics> {
     const providerHealth = AIProviderAdapter.getAllProviderHealth();
     const tokenUsageStats = AIProviderAdapter.getTokenUsageStats();
-    const auditStats = AIResponseAuditLog.calculateStats();
+    const auditStats = await AIResponseAuditLog.calculateStats();
     const currentProvider = AIProviderAdapter.getCurrentProvider();
     const degradedProviders = providerHealth
       .filter(p => p.status !== 'healthy')

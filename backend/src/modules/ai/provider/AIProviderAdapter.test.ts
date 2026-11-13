@@ -5,6 +5,7 @@ import { ProviderFailoverRuntime } from '../reliability/ProviderFailoverRuntime.
 import { AIProviderAdapter } from './AIProviderAdapter.js';
 
 const mocks = vi.hoisted(() => ({
+  audit: vi.fn(),
   cache: new Map<string, string>(),
   keys: vi.fn(),
   get: vi.fn(),
@@ -14,6 +15,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.unmock('./AIProviderAdapter.js');
+vi.mock('../audit/AIResponseAuditLog.js', () => ({
+  AIResponseAuditLog: { log: mocks.audit },
+}));
 vi.mock('../../../shared/redis/index.js', () => ({
   getRedisClient: () => ({ status: 'ready', get: mocks.get, set: mocks.set, keys: mocks.keys }),
 }));
@@ -74,6 +78,11 @@ describe('AI provider recovery', () => {
     expect(await AIProviderAdapter.generateResponse(prompt)).toMatchObject({
       provider: 'gemini', cached: true, fallbackTriggered: true,
     });
+    expect(mocks.audit.mock.calls.map(([entry]) => entry)).toEqual([
+      expect.objectContaining({ userId: 'tenant-one', provider: 'gemini', success: true, cached: false }),
+      expect.objectContaining({ userId: 'tenant-one', provider: 'gemini', success: true, cached: true, tokensUsed: 0 }),
+      expect.objectContaining({ userId: 'tenant-one', provider: 'gemini', success: true, cached: true, tokensUsed: 0 }),
+    ]);
     expect(openai).toHaveBeenCalledTimes(5);
     await vi.advanceTimersByTimeAsync(60_000);
     await AIProviderAdapter.generateResponse(prompt);
