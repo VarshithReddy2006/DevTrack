@@ -354,7 +354,7 @@ class ReadinessContextBuilderClass {
     ) || [];
     
     return {
-      percentileRanking: benchmarksData.percentileRankings?.[0]?.percentileRanking || 0,
+      percentileRanking: benchmarksData.cohortSegments?.[0]?.percentileRanking ?? 0,
       relativeComparisons,
       confidenceLevel: benchmarksData.cohortSegments?.[0]?.confidenceLevel || 0,
     };

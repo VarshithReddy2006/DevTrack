@@ -49,5 +49,7 @@ const CareerIntentSchema = new Schema<ICareerIntent>(
   { timestamps: true }
 );
 
+CareerIntentSchema.index({ dreamRole: 1, targetCompanyTier: 1, experienceLevel: 1 });
+
 export const CareerIntent = mongoose.model<ICareerIntent>('CareerIntent', CareerIntentSchema);
 
