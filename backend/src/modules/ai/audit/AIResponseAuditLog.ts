@@ -1,3 +1,6 @@
+import { isObjectIdOrHexString, type FilterQuery, type PipelineStage, type Types } from 'mongoose';
+import { AIResponseAuditLog as AuditLogModel, AI_AUDIT_ERROR_CODES, type AIAuditErrorCode, type IAIResponseAuditLog } from '../../../db/models/aiResponseAuditLog.model.js';
+import { escapeRegExp } from '../../../shared/regex.js';
 import { logger } from '../../../shared/logger.js';
 
 export interface AuditLogEntry {
@@ -20,6 +23,7 @@ export interface AuditLogEntry {
   response: string;
   success: boolean;
   errorMessage?: string;
+  errorCode?: AIAuditErrorCode;
 }
 
 export interface AuditStats {
@@ -43,259 +47,184 @@ export interface AuditStats {
   }>;
 }
 
-class AIResponseAuditLogClass {
-  private auditLog: Map<string, AuditLogEntry> = new Map();
-  private maxLogEntries: number = 10000;
+type StoredEntry = Pick<IAIResponseAuditLog,
+  'userId' | 'requestType' | 'model' | 'provider' | 'latencyMs' | 'tokensUsed' | 'cached' |
+  'contextVersion' | 'responseConfidence' | 'moderationFlags' | 'hallucinationFlags' |
+  'safetyViolations' | 'success' | 'errorCode' | 'createdAt'> & { _id: Types.ObjectId };
 
-  /**
-   * Log AI request/response
-   */
-  log(entry: Omit<AuditLogEntry, 'logId' | 'timestamp'>): AuditLogEntry {
-    const logId = this.generateLogId();
-    const auditEntry: AuditLogEntry = {
-      ...entry,
-      logId,
-      timestamp: new Date(),
-    };
+type Breakdown = AuditStats['byProvider'][string];
+type Totals = Omit<AuditStats, 'byProvider' | 'byModel' | 'cacheHitRate'> & { cachedCount: number };
 
-    this.auditLog.set(logId, auditEntry);
+const flagFields = {
+  moderation: 'moderationFlags',
+  hallucination: 'hallucinationFlags',
+  safety: 'safetyViolations',
+} as const;
+const timeframeHours = new Map([['hour', 1], ['day', 24], ['week', 168], ['month', 720]]);
 
-    // Keep log size bounded
-    if (this.auditLog.size > this.maxLogEntries) {
-      const oldestKey = this.auditLog.keys().next().value;
-      if (oldestKey) {
-        this.auditLog.delete(oldestKey);
-      }
+function toEntry(record: StoredEntry): AuditLogEntry {
+  return {
+    logId: record._id.toHexString(),
+    timestamp: record.createdAt,
+    userId: record.userId,
+    requestType: record.requestType ?? 'unknown',
+    model: record.model ?? 'unknown',
+    provider: record.provider,
+    latency: record.latencyMs,
+    tokensUsed: record.tokensUsed ?? 0,
+    cached: record.cached ?? false,
+    contextVersion: record.contextVersion ?? '',
+    responseConfidence: record.responseConfidence ?? 0,
+    moderationFlags: record.moderationFlags ?? [],
+    hallucinationFlags: record.hallucinationFlags ?? [],
+    safetyViolations: record.safetyViolations ?? [],
+    success: record.success ?? true,
+    ...(record.errorCode && { errorCode: record.errorCode }),
+    prompt: '',
+    systemPrompt: '',
+    response: '',
+  };
+}
+
+function breakdown(field: '$provider' | '$model'): PipelineStage.FacetPipelineStage[] {
+  return [{
+    $group: {
+      _id: { $ifNull: [field, 'unknown'] },
+      requests: { $sum: 1 },
+      tokens: { $sum: '$tokensUsed' },
+      latency: { $avg: '$latencyMs' },
+    },
+  }];
+}
+
+type AuditLogInput = Omit<AuditLogEntry, 'logId' | 'timestamp' | 'prompt' | 'systemPrompt' | 'response'>
+  & Partial<Pick<AuditLogEntry, 'prompt' | 'systemPrompt' | 'response'>>;
+
+export class AIResponseAuditLogClass {
+  async log(entry: AuditLogInput): Promise<AuditLogEntry | undefined> {
+    try {
+      // Persist metadata only. Prompts, generated text and provider errors can contain user data.
+      const record = await AuditLogModel.create({
+        userId: entry.userId,
+        requestType: entry.requestType,
+        model: entry.model,
+        provider: entry.provider,
+        latencyMs: entry.latency,
+        tokensUsed: entry.tokensUsed,
+        cached: entry.cached,
+        contextVersion: entry.contextVersion,
+        responseConfidence: entry.responseConfidence,
+        moderationFlags: entry.moderationFlags,
+        hallucinationFlags: entry.hallucinationFlags,
+        safetyViolations: entry.safetyViolations,
+        success: entry.success,
+        errorCode: entry.success ? undefined
+          : AI_AUDIT_ERROR_CODES.find(code => code === entry.errorCode) ?? 'provider_error',
+      });
+      return toEntry(record.toObject());
+    } catch {
+      logger.warn('[AIResponseAuditLog] Failed to persist audit entry');
+      return undefined;
     }
-
-    logger.info('[AIResponseAuditLog] Entry logged', { 
-      logId, 
-      userId: entry.userId, 
-      requestType: entry.requestType,
-      provider: entry.provider,
-      success: entry.success 
-    });
-
-    return auditEntry;
   }
 
-  /**
-   * Get audit log entry by ID
-   */
-  getEntry(logId: string): AuditLogEntry | undefined {
-    return this.auditLog.get(logId);
+  async getEntry(logId: string): Promise<AuditLogEntry | undefined> {
+    if (!isObjectIdOrHexString(logId)) return undefined;
+    const record = await AuditLogModel.findById(logId).select('-prompt -response').lean<StoredEntry>();
+    return record ? toEntry(record) : undefined;
   }
 
-  /**
-   * Get audit log entries for a user
-   */
-  getUserEntries(userId: string, limit: number = 100): AuditLogEntry[] {
-    const userEntries = Array.from(this.auditLog.values())
-      .filter(entry => entry.userId === userId)
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-    return userEntries.slice(0, limit);
+  getUserEntries(userId: string, limit = 100): Promise<AuditLogEntry[]> {
+    return this.findEntries({ userId }, limit);
   }
 
-  /**
-   * Get audit log entries by request type
-   */
-  getEntriesByType(requestType: string, limit: number = 100): AuditLogEntry[] {
-    const typeEntries = Array.from(this.auditLog.values())
-      .filter(entry => entry.requestType === requestType)
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-    return typeEntries.slice(0, limit);
+  getEntriesByType(requestType: string, limit = 100): Promise<AuditLogEntry[]> {
+    return this.findEntries({ requestType }, limit);
   }
 
-  /**
-   * Get audit log entries with flags
-   */
-  getFlaggedEntries(flagType: 'moderation' | 'hallucination' | 'safety', limit: number = 100): AuditLogEntry[] {
-    const flaggedEntries = Array.from(this.auditLog.values())
-      .filter(entry => {
-        if (flagType === 'moderation') return entry.moderationFlags.length > 0;
-        if (flagType === 'hallucination') return entry.hallucinationFlags.length > 0;
-        if (flagType === 'safety') return entry.safetyViolations.length > 0;
-        return false;
-      })
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-    return flaggedEntries.slice(0, limit);
+  getFlaggedEntries(flagType: keyof typeof flagFields, limit = 100): Promise<AuditLogEntry[]> {
+    return this.findEntries({ [flagFields[flagType] + '.0']: { $exists: true } }, limit);
   }
 
-  /**
-   * Get failed entries
-   */
-  getFailedEntries(limit: number = 100): AuditLogEntry[] {
-    const failedEntries = Array.from(this.auditLog.values())
-      .filter(entry => !entry.success)
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-    return failedEntries.slice(0, limit);
+  getFailedEntries(limit = 100): Promise<AuditLogEntry[]> {
+    return this.findEntries({ success: false }, limit);
   }
 
-  /**
-   * Calculate audit statistics
-   */
-  calculateStats(timeframe?: string): AuditStats {
-    const entries = timeframe 
-      ? this.getEntriesInTimeframe(timeframe)
-      : Array.from(this.auditLog.values());
+  getRecentEntries(limit = 50): Promise<AuditLogEntry[]> {
+    return this.findEntries({}, limit);
+  }
 
-    const totalRequests = entries.length;
-    const totalTokens = entries.reduce((sum, entry) => sum + entry.tokensUsed, 0);
-    const averageLatency = totalRequests > 0 
-      ? entries.reduce((sum, entry) => sum + entry.latency, 0) / totalRequests 
-      : 0;
-    const cachedCount = entries.filter(entry => entry.cached).length;
-    const cacheHitRate = totalRequests > 0 ? (cachedCount / totalRequests) * 100 : 0;
-    const moderationFlagCount = entries.reduce((sum, entry) => sum + entry.moderationFlags.length, 0);
-    const hallucinationFlagCount = entries.reduce((sum, entry) => sum + entry.hallucinationFlags.length, 0);
-    const safetyViolationCount = entries.reduce((sum, entry) => sum + entry.safetyViolations.length, 0);
-    const failureCount = entries.filter(entry => !entry.success).length;
+  search(query: string, limit = 100): Promise<AuditLogEntry[]> {
+    const pattern = new RegExp(escapeRegExp(query), 'i');
+    return this.findEntries({ $or: [{ requestType: pattern }, { userId: pattern }] }, limit);
+  }
 
-    // Calculate stats by provider
-    const byProvider: Record<string, { requests: number; tokens: number; latency: number }> = {};
-    entries.forEach(entry => {
-      if (!byProvider[entry.provider]) {
-        byProvider[entry.provider] = { requests: 0, tokens: 0, latency: 0 };
-      }
-      byProvider[entry.provider].requests++;
-      byProvider[entry.provider].tokens += entry.tokensUsed;
-      byProvider[entry.provider].latency += entry.latency;
-    });
+  private async findEntries(filter: FilterQuery<IAIResponseAuditLog>, limit: number): Promise<AuditLogEntry[]> {
+    if (!Number.isFinite(limit) || limit < 1) return [];
+    const records = await AuditLogModel.find(filter)
+      .select('-prompt -response')
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(Math.min(1000, Math.floor(limit)))
+      .lean<StoredEntry[]>();
+    return records.map(toEntry);
+  }
 
-    // Calculate average latency by provider
-    Object.keys(byProvider).forEach(provider => {
-      byProvider[provider].latency = byProvider[provider].latency / byProvider[provider].requests;
-    });
-
-    // Calculate stats by model
-    const byModel: Record<string, { requests: number; tokens: number; latency: number }> = {};
-    entries.forEach(entry => {
-      if (!byModel[entry.model]) {
-        byModel[entry.model] = { requests: 0, tokens: 0, latency: 0 };
-      }
-      byModel[entry.model].requests++;
-      byModel[entry.model].tokens += entry.tokensUsed;
-      byModel[entry.model].latency += entry.latency;
-    });
-
-    // Calculate average latency by model
-    Object.keys(byModel).forEach(model => {
-      byModel[model].latency = byModel[model].latency / byModel[model].requests;
-    });
-
+  async calculateStats(timeframe?: string): Promise<AuditStats> {
+    const hours = timeframe ? timeframeHours.get(timeframe) : undefined;
+    const match = hours ? { createdAt: { $gte: new Date(Date.now() - hours * 60 * 60 * 1000) } } : {};
+    const [result] = await AuditLogModel.aggregate<{
+      totals: Totals[];
+      providers: Array<Breakdown & { _id: string }>;
+      models: Array<Breakdown & { _id: string }>;
+    }>([
+      { $match: match },
+      {
+        $facet: {
+          totals: [{
+            $group: {
+              _id: null,
+              totalRequests: { $sum: 1 },
+              totalTokens: { $sum: '$tokensUsed' },
+              averageLatency: { $avg: '$latencyMs' },
+              cachedCount: { $sum: { $cond: [{ $eq: ['$cached', true] }, 1, 0] } },
+              moderationFlagCount: { $sum: { $size: { $ifNull: ['$moderationFlags', []] } } },
+              hallucinationFlagCount: { $sum: { $size: { $ifNull: ['$hallucinationFlags', []] } } },
+              safetyViolationCount: { $sum: { $size: { $ifNull: ['$safetyViolations', []] } } },
+              failureCount: { $sum: { $cond: [{ $eq: ['$success', false] }, 1, 0] } },
+            },
+          }],
+          providers: breakdown('$provider'),
+          models: breakdown('$model'),
+        },
+      },
+    ]);
+    const totals = result?.totals[0];
     return {
-      totalRequests,
-      totalTokens,
-      averageLatency: Math.round(averageLatency),
-      cacheHitRate: Math.round(cacheHitRate),
-      moderationFlagCount,
-      hallucinationFlagCount,
-      safetyViolationCount,
-      failureCount,
-      byProvider,
-      byModel,
+      totalRequests: totals?.totalRequests ?? 0,
+      totalTokens: totals?.totalTokens ?? 0,
+      averageLatency: Math.round(totals?.averageLatency ?? 0),
+      cacheHitRate: totals ? Math.round((totals.cachedCount / totals.totalRequests) * 100) : 0,
+      moderationFlagCount: totals?.moderationFlagCount ?? 0,
+      hallucinationFlagCount: totals?.hallucinationFlagCount ?? 0,
+      safetyViolationCount: totals?.safetyViolationCount ?? 0,
+      failureCount: totals?.failureCount ?? 0,
+      byProvider: Object.fromEntries((result?.providers ?? []).map(({ _id, ...stats }) => [_id, stats])),
+      byModel: Object.fromEntries((result?.models ?? []).map(({ _id, ...stats }) => [_id, stats])),
     };
   }
 
-  /**
-   * Get entries within a timeframe
-   */
-  private getEntriesInTimeframe(timeframe: string): AuditLogEntry[] {
-    const now = new Date();
-    let cutoff: Date;
-
-    switch (timeframe) {
-      case 'hour':
-        cutoff = new Date(now.getTime() - 60 * 60 * 1000);
-        break;
-      case 'day':
-        cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        break;
-      case 'week':
-        cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        break;
-      case 'month':
-        cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        break;
-      default:
-        cutoff = new Date(0);
-    }
-
-    return Array.from(this.auditLog.values())
-      .filter(entry => entry.timestamp >= cutoff);
+  async clear(): Promise<void> {
+    await AuditLogModel.deleteMany({});
   }
 
-  /**
-   * Get recent entries
-   */
-  getRecentEntries(limit: number = 50): AuditLogEntry[] {
-    return Array.from(this.auditLog.values())
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-      .slice(0, limit);
-  }
-
-  /**
-   * Search audit log
-   */
-  search(query: string, limit: number = 100): AuditLogEntry[] {
-    const lowerQuery = query.toLowerCase();
-    
-    return Array.from(this.auditLog.values())
-      .filter(entry => 
-        entry.prompt.toLowerCase().includes(lowerQuery) ||
-        entry.response.toLowerCase().includes(lowerQuery) ||
-        entry.requestType.toLowerCase().includes(lowerQuery) ||
-        entry.userId.toLowerCase().includes(lowerQuery)
-      )
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-      .slice(0, limit);
-  }
-
-  /**
-   * Clear audit log
-   */
-  clear(): void {
-    this.auditLog.clear();
-    logger.info('[AIResponseAuditLog] Audit log cleared');
-  }
-
-  /**
-   * Clear old entries (older than specified days)
-   */
-  clearOldEntries(days: number): number {
+  async clearOldEntries(days: number): Promise<number> {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    let clearedCount = 0;
-
-    this.auditLog.forEach((entry, logId) => {
-      if (entry.timestamp < cutoff) {
-        this.auditLog.delete(logId);
-        clearedCount++;
-      }
-    });
-
-    logger.info('[AIResponseAuditLog] Old entries cleared', { clearedCount, days });
-
-    return clearedCount;
+    const { deletedCount } = await AuditLogModel.deleteMany({ createdAt: { $lt: cutoff } });
+    return deletedCount;
   }
 
-  /**
-   * Generate log ID
-   */
-  private generateLogId(): string {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 8);
-    return `audit-${timestamp}-${random}`;
-  }
-
-  /**
-   * Get log size
-   */
-  getLogSize(): number {
-    return this.auditLog.size;
+  getLogSize(): Promise<number> {
+    return AuditLogModel.countDocuments().exec();
   }
 }
 

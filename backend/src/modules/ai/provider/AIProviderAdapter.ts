@@ -2,6 +2,8 @@ import { logger } from '../../../shared/logger.js';
 import { getRedisClient } from '../../../shared/redis/index.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { CircuitBreaker, CircuitOpenError } from '../../../shared/circuit-breaker/circuitBreaker.js';
+import { AIResponseAuditLog } from '../audit/AIResponseAuditLog.js';
+import type { AIAuditErrorCode } from '../../../db/models/aiResponseAuditLog.model.js';
 import { AICacheManager } from '../cache/AICacheManager.js';
 
 export type AIProvider = 'openai' | 'gemini';
@@ -48,6 +50,26 @@ export interface TokenUsage {
 
 const defaultModels: Record<AIProvider, string> = { openai: 'gpt-4o-mini', gemini: 'gemini-1.5-flash' };
 const providerTimeoutMs = 15_000;
+
+class ProviderConfigurationError extends Error {}
+
+class ProviderHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Provider HTTP error: ${status}`);
+  }
+}
+
+function auditErrorCode(error: unknown): AIAuditErrorCode {
+  if (error instanceof CircuitOpenError) return 'provider_circuit_open';
+  if (error instanceof ProviderConfigurationError) return 'provider_not_configured';
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+    return 'provider_timeout';
+  }
+  if (error instanceof Error && 'status' in error && error.status === 429) {
+    return 'provider_rate_limited';
+  }
+  return 'provider_error';
+}
 
 function providerCircuit(provider: AIProvider): CircuitBreaker {
   return new CircuitBreaker({
@@ -105,7 +127,22 @@ class AIProviderAdapterClass {
     const primary = request.providerPreference ?? this.currentProvider;
     const chain: AIProvider[] = [primary, primary === 'openai' ? 'gemini' : 'openai'];
     const startTime = Date.now();
-    let lastError: Error | null = null;
+    let lastFailure: { provider: AIProvider; model: string; errorCode: AIAuditErrorCode } | undefined;
+    const audit = (outcome: {
+      provider: AIProvider; model: string; tokensUsed: number; cached: boolean; success: boolean; errorCode?: AIAuditErrorCode;
+    }) => {
+      void AIResponseAuditLog.log({
+        ...outcome,
+        userId: request.tenantScope || 'unscoped',
+        requestType: 'provider-generation',
+        latency: Date.now() - startTime,
+        contextVersion: request.responseSchemaVersion ?? '',
+        responseConfidence: 0,
+        moderationFlags: [],
+        hallucinationFlags: [],
+        safetyViolations: [],
+      });
+    };
 
     for (const provider of chain) {
       const fallbackTriggered = provider !== primary;
@@ -122,7 +159,10 @@ class AIProviderAdapterClass {
         responseFormat: provider === 'gemini' ? 'application/json' : 'text/plain',
       });
       const cached = cacheKey && await this.getFromCache(cacheKey);
-      if (cached) return { ...cached, cached: true, fallbackTriggered };
+      if (cached) {
+        audit({ provider, model: cached.model, tokensUsed: 0, cached: true, success: true });
+        return { ...cached, cached: true, fallbackTriggered };
+      }
 
       try {
         const response = await this.generateWithRetry(provider, effectiveRequest);
@@ -130,19 +170,22 @@ class AIProviderAdapterClass {
         this.updateProviderHealth(provider, true, latency);
         this.trackTokenUsage(provider, response.model, response.tokensUsed);
         if (cacheKey) await this.setCache(cacheKey, { ...response, latency, cached: true, fallbackTriggered });
+        audit({ provider, model: response.model, tokensUsed: response.tokensUsed, cached: false, success: true });
         return { ...response, latency, cached: false, fallbackTriggered };
       } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
+        const errorCode = auditErrorCode(error);
+        lastFailure = { provider, model: effectiveRequest.model, errorCode };
         if (!(error instanceof CircuitOpenError)) {
           this.updateProviderHealth(provider, false, 0);
-          logger.error('[AIProviderAdapter] Provider failed', { provider, error });
+          logger.error('[AIProviderAdapter] Provider failed', { provider, errorCode });
         }
       }
     }
 
     // All providers failed
-    logger.error('[AIProviderAdapter] All providers failed', { error: lastError?.message });
-    throw new Error(`All AI providers failed. Last error: ${lastError?.message}`);
+    if (lastFailure) audit({ ...lastFailure, tokensUsed: 0, cached: false, success: false });
+    logger.error('[AIProviderAdapter] All providers failed', { errorCode: lastFailure?.errorCode });
+    throw new Error(`All AI providers failed. Last error: ${lastFailure?.errorCode ?? 'provider_error'}`);
   }
 
   /**
@@ -196,7 +239,7 @@ class AIProviderAdapterClass {
     const apiKey = process.env.OPENAI_API_KEY;
     
     if (!apiKey || apiKey.startsWith('sk-or-')) {
-      throw new Error('OPENAI_API_KEY is not set or is an OpenRouter key. AI services require valid configuration.');
+      throw new ProviderConfigurationError('OpenAI is not configured');
     }
 
     const messages = [];
@@ -221,8 +264,8 @@ class AIProviderAdapterClass {
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`OpenAI API Error: ${res.status} - ${errText}`);
+      await res.body?.cancel().catch(() => {});
+      throw new ProviderHttpError(res.status);
     }
 
     const data = await res.json();
@@ -245,7 +288,7 @@ class AIProviderAdapterClass {
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey || apiKey === 'dummy_key_for_dev') {
-      throw new Error('GEMINI_API_KEY is not set or is dummy. AI services require valid configuration.');
+      throw new ProviderConfigurationError('Gemini is not configured');
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -261,24 +304,20 @@ class AIProviderAdapterClass {
       responseMimeType: "application/json",
     };
 
-    try {
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
-        generationConfig
-      }, { timeout: providerTimeoutMs });
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
+      generationConfig
+    }, { timeout: providerTimeoutMs });
 
-      const content = result.response.text();
-      const tokensUsed = result.response.usageMetadata?.totalTokenCount || this.estimateTokens(request.prompt + content);
-      
-      return {
-        content,
-        model: modelName,
-        provider: 'gemini',
-        tokensUsed,
-      };
-    } catch (err: any) {
-      throw new Error(`Gemini API Error: ${err.message}`);
-    }
+    const content = result.response.text();
+    const tokensUsed = result.response.usageMetadata?.totalTokenCount || this.estimateTokens(request.prompt + content);
+
+    return {
+      content,
+      model: modelName,
+      provider: 'gemini',
+      tokensUsed,
+    };
   }
 
   /**
