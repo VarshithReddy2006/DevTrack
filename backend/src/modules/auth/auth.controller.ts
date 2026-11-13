@@ -25,6 +25,6 @@ export async function sseHandshake(req: AuthenticatedRequest, res: Response): Pr
   const { createHandshakeTicket } = await import('../../shared/sse/ticketStore.js');
   const ticket = await createHandshakeTicket(req.user.id);
 
-  logger.info('[sse] Generated secure short-lived handshake ticket', { userId: req.user.id, ticket });
+  logger.info('[sse] Generated secure short-lived handshake ticket', { userId: req.user.id });
   successResponse(res, { ticket }, 'SSE Handshake ticket generated');
 }

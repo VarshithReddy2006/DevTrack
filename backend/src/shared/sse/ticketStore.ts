@@ -3,6 +3,10 @@ import crypto from 'crypto';
 import { getRedisClient } from '../redis/client.js';
 import { logger } from '../logger.js';
 
+// Atomic GET + DEL for Redis servers without GETDEL (added in Redis 6.2).
+const GET_AND_DELETE_SCRIPT =
+  "local v = redis.call('GET', KEYS[1]); if v then redis.call('DEL', KEYS[1]); end; return v";
+
 const memoryTickets = new Map<string, { userId: string; expiresAt: number }>();
 
 // Periodic cleanup of expired memory tickets (unref prevents blocking process exit in tests)
@@ -44,20 +48,29 @@ export async function createHandshakeTicket(userId: string): Promise<string> {
 }
 
 /**
+ * Reads and deletes a Redis key in one atomic step, so two concurrent callers
+ * can never both see the value. Uses GETDEL, or a Lua script on older servers.
+ */
+async function getAndDelete(redis: ReturnType<typeof getRedisClient>, key: string): Promise<string | null> {
+  try {
+    return await redis.getdel(key);
+  } catch (err) {
+    if (!(err instanceof Error) || !/unknown command/i.test(err.message)) throw err;
+    return (await redis.eval(GET_AND_DELETE_SCRIPT, 1, key)) as string | null;
+  }
+}
+
+/**
  * Consumes a handshake ticket and returns the userId if valid.
- * Strictly single-use (deleted immediately upon read).
+ * Strictly single-use (read and deleted atomically).
  */
 export async function consumeHandshakeTicket(ticket: string): Promise<string | null> {
   const redis = getRedisClient();
 
   if (redis.status === 'ready') {
     try {
-      const ticketKey = `sse:ticket:${ticket}`;
-      const userId = await redis.get(ticketKey);
-      if (userId) {
-        await redis.del(ticketKey);
-        return userId;
-      }
+      const userId = await getAndDelete(redis, `sse:ticket:${ticket}`);
+      if (userId) return userId;
     } catch (err) {
       logger.warn('[sse-tickets] Redis read failed, falling back to memory check', { error: err instanceof Error ? err.message : String(err) });
     }
@@ -70,7 +83,7 @@ export async function consumeHandshakeTicket(ticket: string): Promise<string | n
   memoryTickets.delete(ticket);
 
   if (data.expiresAt < Date.now()) {
-    logger.warn('[sse-tickets] Fallback ticket expired', { ticket });
+    logger.warn('[sse-tickets] Fallback ticket expired');
     return null;
   }
 
