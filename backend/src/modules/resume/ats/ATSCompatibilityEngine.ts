@@ -251,29 +251,35 @@ export class ATSCompatibilityEngine {
    * Validate section integrity
    */
   private validateSectionIntegrity(content: string): ISectionIntegrity[] {
-    const standardSections = [
-      'summary',
-      'experience',
-      'projects',
-      'skills',
-      'education',
-      'certifications',
-    ];
+    const sectionHeadings = {
+      summary: /^(summary|professional summary|career summary|profile|professional profile|about|about me|objective|career objective)$/i,
+      experience: /^(experience|professional experience|work experience|relevant experience|work history|employment|employment history|career history)$/i,
+      projects: /^(projects|portfolio|personal projects|selected projects|key projects|open source contributions)$/i,
+      skills: /^(skills|technologies|technical skills|technical stack|tech stack|core competencies|technologies & tools|technologies and tools|technical proficiencies)$/i,
+      education: /^(education|academic|academic background|education & credentials|education and credentials)$/i,
+      certifications: /^(certifications|certificates|professional certifications|licenses & certifications|licenses and certifications)$/i,
+    };
+    const headings = content.split(/\r\n?|\n/).map(line => line.trim())
+      .filter(line => line.length > 0 && line.length < 50)
+      .map(line => ({
+        line,
+        title: line.replace(/^#{1,6}\s+/, '').replace(/\s*:\s*$/, '').replace(/\s+/g, ' '),
+      }));
 
-    return standardSections.map(sectionName => {
-      const detected = this.detectSection(content, sectionName);
-      const confidence = detected ? 100 : 0;
-      const issues: string[] = [];
-
-      if (!detected) {
-        issues.push(`Section "${sectionName}" not found`);
+    return Object.entries(sectionHeadings).map(([sectionName, pattern]) => {
+      const heading = headings.find(candidate => pattern.test(candidate.title));
+      if (!heading) {
+        return { sectionName, detected: false, confidence: 0, issues: [`Section "${sectionName}" not found`] };
       }
 
+      const hasHeadingFormatting = heading.line.startsWith('#') || heading.line.endsWith(':')
+        || heading.title === heading.title.toUpperCase();
       return {
         sectionName,
-        detected,
-        confidence,
-        issues,
+        detected: true,
+        confidence: hasHeadingFormatting ? 100 : 90,
+        matchedHeading: heading.line,
+        issues: [],
       };
     });
   }
@@ -493,20 +499,6 @@ export class ATSCompatibilityEngine {
     const lower = content.toLowerCase();
     const badFonts = ['comic sans', 'wingdings', 'webdings', 'zapf dingbats', 'impact', 'papyrus'];
     return badFonts.some(font => lower.includes(font));
-  }
-
-  private detectSection(content: string, sectionName: string): boolean {
-    const sectionPatterns: Record<string, RegExp[]> = {
-      summary: [/\b(summary|profile|about|objective)\b/i],
-      experience: [/\b(experience|work history|employment)\b/i],
-      projects: [/\b(projects|portfolio)\b/i],
-      skills: [/\b(skills|technologies|technical skills)\b/i],
-      education: [/\b(education|academic)\b/i],
-      certifications: [/\b(certifications|certificates)\b/i],
-    };
-
-    const patterns = sectionPatterns[sectionName] || [];
-    return patterns.some(pattern => pattern.test(content));
   }
 
   /**
