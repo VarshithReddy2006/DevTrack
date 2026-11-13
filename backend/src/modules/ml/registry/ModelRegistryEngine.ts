@@ -2,8 +2,8 @@
 // Tracks model versions, training datasets, evaluation metrics, drift status,
 // deployment state, rollback checkpoints. Model governance mandatory.
 
-import { logger } from '../../../shared/logger.js';
-import type { ModelMetadata, ModelStatus, DeploymentState, DriftStatus, EvaluationMetrics } from '../types.js';
+import { MongoModelState } from '../MongoModelState.js';
+import type { ModelMetadata, DeploymentState, DriftStatus, EvaluationMetrics } from '../types.js';
 
 interface RegistryEntry extends ModelMetadata {
   registeredAt: string;
@@ -31,19 +31,15 @@ interface RegistryEntry extends ModelMetadata {
  * GOVERNANCE: No model deployment without passing evaluation gates.
  */
 export class ModelRegistryEngine {
-  private registry: Map<string, RegistryEntry> = new Map();
-  private versionHistory: Map<string, string[]> = new Map(); // modelName → [modelId, ...]
-
-  constructor() {
-    logger.info('[ModelRegistryEngine] Initialized');
-  }
+  private readonly registry = new MongoModelState<RegistryEntry>('ml_model_registry');
 
   /**
    * Register a new model version.
    */
-  register(metadata: ModelMetadata, requiredMetrics?: Partial<EvaluationMetrics>): RegistryEntry {
+  async register(metadata: ModelMetadata, requiredMetrics?: Partial<EvaluationMetrics>): Promise<RegistryEntry> {
     const entry: RegistryEntry = {
       ...metadata,
+      deploymentState: metadata.deploymentState === 'inactive' ? 'inactive' : 'staged',
       registeredAt: new Date().toISOString(),
       promotedAt: null,
       rollbackHistory: [],
@@ -70,132 +66,96 @@ export class ModelRegistryEngine {
       entry.evaluationGate.gatedAt = new Date().toISOString();
     }
 
-    this.registry.set(metadata.modelId, entry);
+    // A retried registration must not reset a promotion or rollback.
+    const registered = await this.registry.update(metadata.modelId, current => current ? undefined : entry);
+    if (registered) return registered;
 
-    // Track version history
-    const history = this.versionHistory.get(metadata.modelName) ?? [];
-    history.push(metadata.modelId);
-    this.versionHistory.set(metadata.modelName, history);
-
-    logger.info(`[ModelRegistryEngine] Registered ${metadata.modelId} v${metadata.version} (gate: ${entry.evaluationGate.passed ? 'PASSED' : 'FAILED'})`);
-    return entry;
+    const existing = await this.registry.get(metadata.modelId);
+    if (!existing || existing.version !== metadata.version || existing.modelName !== metadata.modelName) {
+      throw new Error(`Model ID ${metadata.modelId} already belongs to another version`);
+    }
+    return existing;
   }
 
   /**
    * Promote a model to a deployment state.
    * GOVERNANCE: Requires evaluation gate to pass.
    */
-  promote(modelId: string, targetState: DeploymentState): boolean {
-    const entry = this.registry.get(modelId);
-    if (!entry) {
-      logger.warn(`[ModelRegistryEngine] Model ${modelId} not found`);
-      return false;
-    }
-
-    // Governance check: must pass evaluation gate
-    if (!entry.evaluationGate.passed) {
-      logger.warn(`[ModelRegistryEngine] Cannot promote ${modelId}: evaluation gate not passed`);
-      return false;
-    }
-
-    // Governance check: can only promote in order (staged → canary → production)
-    const validTransitions: Record<string, DeploymentState[]> = {
-      'inactive': ['staged'],
-      'staged': ['canary', 'production'],
-      'canary': ['production', 'rolled-back'],
-      'production': ['rolled-back'],
+  async promote(modelId: string, targetState: DeploymentState): Promise<boolean> {
+    const validTransitions: Record<DeploymentState, DeploymentState[]> = {
+      inactive: ['staged'],
+      staged: ['canary', 'production'],
+      canary: ['production', 'rolled-back'],
+      production: ['rolled-back'],
       'rolled-back': ['staged'],
     };
 
-    const allowed = validTransitions[entry.deploymentState] ?? [];
-    if (!allowed.includes(targetState)) {
-      logger.warn(`[ModelRegistryEngine] Invalid transition: ${entry.deploymentState} → ${targetState}`);
-      return false;
-    }
+    const updated = await this.registry.update(modelId, entry => {
+      if (!entry?.evaluationGate.passed || !validTransitions[entry.deploymentState].includes(targetState)) {
+        return undefined;
+      }
+      if (entry.driftStatus === 'critical' && (targetState === 'canary' || targetState === 'production')) {
+        return undefined;
+      }
+      if (targetState === 'rolled-back') return this.rolledBack(entry, 'Deployment state changed');
 
-    const previousState = entry.deploymentState;
-    entry.deploymentState = targetState;
-    entry.promotedAt = new Date().toISOString();
-
-    logger.info(`[ModelRegistryEngine] Promoted ${modelId}: ${previousState} → ${targetState}`);
-    return true;
-  }
-
-  /**
-   * Rollback a model to previous state.
-   */
-  rollback(modelId: string, reason: string): boolean {
-    const entry = this.registry.get(modelId);
-    if (!entry) return false;
-
-    const previousState = entry.deploymentState;
-    entry.deploymentState = 'rolled-back';
-    entry.rollbackHistory.push({
-      fromState: previousState,
-      toState: 'rolled-back',
-      reason,
-      timestamp: new Date().toISOString(),
+      return { ...entry, deploymentState: targetState, promotedAt: new Date().toISOString() };
     });
-
-    logger.warn(`[ModelRegistryEngine] Rolled back ${modelId}: ${reason}`);
-    return true;
+    return updated !== undefined;
   }
 
-  /**
-   * Update drift status for a model.
-   */
-  updateDriftStatus(modelId: string, driftStatus: DriftStatus): void {
-    const entry = this.registry.get(modelId);
-    if (!entry) return;
-
-    entry.driftStatus = driftStatus;
-
-    // Auto-rollback on critical drift
-    if (driftStatus === 'critical' && entry.deploymentState === 'production') {
-      logger.warn(`[ModelRegistryEngine] Critical drift detected for ${modelId}, auto-rolling back`);
-      this.rollback(modelId, 'Critical drift detected');
-    }
+  async rollback(modelId: string, reason: string): Promise<boolean> {
+    const updated = await this.registry.update(modelId, entry => entry && this.rolledBack(entry, reason));
+    return updated !== undefined;
   }
 
-  /**
-   * Get model entry.
-   */
-  getModel(modelId: string): RegistryEntry | undefined {
+  async updateDriftStatus(modelId: string, driftStatus: DriftStatus): Promise<void> {
+    await this.registry.update(modelId, entry => {
+      if (!entry) return undefined;
+      const updated = { ...entry, driftStatus };
+      if (driftStatus === 'critical' && (entry.deploymentState === 'production' || entry.deploymentState === 'canary')) {
+        return this.rolledBack(updated, 'Critical drift detected');
+      }
+      return updated;
+    });
+  }
+
+  getModel(modelId: string): Promise<RegistryEntry | undefined> {
     return this.registry.get(modelId);
   }
 
-  /**
-   * Get production model for a model name.
-   */
-  getProductionModel(modelName: string): RegistryEntry | null {
-    const history = this.versionHistory.get(modelName) ?? [];
-    for (const id of history.reverse()) {
-      const entry = this.registry.get(id);
-      if (entry?.deploymentState === 'production') return entry;
-    }
-    return null;
+  async getProductionModel(modelName: string): Promise<RegistryEntry | null> {
+    const history = await this.getVersionHistory(modelName);
+    return history.reverse().find(entry => entry.deploymentState === 'production') ?? null;
   }
 
-  /**
-   * Get version history for a model name.
-   */
-  getVersionHistory(modelName: string): RegistryEntry[] {
-    const ids = this.versionHistory.get(modelName) ?? [];
-    return ids.map(id => this.registry.get(id)!).filter(Boolean);
+  async getVersionHistory(modelName: string): Promise<RegistryEntry[]> {
+    const models = await this.listModels();
+    return models
+      .filter(entry => entry.modelName === modelName)
+      .sort((left, right) => left.registeredAt.localeCompare(right.registeredAt));
   }
 
-  /**
-   * List all registered models.
-   */
-  listModels(): RegistryEntry[] {
-    return Array.from(this.registry.values());
+  listModels(): Promise<RegistryEntry[]> {
+    return this.registry.list();
   }
 
-  /**
-   * List models by deployment state.
-   */
-  listByState(state: DeploymentState): RegistryEntry[] {
-    return Array.from(this.registry.values()).filter(e => e.deploymentState === state);
+  async listByState(state: DeploymentState): Promise<RegistryEntry[]> {
+    return (await this.listModels()).filter(entry => entry.deploymentState === state);
+  }
+
+  private rolledBack(entry: RegistryEntry, reason: string): RegistryEntry {
+    if (entry.deploymentState === 'rolled-back') return entry;
+    return {
+      ...entry,
+      deploymentState: 'rolled-back',
+      rollbackHistory: [...entry.rollbackHistory, {
+        fromState: entry.deploymentState,
+        toState: 'rolled-back',
+        reason,
+        timestamp: new Date().toISOString(),
+      }],
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -205,14 +165,21 @@ export class ModelRegistryEngine {
   private checkEvaluationGate(actual: EvaluationMetrics, required: Partial<EvaluationMetrics>): boolean {
     for (const [key, threshold] of Object.entries(required)) {
       const actualValue = (actual as Record<string, unknown>)[key];
-      if (typeof actualValue === 'number' && typeof threshold === 'number') {
-        if (key === 'logloss' || key === 'mae' || key === 'rmse' || key === 'calibrationError') {
-          // Lower is better for loss metrics
-          if (actualValue > threshold) return false;
-        } else {
-          // Higher is better
-          if (actualValue < threshold) return false;
+      if (typeof threshold === 'object') {
+        if (!actualValue || typeof actualValue !== 'object') return false;
+        for (const [rank, minimum] of Object.entries(threshold)) {
+          const value = (actualValue as Record<string, number>)[rank];
+          if (!Number.isFinite(value) || !Number.isFinite(minimum) || value < minimum) return false;
         }
+        continue;
+      }
+
+      if (typeof threshold !== 'number' || typeof actualValue !== 'number' ||
+          !Number.isFinite(actualValue) || !Number.isFinite(threshold)) return false;
+      if (key === 'logloss' || key === 'mae' || key === 'rmse' || key === 'calibrationError') {
+        if (actualValue > threshold) return false;
+      } else if (actualValue < threshold) {
+        return false;
       }
     }
     return true;
