@@ -122,7 +122,7 @@ class PromptSafetyLayerClass {
     
     for (const policy of this.policies) {
       for (const pattern of policy.patterns) {
-        if (pattern.test(prompt)) {
+        if (prompt.search(pattern) !== -1) {
           if (policy.severity === 'critical') {
             violations.push(`${policy.description}: Matched pattern "${pattern}"`);
           } else if (policy.severity === 'warning') {
@@ -155,7 +155,7 @@ class PromptSafetyLayerClass {
     
     for (const policy of this.policies) {
       for (const pattern of policy.patterns) {
-        if (pattern.test(response)) {
+        if (response.search(pattern) !== -1) {
           if (policy.severity === 'critical') {
             violations.push(`${policy.description}: Matched pattern "${pattern}"`);
           } else if (policy.severity === 'warning') {
