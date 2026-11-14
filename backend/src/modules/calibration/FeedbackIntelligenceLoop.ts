@@ -80,7 +80,7 @@ export class FeedbackIntelligenceLoop {
 
     // Acquire distributed lock: set NX with PX expiration
     const acquired = await redis.set(lockKey, lockToken, 'PX', lockTtlMs, 'NX');
-    if (acquired === null || acquired === false) {
+    if (acquired !== 'OK') {
       logger.info(`[FeedbackLoop] Calibration lock for ${category} is held by another worker. Skipping concurrent recalibration.`);
       return;
     }

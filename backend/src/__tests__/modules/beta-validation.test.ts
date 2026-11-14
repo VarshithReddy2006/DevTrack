@@ -14,11 +14,12 @@ import { getRedisClient, isRedisConfigured } from '../../shared/redis/client.js'
 vi.mock('../../shared/redis/client.js', () => {
   const mockRedis = {
     get: vi.fn(),
-    set: vi.fn(),
+    set: vi.fn().mockResolvedValue('OK'),
     lpush: vi.fn(),
     ltrim: vi.fn(),
+    expire: vi.fn(),
     hset: vi.fn(),
-    incr: vi.fn(),
+    incr: vi.fn().mockResolvedValue(1),
     eval: vi.fn(),
   };
   return {
@@ -219,6 +220,7 @@ describe('FeedbackIntelligenceLoop', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRedis = getRedisClient();
+    mockRedis.set.mockResolvedValue('OK');
   });
 
   describe('submitFeedback', () => {
@@ -259,6 +261,7 @@ describe('FeedbackIntelligenceLoop', () => {
       };
 
       // Set mock counters to 10 to trigger calibration check
+      mockRedis.incr.mockResolvedValue(10);
       mockRedis.get.mockImplementation((key: string) => {
         if (key === 'calibration:mismatches:ats') return Promise.resolve('10');
         if (key === 'calibration:weights:ats') return Promise.resolve('1.0');
@@ -281,6 +284,7 @@ describe('FeedbackIntelligenceLoop', () => {
         timestamp: new Date(),
       };
 
+      mockRedis.incr.mockResolvedValue(20);
       mockRedis.get.mockImplementation((key: string) => {
         if (key === 'calibration:mismatches:semantic_mismatch') return Promise.resolve('20');
         if (key === 'calibration:weights:semantic_mismatch') return Promise.resolve('0.85');
