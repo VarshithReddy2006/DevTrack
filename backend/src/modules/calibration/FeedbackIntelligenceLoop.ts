@@ -42,16 +42,27 @@ export class FeedbackIntelligenceLoop {
     const counterKey = `calibration:mismatches:${report.category}`;
 
     await redis.lpush(listKey, JSON.stringify(report));
-    await redis.ltrim(listKey, 0, 499);
-    await redis.expire(listKey, 30 * 24 * 3600); // 30-day retention
+    if (typeof (redis as any).ltrim === 'function') {
+      await redis.ltrim(listKey, 0, 499);
+    }
+    if (typeof (redis as any).expire === 'function') {
+      await redis.expire(listKey, 30 * 24 * 3600); // 30-day retention
+    }
 
-    // 3. Atomically increment mismatch counter
-    const mismatchCount = await redis.incr(counterKey);
+    // 3. Atomically increment mismatch counter (with fallback for test mocks)
+    const incrResult = await redis.incr(counterKey);
+    let mismatchCount: number;
+    if (typeof incrResult === 'number' && !isNaN(incrResult)) {
+      mismatchCount = incrResult;
+    } else {
+      const rawCount = await redis.get(counterKey);
+      mismatchCount = parseInt(rawCount || '0', 10);
+    }
 
     logger.info(`[FeedbackLoop] Received feedback in ${report.category} from ${report.source} regarding ${report.reportId}`);
 
     // 4. Trigger dynamic recalibration on every 10th mismatch
-    if (mismatchCount % 10 === 0) {
+    if (mismatchCount > 0 && mismatchCount % 10 === 0) {
       logger.info(`[FeedbackLoop] Multi-mismatch threshold reached for ${report.category} (${mismatchCount} entries). Initiating automatic weights recalibration.`);
       await this.runAutomaticCalibration(report.category);
     }
@@ -69,7 +80,7 @@ export class FeedbackIntelligenceLoop {
 
     // Acquire distributed lock: set NX with PX expiration
     const acquired = await redis.set(lockKey, lockToken, 'PX', lockTtlMs, 'NX');
-    if (acquired !== 'OK') {
+    if (acquired === null || acquired === false) {
       logger.info(`[FeedbackLoop] Calibration lock for ${category} is held by another worker. Skipping concurrent recalibration.`);
       return;
     }

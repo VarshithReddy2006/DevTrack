@@ -21,7 +21,7 @@ export interface IFeedbackReport extends Document {
 
 const feedbackReportSchema = new Schema<IFeedbackReport>(
   {
-    reportId: { type: String, required: true, unique: true, index: true },
+    reportId: { type: String, required: true, unique: true },
     userId: { type: String, required: true, index: true },
     source: {
       type: String,
