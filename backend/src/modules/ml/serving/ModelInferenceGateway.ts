@@ -74,6 +74,7 @@ export class ModelInferenceGateway {
   private totalLatencyMs: number = 0;
   private errors: number = 0;
   private latencies: number[] = [];
+  private startTime: number = Date.now();
 
   // Inference handlers
   private handlers: Map<string, (request: InferenceRequest) => Promise<InferenceResult>> = new Map();
@@ -113,7 +114,12 @@ export class ModelInferenceGateway {
       if (cached) {
         this.cacheHits++;
         logger.debug(`[ModelInferenceGateway] Cache hit for ${request.modelId}`);
-        return { ...cached, cached: true };
+        return {
+          ...cached,
+          requestId: request.requestId,
+          latencyMs: Date.now() - start,
+          cached: true,
+        };
       }
     }
 
@@ -126,6 +132,7 @@ export class ModelInferenceGateway {
 
     // 3. Check model readiness in infrastructure
     if (!this.serving.isModelReady(request.modelId)) {
+      this.releaseHalfOpenProbe(request.modelId);
       logger.warn(`[ModelInferenceGateway] Model ${request.modelId} not ready, using fallback`);
       return this.deterministicFallback(request, start);
     }
@@ -133,6 +140,7 @@ export class ModelInferenceGateway {
     // 4. Validate registered handler
     const handler = this.handlers.get(request.modelId);
     if (!handler) {
+      this.releaseHalfOpenProbe(request.modelId);
       logger.warn(`[ModelInferenceGateway] No handler for ${request.modelId}, using fallback`);
       return this.deterministicFallback(request, start);
     }
@@ -141,14 +149,16 @@ export class ModelInferenceGateway {
     const queueTimeoutMs = Math.min(request.timeout ?? 5000, 2000);
     const slotAcquired = await this.acquireSlot(request.modelId, queueTimeoutMs);
     if (!slotAcquired) {
+      this.releaseHalfOpenProbe(request.modelId);
       this.errors++;
       logger.warn(`[ModelInferenceGateway] Concurrency capacity reached for ${request.modelId}, shedding load to fallback`);
       return this.deterministicFallback(request, start);
     }
 
     try {
-      // Execute with timeout
-      const timeoutMs = request.timeout ?? 5000;
+      // Deduct elapsed queue wait time so overall inference respects caller's timeout budget
+      const elapsedWaitMs = Date.now() - start;
+      const timeoutMs = Math.max(1, (request.timeout ?? 5000) - elapsedWaitMs);
       const result = await this.executeWithTimeout(handler, request, timeoutMs);
 
       // Record successful inference metrics and circuit breaker recovery
@@ -181,7 +191,7 @@ export class ModelInferenceGateway {
   getMetrics(): InferenceMetrics {
     const sorted = [...this.latencies].sort((a, b) => a - b);
     const p = (pct: number) => sorted[Math.floor(sorted.length * pct / 100)] ?? 0;
-    const elapsed = Math.max(1, (Date.now() - (this.latencies[0] ?? Date.now())) / 1000);
+    const elapsed = Math.max(1, (Date.now() - this.startTime) / 1000);
 
     return {
       totalRequests: this.totalRequests,
@@ -413,6 +423,13 @@ export class ModelInferenceGateway {
     tracker.successes = tracker.successes.filter((t) => t >= cutoff);
   }
 
+  private releaseHalfOpenProbe(modelId: string): void {
+    const tracker = this.circuitBreakers.get(modelId);
+    if (tracker && tracker.state === 'HALF_OPEN') {
+      tracker.halfOpenInFlight = false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Distributed Redis & Local Memory Caching
   // ---------------------------------------------------------------------------
@@ -433,8 +450,8 @@ export class ModelInferenceGateway {
         const cachedStr = await redis.get(key);
         if (cachedStr) {
           const result = JSON.parse(cachedStr) as InferenceResult;
-          // Synchronize local memory cache
-          this.localCache.set(key, { result, timestamp: Date.now() });
+          // Synchronize local memory cache with size bounds
+          this.setLocalCache(key, result);
           return result;
         }
       }
@@ -452,6 +469,14 @@ export class ModelInferenceGateway {
     return null;
   }
 
+  private setLocalCache(key: string, result: InferenceResult): void {
+    if (this.localCache.size >= this.maxCacheSize) {
+      const firstKey = this.localCache.keys().next().value;
+      if (firstKey) this.localCache.delete(firstKey);
+    }
+    this.localCache.set(key, { result, timestamp: Date.now() });
+  }
+
   private async cacheResult(request: InferenceRequest, result: InferenceResult): Promise<void> {
     const key = this.cacheKey(request);
     const ttlSeconds = Math.max(1, Math.floor(this.cacheTTLMs / 1000));
@@ -467,11 +492,7 @@ export class ModelInferenceGateway {
     }
 
     // 2. Write to local in-memory cache
-    if (this.localCache.size >= this.maxCacheSize) {
-      const firstKey = this.localCache.keys().next().value;
-      if (firstKey) this.localCache.delete(firstKey);
-    }
-    this.localCache.set(key, { result, timestamp: Date.now() });
+    this.setLocalCache(key, result);
   }
 
   // ---------------------------------------------------------------------------

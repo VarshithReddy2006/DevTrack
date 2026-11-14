@@ -114,8 +114,11 @@ describe('ModelInferenceGateway - Distributed Caching, Bulkhead Concurrency & Ci
       expect(handler).toHaveBeenCalledTimes(1);
 
       // Second call: Redis cache hit
-      const secondResult = await gateway.infer(req);
+      const req2 = { ...req, requestId: 'req-second-query' };
+      const secondResult = await gateway.infer(req2);
       expect(secondResult.cached).toBe(true);
+      expect(secondResult.requestId).toBe('req-second-query');
+      expect(secondResult.latencyMs).toBeGreaterThanOrEqual(0);
       expect(handler).toHaveBeenCalledTimes(1); // handler NOT called again
       expect((secondResult.prediction as MLPrediction).score).toBe(0.92);
 
@@ -372,6 +375,41 @@ describe('ModelInferenceGateway - Distributed Caching, Bulkhead Concurrency & Ci
       expect(gateway.getCircuitBreakerState('distilbert-ats')).toBe('OPEN');
 
       gateway.resetCircuitBreaker('distilbert-ats');
+      expect(gateway.getCircuitBreakerState('distilbert-ats')).toBe('CLOSED');
+    });
+
+    it('resets halfOpenInFlight when pre-flight checks fail so circuit does not deadlock', async () => {
+      // 1. Trip circuit
+      const handler = vi.fn().mockRejectedValue(new Error('Down'));
+      gateway.registerHandler('distilbert-ats', handler);
+
+      for (let i = 0; i < 4; i++) {
+        await gateway.infer(makeRequest('distilbert-ats', { failId: i }));
+      }
+      expect(gateway.getCircuitBreakerState('distilbert-ats')).toBe('OPEN');
+
+      // 2. Wait for transition to HALF_OPEN
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(gateway.getCircuitBreakerState('distilbert-ats')).toBe('HALF_OPEN');
+
+      // 3. Make pre-flight check fail (model not ready)
+      (servingMock.isModelReady as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+      const res = await gateway.infer(makeRequest('distilbert-ats', { probe: 1 }));
+      expect(res.prediction.modelVersion).toBe('deterministic');
+
+      // 4. Verify trial probe was released and circuit can accept another trial when model becomes ready
+      (servingMock.isModelReady as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      handler.mockResolvedValueOnce({
+        requestId: 'req-recovered',
+        modelId: 'distilbert-ats',
+        prediction: mockPrediction(0.96),
+        cached: false,
+        latencyMs: 12,
+        timestamp: new Date().toISOString(),
+      });
+
+      const secondProbe = await gateway.infer(makeRequest('distilbert-ats', { probe: 2 }));
+      expect(secondProbe.prediction.modelVersion).toBe('1.0.0');
       expect(gateway.getCircuitBreakerState('distilbert-ats')).toBe('CLOSED');
     });
   });
