@@ -159,9 +159,10 @@ describe('POST /activity/focus/stop', () => {
 describe('FocusEngine.completeSession', () => {
   it('returns a result for only one of two concurrent completions', async () => {
     const engine = new FocusEngine();
-    const { sessionId } = await engine.startSession(new Types.ObjectId().toString(), 'deep_work', 25);
-    const results = await Promise.all([engine.completeSession(sessionId), engine.completeSession(sessionId)]);
+    const owner = new Types.ObjectId().toString();
+    const { sessionId } = await engine.startSession(owner, 'deep_work', 25);
+    const results = await Promise.all([engine.completeSession(sessionId, owner), engine.completeSession(sessionId, owner)]);
     expect(results.filter(Boolean)).toHaveLength(1);
-    expect(await engine.completeSession(sessionId)).toBeNull();
+    expect(await engine.completeSession(sessionId, owner)).toBeNull();
   });
 });

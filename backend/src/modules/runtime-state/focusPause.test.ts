@@ -13,14 +13,15 @@ describe('focus pause persistence', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-02T10:00:00Z'));
     const engine = new FocusEngine();
-    const { sessionId } = await engine.startSession(new Types.ObjectId().toString(), 'deep_work', 25);
+    const owner = new Types.ObjectId().toString();
+    const { sessionId } = await engine.startSession(owner, 'deep_work', 25);
     vi.setSystemTime(new Date('2026-11-02T10:02:00Z'));
-    expect(await engine.pauseSession(sessionId)).toMatchObject({ activeDurationMs: 120_000, lastResumedAt: null });
+    expect(await engine.pauseSession(sessionId, owner)).toMatchObject({ activeDurationMs: 120_000, lastResumedAt: null });
     vi.setSystemTime(new Date('2026-11-02T11:02:00Z'));
     expect((await FocusSession.findById(sessionId))?.status).toBe('paused');
-    expect(await engine.resumeSession(sessionId)).toMatchObject({ activeDurationMs: 120_000 });
+    expect(await engine.resumeSession(sessionId, owner)).toMatchObject({ activeDurationMs: 120_000 });
     vi.setSystemTime(new Date('2026-11-02T11:05:00Z'));
-    expect(await engine.completeSession(sessionId)).toMatchObject({ actualDuration: 5, activeDurationMs: 300_000 });
+    expect(await engine.completeSession(sessionId, owner)).toMatchObject({ actualDuration: 5, activeDurationMs: 300_000 });
     expect(await FocusSession.findById(sessionId)).toMatchObject({ status: 'completed', actualDurationMinutes: 5, activeDurationMs: 300_000 });
   });
 
