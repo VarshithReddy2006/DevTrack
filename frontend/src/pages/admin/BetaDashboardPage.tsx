@@ -1,27 +1,62 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { analyticsService } from '../../services/analyticsService';
-import { Target, Activity, MessageSquare, TrendingUp } from 'lucide-react';
+import { Target, Activity, MessageSquare, RefreshCw, TrendingUp } from 'lucide-react';
+import { EmptyState } from '../../components/shared/EmptyState';
 import { WorkspaceHeader } from '../../features/readiness/components/WorkspaceHeader';
 
-export const BetaDashboardPage: React.FC = () => {
-  const [metrics, setMetrics] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+interface DashboardMetrics {
+  funnel: {
+    resumesUploaded: number;
+    discoveryCompleted: number;
+    roadmapsGenerated: number;
+    resourceClicks: number;
+    skillsCompleted: number;
+  };
+  metrics: {
+    activationRate: number;
+    learningEngagement: number;
+    completionRate: number;
+  };
+  feedback: Array<{ _id: string; rating: string; page: string; feedback?: string; createdAt: string }>;
+}
 
-  useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        const data = await analyticsService.getDashboardMetrics();
-        setMetrics(data);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
+const PAGE_SIZE = 6;
+
+export const BetaDashboardPage: React.FC = () => {
+  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [rating, setRating] = useState('');
+  const [page, setPage] = useState(1);
+  const fetching = useRef(false);
+
+  const fetchMetrics = useCallback(async () => {
+    if (fetching.current) return;
+    fetching.current = true;
+    setLoading(true);
+    setLoadFailed(false);
+    try {
+      const data: DashboardMetrics | null | undefined = await analyticsService.getDashboardMetrics();
+      if (!data) {
+        setLoadFailed(true);
+        return;
       }
-    };
-    fetchMetrics();
+      setMetrics(data);
+      setRating((current) => data.feedback.some((entry) => entry.rating === current) ? current : '');
+      setPage(1);
+    } catch {
+      setLoadFailed(true);
+    } finally {
+      fetching.current = false;
+      setLoading(false);
+    }
   }, []);
 
-  if (loading) {
+  useEffect(() => {
+    void fetchMetrics();
+  }, [fetchMetrics]);
+
+  if (loading && !metrics) {
     return (
       <div className="flex items-center justify-center h-[calc(100vh-64px)] bg-[#FAFAFC]">
         <div className="animate-pulse flex flex-col items-center">
@@ -35,12 +70,24 @@ export const BetaDashboardPage: React.FC = () => {
   if (!metrics) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#FAFAFC]">
-        <p className="text-red-500">Failed to load metrics.</p>
+        <EmptyState
+          title="Failed to load metrics"
+          description="Try fetching the dashboard metrics again."
+          action={
+            <button type="button" onClick={fetchMetrics} className="rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white">
+              Retry
+            </button>
+          }
+        />
       </div>
     );
   }
 
   const { funnel, metrics: pmf, feedback } = metrics;
+  const ratings = [...new Set(feedback.map((entry) => entry.rating))];
+  const filteredFeedback = rating ? feedback.filter((entry) => entry.rating === rating) : feedback;
+  const pageCount = Math.ceil(filteredFeedback.length / PAGE_SIZE);
+  const visibleFeedback = filteredFeedback.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <div className="w-full min-h-[calc(100vh-64px)] bg-[#FAFAFC] flex flex-col text-slate-900 relative">
@@ -53,7 +100,21 @@ export const BetaDashboardPage: React.FC = () => {
           coreQuestion="Real-time product-market fit metrics and user telemetry for V1 Validation."
           icon={<Activity size={20} />}
           accentColor="#10B981"
+          actions={
+            <button
+              type="button"
+              onClick={fetchMetrics}
+              disabled={loading}
+              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
+            >
+              <RefreshCw size={16} aria-hidden="true" className={loading ? 'motion-safe:animate-spin' : undefined} />
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          }
         />
+        {loadFailed && (
+          <p role="alert" className="text-sm text-red-600">Could not refresh metrics. Showing the last loaded data.</p>
+        )}
 
         <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
           <MetricCard title="Activation Rate" value={`${pmf.activationRate.toFixed(1)}%`} subtitle="Uploads -> Roadmaps" icon={Target} color="emerald" />
@@ -80,11 +141,27 @@ export const BetaDashboardPage: React.FC = () => {
             <MessageSquare className="w-5 h-5 text-indigo-500" />
             User Feedback
           </h3>
+          {feedback.length > 0 && (
+            <label className="mb-4 flex flex-wrap items-center gap-2 text-sm font-medium text-slate-700">
+              Filter by rating
+              <select
+                value={rating}
+                onChange={(event) => {
+                  setRating(event.target.value);
+                  setPage(1);
+                }}
+                className="rounded-lg border border-slate-200 px-3 py-2"
+              >
+                <option value="">All ratings</option>
+                {ratings.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+          )}
           {feedback.length === 0 ? (
             <p className="text-slate-500 text-sm">No feedback collected yet.</p>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {feedback.map((f: any) => (
+              {visibleFeedback.map((f) => (
                 <div key={f._id} className="p-4 bg-slate-50 border border-slate-100 rounded-2xl flex gap-4">
                   <div className="text-3xl">{f.rating}</div>
                   <div>
@@ -95,6 +172,27 @@ export const BetaDashboardPage: React.FC = () => {
                 </div>
               ))}
             </div>
+          )}
+          {pageCount > 1 && (
+            <nav aria-label="Feedback pagination" className="mt-4 flex flex-wrap items-center gap-3 text-sm">
+              <button
+                type="button"
+                disabled={page === 1}
+                onClick={() => setPage(page - 1)}
+                className="rounded-lg border border-slate-200 px-3 py-2 disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <span aria-live="polite">Page {page} of {pageCount}</span>
+              <button
+                type="button"
+                disabled={page === pageCount}
+                onClick={() => setPage(page + 1)}
+                className="rounded-lg border border-slate-200 px-3 py-2 disabled:opacity-50"
+              >
+                Next
+              </button>
+            </nav>
           )}
         </div>
       </div>
