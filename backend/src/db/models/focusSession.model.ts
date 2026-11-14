@@ -35,7 +35,7 @@ export interface IFocusSession extends Document {
 
 const FocusSessionSchema = new Schema<IFocusSession>(
   {
-    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     mode: { type: String, required: true },
     status: { type: String, enum: ['completed', 'abandoned', 'paused', 'running'], required: true },
     
