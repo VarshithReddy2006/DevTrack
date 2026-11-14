@@ -12,6 +12,7 @@ import {
   fetchProjects,
   fetchProject,
   fetchProjectTasks,
+  syncProject as apiSyncProject,
   createProject as apiCreateProject,
   updateProject as apiUpdateProject,
   deleteProject as apiDeleteProject,
@@ -198,7 +199,7 @@ export function useProjectsData(): HookReturn<ProjectsPageVM> & {
 
 export function useProjectDetail(
   projectId: string | null
-): HookReturn<ProjectDetailVM> {
+): HookReturn<ProjectDetailVM> & { syncRepository: () => Promise<void> } {
   const {
     detailData: data,
     detailStatus: status,
@@ -241,15 +242,18 @@ export function useProjectDetail(
       }
 
       abortRef.current?.abort();
-      abortRef.current = new AbortController();
+      const request = new AbortController();
+      abortRef.current = request;
 
       setStatus('loading');
 
       try {
         const [projectResponse, tasksResponse] = await Promise.all([
-          fetchProject(projectId), // These would need to be updated in service to accept signal too
-          fetchProjectTasks(projectId),
+          fetchProject(projectId, { signal: request.signal }),
+          fetchProjectTasks(projectId, { signal: request.signal }),
         ]);
+
+        if (request.signal.aborted || useProjectsStore.getState().activeProjectId !== projectId) return;
 
         const now = Date.now();
         const vm = transformProjectDetail(
@@ -260,7 +264,7 @@ export function useProjectDetail(
         setData(vm);
         retriesRef.current = 0;
       } catch (err) {
-        if (abortRef.current?.signal.aborted) return;
+        if (request.signal.aborted || useProjectsStore.getState().activeProjectId !== projectId) return;
         const apiError = err as ApiError;
         const message = apiError.message || 'Failed to load project';
 
@@ -270,7 +274,7 @@ export function useProjectDetail(
         ) {
           retriesRef.current++;
           setTimeout(() => {
-            void fetchDetailRef.current(true);
+            if (!request.signal.aborted) void fetchDetailRef.current(true);
           }, RETRY_DELAY_MS);
           return;
         }
@@ -303,8 +307,19 @@ export function useProjectDetail(
 
   const refresh = useCallback(() => {
     retriesRef.current = 0;
-    fetchData(true);
+    void fetchData(true);
   }, [fetchData]);
 
-  return { data, status, error, refresh };
+  const syncRepository = async () => {
+    if (!projectId) return;
+    const result = await apiSyncProject(projectId);
+    if (!result.success) throw new Error(result.message || 'GitHub repository sync failed.');
+    useProjectsStore.getState().invalidateList();
+    if (useProjectsStore.getState().activeProjectId === projectId) {
+      retriesRef.current = 0;
+      await fetchDetailRef.current(true);
+    }
+  };
+
+  return { data: activeProjectId === projectId ? data : null, status, error, refresh, syncRepository };
 }
