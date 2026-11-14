@@ -1,20 +1,23 @@
 // src/features/realtime/BehavioralMessageBar.tsx — Thin bar component for behavioral messages
 // Tone-driven styling, displays behavioral messages from SSE
 
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Info, Sparkles, Heart, Zap } from 'lucide-react';
 import { useSse } from '../../hooks/useSse';
 import { cn } from '../../lib/design-system/tokens.css';
 
 interface BehavioralMessage {
-  id: string;
+  messageId?: string;
+  id?: string;
   tone: 'encouraging' | 'calm' | 'celebratory' | 'gentle-nudge' | 'supportive' | 'silent';
   text: string;
   action?: {
     label: string;
     route: string;
   };
-  expiresAt: string;
+  expiresAt?: string;
 }
 
 const TONE_STYLES: Record<string, { bg: string; border: string; text: string; icon: React.ReactNode }> = {
@@ -58,21 +61,22 @@ const TONE_STYLES: Record<string, { bg: string; border: string; text: string; ic
 
 export function BehavioralMessageBar() {
   const { eventHistory } = useSse();
+  const navigate = useNavigate();
+  const [dismissedIds, setDismissedIds] = useState<ReadonlySet<string>>(() => new Set());
 
-  // Filter for behavioral_message events
-  const behavioralMessages = eventHistory.filter(
-    (event) => event.type === 'behavioral_message' && event.stats
-  ) as Array<{ type: string; stats: BehavioralMessage; timestamp: string }>;
-
-  // Get the most recent non-expired message
-  const activeMessage = behavioralMessages.find((msg) => {
-    const expiresAt = new Date(msg.stats.expiresAt);
-    return expiresAt > new Date();
+  const activeMessage = eventHistory.find((event) => {
+    if (event.type !== 'behavioral_message' || !event.stats) return false;
+    const message = event.stats as BehavioralMessage;
+    const id = message.messageId ?? message.id;
+    return id && !dismissedIds.has(id) &&
+      (!message.expiresAt || Date.parse(message.expiresAt) > Date.now());
   });
 
   if (!activeMessage) return null;
 
-  const { stats: message } = activeMessage;
+  const message = activeMessage.stats as BehavioralMessage;
+  const messageId = message.messageId ?? message.id;
+  const action = message.action;
   const style = TONE_STYLES[message.tone] || TONE_STYLES.calm;
 
   return (
@@ -92,11 +96,10 @@ export function BehavioralMessageBar() {
         <div className="max-w-5xl mx-auto flex items-center gap-3">
           {style.icon}
           <p className={cn('text-sm font-medium', style.text)}>{message.text}</p>
-          {message.action && (
+          {action && (
             <button
-              onClick={() => {
-                window.location.href = message.action!.route;
-              }}
+              type="button"
+              onClick={() => navigate(action.route)}
               className={cn(
                 'text-xs font-medium px-3 py-1 rounded-full',
                 style.border,
@@ -105,12 +108,13 @@ export function BehavioralMessageBar() {
                 'hover:opacity-80 transition-opacity'
               )}
             >
-              {message.action.label}
+              {action.label}
             </button>
           )}
           <button
+            type="button"
             onClick={() => {
-              // Dismiss by removing from history (simplified - in production, track dismissed messages)
+              if (messageId) setDismissedIds((ids) => new Set([...ids, messageId]));
             }}
             className="ml-auto text-slate-400 hover:text-slate-600 transition-colors"
             aria-label="Dismiss"
