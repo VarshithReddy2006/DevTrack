@@ -29,7 +29,8 @@ export const ATSIntelligenceWorkspace: React.FC = () => {
       return parsingDiagnostics.warnings[0];
     }
     if (atsData?.parserWarnings && atsData.parserWarnings.length > 0) {
-      return atsData.parserWarnings[0];
+      const warning = atsData.parserWarnings[0];
+      return typeof warning === 'string' ? warning : warning.message;
     }
     return "Your resume structure parses cleanly. The ATS has successfully identified your core technical identity and professional trajectory.";
   };
@@ -96,7 +97,7 @@ export const ATSIntelligenceWorkspace: React.FC = () => {
                 
                 {atsData?.parserWarnings?.map((warning, idx) => (
                   <div key={idx} className="px-3 py-1.5 bg-rose-50 border border-rose-200 rounded-md flex items-center gap-1.5 text-xs font-semibold text-rose-700 shadow-sm">
-                    <ShieldAlert size={12} className="text-rose-500" /> {warning}
+                    <ShieldAlert size={12} className="text-rose-500" /> {typeof warning === 'string' ? warning : warning.message}
                   </div>
                 ))}
               </div>

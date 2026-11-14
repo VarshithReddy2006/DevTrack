@@ -73,6 +73,10 @@ export const resumeUploadService = {
     }
   },
 
+  async resumeSession(sessionId: string): Promise<void> {
+    await axiosClient.post(`/resume/sessions/${encodeURIComponent(sessionId)}/resume`);
+  },
+
   /**
    * Get session by ID using unified axiosClient
    */

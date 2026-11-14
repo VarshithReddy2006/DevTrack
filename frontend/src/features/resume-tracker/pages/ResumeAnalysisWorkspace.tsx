@@ -113,7 +113,7 @@ export const ResumeAnalysisWorkspace: React.FC = () => {
 
             {/* Active Section or loading state */}
             <div className="pt-2">
-              {hasReport ? (
+              {hasReport || activeSection === 'replay' ? (
                 <SectionCanvas activeSection={activeSection} />
               ) : (
                 <div className="flex flex-col items-center justify-center py-20 gap-4">

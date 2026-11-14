@@ -1,5 +1,6 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { ATSReplayViewer } from '../replay/ATSReplayViewer';
 import { OverviewSection } from './OverviewSection';
 import { JobMatchSection } from './JobMatchSection';
 import { ResumeAuditSection } from './ResumeAuditSection';
@@ -29,6 +30,7 @@ export const SectionCanvas: React.FC<SectionCanvasProps> = ({ activeSection }) =
         >
           {activeSection === 'overview' && <OverviewSection />}
           {activeSection === 'job-match' && <JobMatchSection />}
+          {activeSection === 'replay' && <ATSReplayViewer />}
           {activeSection === 'resume-audit' && <ResumeAuditSection />}
           {activeSection === 'improvement-center' && <ImprovementCenterSection />}
         </motion.div>

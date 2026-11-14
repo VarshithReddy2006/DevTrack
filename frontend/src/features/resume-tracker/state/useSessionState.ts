@@ -8,7 +8,7 @@ interface SessionState {
   isLoading: boolean;
   error: string | null;
   startSession: (fileInfo: ResumeSession['fileInfo']) => void;
-  fetchSession: (sessionId: string) => Promise<void>;
+  fetchSession: (sessionId: string, background?: boolean) => Promise<void>;
   updateStage: (stage: ProcessingStage) => void;
   updateStageResult: (stageName: keyof ResumeSession['stages'], status: ResumeSession['stages'][keyof ResumeSession['stages']]['status'], error?: string) => void;
   resetSession: () => void;
@@ -33,7 +33,9 @@ const mapBackendToFrontendStage = (backendStage: string): ProcessingStage => {
   }
 };
 
-export const useSessionState = create<SessionState>((set) => ({
+let latestFetch = 0;
+
+export const useSessionState = create<SessionState>((set, get) => ({
   currentSession: null,
   activeStage: 'uploading',
   isLoading: false,
@@ -58,14 +60,21 @@ export const useSessionState = create<SessionState>((set) => ({
     }
   }),
 
-  fetchSession: async (sessionId: string) => {
-    set({ isLoading: true, error: null });
+  fetchSession: async (sessionId: string, background = false) => {
+    if (background && (get().isLoading || get().currentSession?.sessionId !== sessionId)) return;
+    const request = ++latestFetch;
+    if (!background) set({ isLoading: true, error: null });
     try {
       const { data: session } = await resumeUploadService.getSession(sessionId);
       
       if (!session) {
         throw new Error('Session not found');
       }
+
+      const atsHistory = session.processingHistory.filter((entry: { stage: string }) =>
+        entry.stage === 'ATS_ANALYZING').at(-1);
+      const atsFailed = session.currentStage === 'FAILED' && !session.atsState.analyzed;
+      const atsProcessing = ['PARSING', 'EXTRACTING', 'ATS_ANALYZING'].includes(session.currentStage);
 
       const frontendSession: ResumeSession = {
         sessionId: session.sessionId,
@@ -85,9 +94,11 @@ export const useSessionState = create<SessionState>((set) => ({
             completedAt: session.processingHistory.find((h: any) => h.stage === 'UPLOADED')?.completedAt,
           },
           ats: {
-            status: session.atsState.analyzed ? 'success' : 
-                   (session.currentStage === 'ATS_ANALYZING' ? 'processing' : 'pending'),
-            completedAt: session.atsState.analyzedAt,
+            status: atsFailed ? 'failed' : session.atsState.analyzed ? 'success' :
+                    atsProcessing ? 'processing' : 'pending',
+            startedAt: atsHistory?.startedAt,
+            completedAt: session.atsState.analyzedAt ?? (atsFailed ? session.failureState?.failedAt : undefined),
+            error: atsFailed ? session.failureState?.failureReason ?? atsHistory?.error : undefined,
           },
           intelligence: {
             status: session.embeddingState.generated && session.semanticState.analyzed ? 'success' :
@@ -105,6 +116,7 @@ export const useSessionState = create<SessionState>((set) => ({
             completedAt: session.recommendationState.generatedAt,
           }
         },
+        canResume: session.currentStage === 'FAILED' && Boolean(session.failureState?.failed && session.checkpointState?.stage),
         atsState: session.atsState,
         parsedContent: session.parsedContent,
         semanticState: session.semanticState,
@@ -112,13 +124,16 @@ export const useSessionState = create<SessionState>((set) => ({
         reportData: session.reportState?.reportData
       };
 
-      set({ 
+      if (request !== latestFetch || (background && get().currentSession?.sessionId !== sessionId)) return;
+      set({
         currentSession: frontendSession, 
         activeStage: frontendSession.status,
         isLoading: false 
       });
     } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch session', isLoading: false });
+      if (!background && request === latestFetch) {
+        set({ error: err.message || 'Failed to fetch session', isLoading: false });
+      }
     }
   },
 
