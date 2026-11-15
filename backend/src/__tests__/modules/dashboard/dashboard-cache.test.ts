@@ -125,7 +125,7 @@ it('refreshes missions after generation and progress without requiring an XP awa
 it('retains invalidation from real committed XP awards and streak recalculation', async () => {
   expect((await getDashboard(owner)).stats.weeklyConsistencyScore).toBe(0);
   vi.mocked(eventBus.emitXpUpdated).mockImplementationOnce(() => { expect(entries.has(key)).toBe(false); });
-  await processXpEvent({ userId: owner, sourceType: 'focus_session', sourceId: 'synthetic-focus' });
+  await processXpEvent({ userId: owner, sourceType: 'challenge_completed', sourceId: 'cache-award' });
   expect((await getDashboard(owner)).stats.weeklyConsistencyScore).toBeGreaterThan(0);
   await recordActivity({ userId: owner, streakType: 'dsa', source: 'cache-test' });
   expect(entries.has(key)).toBe(false);
