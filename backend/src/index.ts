@@ -20,11 +20,12 @@ import { validateStartup } from './shared/startup-validation.js';
 import { getOrCreateQueue, QueueNames } from './shared/jobs/index.js';
 import { getWorkerStatus, getXpWorkerStatus } from './shared/jobs/index.js';
 import { orchestrator } from './shared/runtime/index.js';
-import { getInfrastructureState, setApiStatus } from './shared/runtime/infrastructureRegistry.js';
+import { getInfrastructureState, setApiStatus, type InfrastructureState } from './shared/runtime/infrastructureRegistry.js';
 import routes from './routes/index.js';
 import { getRegisteredWorkerStatuses } from './shared/jobs/workers.js';
 import { dlqRoutes } from './routes/dlq.routes.js';
 import { mountApiRoutes } from './routes/mount.js';
+import { sanitizeMongoError } from './db/connection.js';
 
 const require = createRequire(import.meta.url);
 const { version: APP_VERSION } = require('../package.json') as { version: string };
@@ -183,7 +184,7 @@ export function setupHealthEndpoints(
   QueueNames: { PLATFORM_SYNC: string; SYSTEM_MAINTENANCE: string; XP_PROCESSING: string; STREAK_RECALC: string; NOTIFICATIONS: string },
   eventBus: { getMetrics(): { activeConnections: number; totalConnections: number; totalDisconnects: number; totalReconnects: number; heartbeatFailures: number; eventsPublished: number; uptimeSeconds: number } },
   syncState: { getSnapshot(): { status: string; lastSyncStartedAt: string | null; lastSyncCompletedAt: string | null; lastSyncStatus: 'success' | 'partial' | 'failed' | null; lastSyncDurationMs: number | null; totalSyncs: number; failedSyncs: number } },
-  getInfrastructureState: () => { api: { status: string }; mongodb: { status: string }; redis: { status: string }; queues: { status: string }; platformSyncWorker: { status: string }; xpWorker: { status: string }; scheduler: { status: string }; sse: { status: string }; degraded: boolean; degradedComponents: string[]; startedAt: number },
+  getInfrastructureState: () => InfrastructureState,
 ): void {
   // Liveness probe — process is alive and responding
   app.get('/health/live', (_req, res) => {
@@ -198,7 +199,11 @@ export function setupHealthEndpoints(
   app.get('/health/ready', (_req, res) => {
     try {
       const state = getInfrastructureState();
-      const mongoReady = state.mongodb.status === 'healthy' && mongoose.connection.readyState !== 0;
+      const mongoState = mongoose.connection?.readyState ?? 0;
+      const mongoLabels: Record<number, string> = {
+        0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting',
+      };
+      const mongoReady = state.mongodb.status === 'healthy' && mongoState !== 0;
       const apiReady = state.api.status === 'healthy';
       const isReady = mongoReady && apiReady;
 
@@ -208,7 +213,11 @@ export function setupHealthEndpoints(
         timestamp: new Date().toISOString(),
         checks: {
           mongodb: mongoReady ? 'connected' : (state.mongodb.status || 'disconnected'),
+          mongodbState: mongoLabels[mongoState] ?? 'unknown',
+          mongodbReadyState: mongoState,
+          ...(state.mongodb.error ? { mongodbError: sanitizeMongoError(state.mongodb.error) } : {}),
           api: state.api.status,
+          ...(state.api.error ? { apiError: state.api.error } : {}),
         },
       });
     } catch (err) {
@@ -225,26 +234,42 @@ export function setupHealthEndpoints(
   app.get('/health', (_req, res) => {
     try {
       const state = getInfrastructureState();
-      const mongoReady = state.mongodb.status === 'healthy' && mongoose.connection.readyState !== 0;
+      const mongoState = mongoose.connection?.readyState ?? 0;
+      const mongoLabels: Record<number, string> = {
+        0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting',
+      };
+      const mongoReady = state.mongodb.status === 'healthy' && mongoState !== 0;
       const apiReady = state.api.status === 'healthy';
       const isCriticalHealthy = mongoReady && apiReady;
 
       const statusCode = isCriticalHealthy ? 200 : 503;
 
       res.status(statusCode).json({
-        status: state.degraded ? 'degraded' : 'ok',
+        status: isCriticalHealthy ? (state.degraded ? 'degraded' : 'ok') : 'unhealthy',
         timestamp: new Date().toISOString(),
         environment: env.NODE_ENV,
         degraded: state.degraded,
         degradedComponents: state.degradedComponents,
+        checks: {
+          mongodb: mongoReady ? 'connected' : (state.mongodb.status || 'disconnected'),
+          mongodbState: mongoLabels[mongoState] ?? 'unknown',
+          mongodbReadyState: mongoState,
+          ...(state.mongodb.error ? { mongodbError: sanitizeMongoError(state.mongodb.error) } : {}),
+          api: state.api.status,
+          ...(state.api.error ? { apiError: state.api.error } : {}),
+        },
       });
     } catch (err) {
       res.status(503).json({
-        status: 'degraded',
+        status: 'unhealthy',
         timestamp: new Date().toISOString(),
         environment: env.NODE_ENV,
         degraded: true,
         degradedComponents: ['api'],
+        checks: {
+          api: 'failed',
+          apiError: err instanceof Error ? err.message : 'Health check failed',
+        },
       });
     }
   });

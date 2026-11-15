@@ -147,6 +147,11 @@ function syncLiveDependencies(): void {
       store.mongodb = { status: 'failed', statusSince: Date.now(), error: 'MongoDB disconnected' };
     } else if (readyState === 1 && store.mongodb.status === 'unknown') {
       store.mongodb = { status: 'healthy', statusSince: Date.now() };
+      if (store.api.status === 'unknown') {
+        store.api = { status: 'healthy', statusSince: Date.now() };
+      }
+    } else if (readyState === 2 && store.mongodb.status === 'unknown') {
+      store.mongodb = { status: 'initializing', statusSince: Date.now() };
     }
   } catch {
     // Ignore in unit test or decoupled environments

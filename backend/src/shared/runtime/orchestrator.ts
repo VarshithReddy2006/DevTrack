@@ -3,7 +3,7 @@
 
 import type { Express } from 'express';
 import mongoose from 'mongoose';
-import { connectDatabase } from '../../db/connection.js';
+import { connectDatabase, sanitizeMongoError, scheduleMongoReconnect } from '../../db/connection.js';
 import { setupProductionIndexes } from '../../db/migrations/index-setup.js';
 import { env } from '../../config/env.js';
 import { logger } from '../logger.js';
@@ -55,20 +55,43 @@ export interface StartupResult {
 // Startup
 // ---------------------------------------------------------------------------
 
-async function bootMongo(): Promise<boolean> {
+async function bootMongo(retries = 3, retryDelayMs = 2000): Promise<boolean> {
   setMongoStatus('initializing');
-  try {
-    await connectDatabase();
-    await setupProductionIndexes();
-    setMongoStatus('healthy');
-    logger.info('[startup] MongoDB connected', { event: 'mongodb_connected' });
-    return true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    setMongoStatus('failed', msg);
-    logger.error('[startup] MongoDB connection failed', err as Error);
-    return false;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      logger.info(`[startup] MongoDB connection attempt ${attempt}/${retries}...`);
+      await connectDatabase();
+
+      logger.info('[startup] Verifying production database indexes...');
+      try {
+        await Promise.race([
+          setupProductionIndexes(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Index setup timed out after 10s')), 10000)),
+        ]);
+        logger.info('[startup] Production indexes verified successfully');
+      } catch (idxErr) {
+        logger.warn('[startup] Production index setup encountered non-blocking warning', {
+          error: idxErr instanceof Error ? idxErr.message : String(idxErr),
+        });
+      }
+
+      setMongoStatus('healthy');
+      logger.info('[startup] MongoDB connected and ready', { event: 'mongodb_connected', readyState: mongoose.connection.readyState });
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const safeMsg = typeof sanitizeMongoError === 'function' ? sanitizeMongoError(msg) : msg;
+      logger.error(`[startup] MongoDB connection attempt ${attempt}/${retries} failed: ${safeMsg}`);
+      if (attempt < retries) {
+        logger.info(`[startup] Waiting ${retryDelayMs}ms before retrying MongoDB connection...`);
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+      } else {
+        setMongoStatus('failed', safeMsg);
+        if (typeof scheduleMongoReconnect === 'function') scheduleMongoReconnect();
+      }
+    }
   }
+  return false;
 }
 
 async function bootRedis(): Promise<boolean> {
@@ -190,8 +213,6 @@ export async function startup(app: Express): Promise<StartupResult> {
 
   const schedulerOk = bootScheduler(queuesOk);
   if (!schedulerOk) warnings.push('Scheduler paused');
-
-
 
   setSseStatus('healthy');
   setApiStatus('healthy');
