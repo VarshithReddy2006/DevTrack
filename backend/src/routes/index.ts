@@ -10,6 +10,7 @@ import { projectsRoutes } from '../modules/projects/index.js';
 import { profileRoutes } from '../modules/profile/index.js';
 import { settingsRoutes } from '../modules/settings/index.js';
 import { syncRoutes } from '../modules/platform-sync/index.js';
+import contestRoutes from '../modules/platform-sync/contest.routes.js';
 import { handleSseRequest } from '../shared/sse/index.js';
 import { xpRoutes } from '../modules/xp/xp.routes.js';
 import { streakRoutes } from '../modules/streak/index.js';
@@ -59,6 +60,7 @@ router.get('/events', handleSseRequest);
 // Protected routes
 router.use('/dashboard', dashboardRoutes);
 router.use('/dsa', dsaRoutes);
+router.use('/contests', contestRoutes);
 router.use('/activity', activityRoutes);
 router.use('/projects', projectsRoutes);
 router.use('/profile', profileRoutes);
