@@ -239,7 +239,7 @@ export class FocusEngine {
       { $set: { status: 'paused', pauses, activeSec, activeDurationMs, lastResumedAt: null, lastHeartbeatAt: now } },
       { new: true }
     );
-    return paused ? ({ activeDurationMs, lastResumedAt: null, session: paused } as any) : null;
+    return paused ? { activeDurationMs, lastResumedAt: null } : null;
   }
 
   async resumeSession(sessionId: string, userId: string): Promise<FocusTiming | null> {
@@ -263,13 +263,17 @@ export class FocusEngine {
       { $set: { status: 'running', pauses, activeSec, activeDurationMs, lastResumedAt: now, lastHeartbeatAt: now } },
       { new: true }
     );
-    return resumed ? ({ activeDurationMs, lastResumedAt: now, session: resumed } as any) : null;
+    return resumed ? { activeDurationMs: resumed.activeDurationMs ?? 0, lastResumedAt: now } : null;
   }
 
   /**
    * Records a heartbeat to verify active focus.
    */
-  async recordHeartbeat(sessionId: string, userId: string): Promise<{ success: boolean; throttled?: boolean; session?: any; notFound?: boolean }> {
+  async recordHeartbeat(
+    sessionId: string,
+    userId: string,
+    enforceThrottle = false
+  ): Promise<{ success: boolean; throttled?: boolean; session?: any; notFound?: boolean }> {
     const session = await FocusSession.findOne({
       _id: new Types.ObjectId(sessionId),
       userId: new Types.ObjectId(userId),
@@ -278,7 +282,7 @@ export class FocusEngine {
     if (!session.isOpen) return { success: false, throttled: false, session };
 
     const now = new Date();
-    if (session.lastHeartbeatAt) {
+    if (enforceThrottle && session.lastHeartbeatAt) {
       const elapsedMs = now.getTime() - new Date(session.lastHeartbeatAt).getTime();
       if (elapsedMs < 45_000) {
         return { success: false, throttled: true, session };

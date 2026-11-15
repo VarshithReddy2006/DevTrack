@@ -73,7 +73,7 @@ export class FocusController {
       return;
     }
 
-    const result = await focusEngine.recordHeartbeat(id, userId);
+    const result = await focusEngine.recordHeartbeat(id, userId, true);
 
     if (result.notFound) {
       res.status(404).json({
@@ -125,10 +125,11 @@ export class FocusController {
       return;
     }
 
+    const session = (await focusEngine.getActiveSession(userId)) || result;
     res.status(200).json({
       success: true,
       message: 'Focus session paused',
-      data: (result as any).session || result,
+      data: session,
     });
   }
 
@@ -156,10 +157,11 @@ export class FocusController {
       return;
     }
 
+    const session = (await focusEngine.getActiveSession(userId)) || result;
     res.status(200).json({
       success: true,
       message: 'Focus session resumed',
-      data: (result as any).session || result,
+      data: session,
     });
   }
 
