@@ -56,3 +56,4 @@ export { ProfileView, type IProfileView } from './profileView.model.js';
 export { ProfileTimelineEvent, type IProfileTimelineEvent } from './profileTimelineEvent.model.js';
 export { AIConversation, type IAIConversation, type IConversationTurn } from './aiConversation.model.js';
 export { FeedbackReportModel, type IFeedbackReport } from './feedbackReport.model.js';
+export { FeatureFlag, type IFeatureFlag } from './featureFlag.model.js';

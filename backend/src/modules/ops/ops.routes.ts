@@ -2,11 +2,14 @@
 import { Router } from 'express';
 import { authMiddleware, adminMiddleware, opsAuditorMiddleware } from '../../middleware/auth.js';
 import opsController from './ops.controller.js';
+import { opsFlagRoutes } from '../flags/flags.routes.js';
 
 const router = Router();
 
 // Health check remains public for load balancers
 router.get('/health', opsController.health);
+
+router.use('/flags', opsFlagRoutes);
 
 // Metrics and ops require ops auditor or admin
 router.get('/metrics', authMiddleware, opsAuditorMiddleware, opsController.metrics);
