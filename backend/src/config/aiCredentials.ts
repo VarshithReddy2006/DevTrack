@@ -1,9 +1,9 @@
 /**
  * What to do at startup when no AI provider key is configured.
  *
- * A real cloud deployment (HTTPS origin) must have a key, so it stops. A local production
- * simulation (docker compose on localhost) keeps running and the intelligence features fall back
- * to degraded responses, matching what the startup log already tells the operator.
+ * In production or development, if AI keys are omitted, the server runs in degraded
+ * AI mode and intelligence features fall back to deterministic responses.
+ * If explicitly configured to require AI keys (requireAi: true / REQUIRE_AI_KEYS=true), it exits.
  */
 export type AiCredentialAction = 'ok' | 'warn' | 'exit';
 
@@ -18,8 +18,9 @@ export function aiCredentialAction(opts: {
   corsOrigin: string;
   hasOpenAi: boolean;
   hasGemini: boolean;
+  requireAi?: boolean;
 }): AiCredentialAction {
   if (opts.hasOpenAi || opts.hasGemini) return 'ok';
-  if (opts.isProd && !isLocalOrigin(opts.corsOrigin)) return 'exit';
+  if (opts.requireAi) return 'exit';
   return 'warn';
 }

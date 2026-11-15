@@ -229,7 +229,7 @@ Create one Render service per worker type:
 | `REDIS_URL` | From Upstash/Redis Cloud |
 | `CORS_ORIGIN` | `https://your-app.vercel.app` |
 | `CLERK_SECRET_KEY` | From Clerk dashboard |
-| `OPENAI_API_KEY` or `GEMINI_API_KEY` | At least one |
+| `OPENAI_API_KEY` or `GEMINI_API_KEY` | Optional (runs in degraded AI mode if unset; set `REQUIRE_AI_KEYS=true` to require) |
 | `ENABLE_WORKERS` | `false` (API only) |
 
 ### 5. Deployment Hook (GitHub Actions)
@@ -267,7 +267,7 @@ Workflows in `.github/workflows/`:
 - [ ] `MONGODB_URI` points to production cluster |
 - [ ] `REDIS_URL` configured (BullMQ will not start without Redis) |
 - [ ] `CORS_ORIGIN` is HTTPS and matches the frontend URL |
-- [ ] At least one AI key (`OPENAI_API_KEY` or `GEMINI_API_KEY`) set (a production API whose `CORS_ORIGIN` is HTTPS refuses to start without one; a local simulation on `http://localhost` only logs a warning and runs with degraded intelligence) |
+- [ ] AI keys (`OPENAI_API_KEY` or `GEMINI_API_KEY`): Optional. Runs in degraded AI mode with deterministic fallbacks when omitted; set `REQUIRE_AI_KEYS=true` to enforce. |
 - [ ] `ENABLE_WORKERS=false` on API containers |
 - [ ] Worker services running with correct `WORKER_TYPE` |
 - [ ] `VITE_API_BASE_URL` matches the deployed API URL (Render) |

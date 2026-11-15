@@ -9,8 +9,12 @@ describe('aiCredentialAction', () => {
     expect(aiCredentialAction({ ...base, hasGemini: true })).toBe('ok');
   });
 
-  it('stops a real cloud production deploy with no key', () => {
-    expect(aiCredentialAction(base)).toBe('exit');
+  it('stops deployment when AI keys are explicitly required', () => {
+    expect(aiCredentialAction({ ...base, requireAi: true })).toBe('exit');
+  });
+
+  it('warns and continues in degraded mode for a cloud production deploy with no key', () => {
+    expect(aiCredentialAction(base)).toBe('warn');
   });
 
   it.each(['http://localhost', 'http://localhost:80', 'http://localhost:4000', 'http://127.0.0.1:8080'])(

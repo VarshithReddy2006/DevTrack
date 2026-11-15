@@ -107,23 +107,30 @@ async function bootstrap() {
     corsOrigin: env.CORS_ORIGIN,
     hasOpenAi: Boolean(process.env.OPENAI_API_KEY),
     hasGemini: Boolean(env.GEMINI_API_KEY),
+    requireAi: process.env.REQUIRE_AI_KEYS === 'true',
   });
   if (aiAction === 'exit') {
-    logger.error('CRITICAL: At least one AI API key (OPENAI_API_KEY or GEMINI_API_KEY) must be set in production');
+    logger.error('CRITICAL: At least one AI API key (OPENAI_API_KEY or GEMINI_API_KEY) must be set when REQUIRE_AI_KEYS is enabled');
     process.exit(1);
   } else if (aiAction === 'warn') {
-    logger.warn('WARNING: No AI API keys set. Intelligence features will use mock/fallback responses.');
+    logger.warn('WARNING: No AI API keys set. Intelligence features will operate in degraded mode (deterministic fallbacks).');
     logger.warn('Set OPENAI_API_KEY or GEMINI_API_KEY for full intelligence capabilities.');
   }
 
   const app = await createApp();
 
-  // Phase 6: HTTP server start (start BEFORE orchestrator to ensure server is listening even if Redis fails)
-  const server = app.listen(env.PORT, () => {
-    logger.info(`DevTrack backend listening on port ${env.PORT}`);
+  // Phase 6: HTTP server start (bind explicitly to 0.0.0.0 and env.PORT before orchestrator)
+  const host = process.env.HOST || '0.0.0.0';
+  const server = app.listen(env.PORT, host, () => {
+    logger.info(`DevTrack backend listening on ${host}:${env.PORT}`);
     logger.info(`Environment: ${env.NODE_ENV}`);
     logger.info(`API base path: ${API_BASE_PATH}`);
     logger.info(`AI Provider: ${process.env.OPENAI_API_KEY ? 'OpenAI configured' : env.GEMINI_API_KEY ? 'Gemini configured' : 'None (degraded mode)'}`);
+  });
+
+  server.on('error', (err: unknown) => {
+    logger.error('CRITICAL: HTTP server failed to bind or listen', err);
+    process.exit(1);
   });
 
   // Phase 6.5: Start orchestrator in background (non-blocking)
