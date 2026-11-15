@@ -1,6 +1,7 @@
 // src/middleware/idempotency.ts — HTTP Idempotency-Key request replay middleware
 // Implements RFC 9440-compatible request deduplication and replay with Redis atomic locks.
 
+import crypto from 'node:crypto';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { getRedisClient, isRedisConfigured } from '../shared/redis/client.js';
 import { logger } from '../shared/logger.js';
@@ -29,6 +30,12 @@ export interface IdempotencyOptions {
    * Default: 'idempotency'
    */
   keyPrefix?: string;
+
+  /**
+   * If true, namespaces unauthenticated requests by client IP to prevent cross-user key collision.
+   * Default: false (preserves 'anonymous' for backwards compatibility).
+   */
+  isolateAnonymous?: boolean;
 }
 
 export interface StoredIdempotencyPayload {
@@ -36,6 +43,44 @@ export interface StoredIdempotencyPayload {
   statusCode: number;
   body: string;
   headers: Record<string, string | undefined>;
+  payloadHash?: string;
+}
+
+function canonicalize(val: any): any {
+  if (val === null || typeof val !== 'object') {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    return val.map(canonicalize);
+  }
+  const sortedKeys = Object.keys(val).sort();
+  const result: Record<string, any> = {};
+  for (const key of sortedKeys) {
+    result[key] = canonicalize(val[key]);
+  }
+  return result;
+}
+
+export function computePayloadHash(body: unknown): string {
+  if (body === undefined || body === null || body === '') {
+    return '';
+  }
+  try {
+    const canonical = typeof body === 'object' ? canonicalize(body) : body;
+    const serialized = typeof canonical === 'object' ? JSON.stringify(canonical) : String(canonical);
+    return crypto.createHash('sha256').update(serialized).digest('hex');
+  } catch {
+    return crypto.createHash('sha256').update(String(body)).digest('hex');
+  }
+}
+
+function getClientIp(req: Request): string {
+  const forwarded = req.header('x-forwarded-for');
+  if (forwarded) {
+    const first = forwarded.split(',')[0].trim();
+    if (first) return first;
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 export function createIdempotencyMiddleware(options: IdempotencyOptions = {}): RequestHandler {
@@ -44,6 +89,7 @@ export function createIdempotencyMiddleware(options: IdempotencyOptions = {}): R
     ttlSec = 86400,
     lockTimeoutSec = 30,
     keyPrefix = 'idempotency',
+    isolateAnonymous = false,
   } = options;
 
   return async function idempotencyHandler(
@@ -73,7 +119,9 @@ export function createIdempotencyMiddleware(options: IdempotencyOptions = {}): R
     }
 
     const redis = getRedisClient();
-    const userId = (req as any).user?.id || (req as any).user?._id?.toString() || (req as any).user?.clerkId || 'anonymous';
+    const payloadHash = computePayloadHash(req.body);
+    const authUser = (req as any).user?.id || (req as any).user?._id?.toString() || (req as any).user?.clerkId;
+    const userId = authUser || (isolateAnonymous ? `anon:${getClientIp(req)}` : 'anonymous');
     const method = req.method.toUpperCase();
     const path = req.baseUrl ? `${req.baseUrl}${req.path}` : (req.originalUrl?.split('?')[0] || req.path);
     const redisKey = `${keyPrefix}:${userId}:${method}:${path}:${idempotencyKey}`;
@@ -82,7 +130,7 @@ export function createIdempotencyMiddleware(options: IdempotencyOptions = {}): R
       // 1. Attempt atomic lock acquisition with in-progress marker
       const lockAcquired = await redis.set(
         redisKey,
-        JSON.stringify({ status: 'processing' }),
+        JSON.stringify({ status: 'processing', payloadHash }),
         'EX',
         lockTimeoutSec,
         'NX'
@@ -99,6 +147,21 @@ export function createIdempotencyMiddleware(options: IdempotencyOptions = {}): R
             if (rawExisting === 'processing') {
               existingRecord = { status: 'processing' };
             }
+          }
+
+          // RFC 9440: Payload mismatch check
+          if (
+            existingRecord &&
+            existingRecord.payloadHash !== undefined &&
+            existingRecord.payloadHash !== payloadHash
+          ) {
+            res.status(422).json({
+              success: false,
+              message: 'Request payload does not match the original request for this Idempotency-Key',
+              code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+              timestamp: new Date().toISOString(),
+            });
+            return;
           }
 
           if (existingRecord?.status === 'processing') {
@@ -165,6 +228,7 @@ export function createIdempotencyMiddleware(options: IdempotencyOptions = {}): R
               statusCode: res.statusCode,
               body: serializedBody,
               headers: headersToSave,
+              payloadHash,
             };
 
             await redis.set(redisKey, JSON.stringify(payload), 'EX', ttlSec);

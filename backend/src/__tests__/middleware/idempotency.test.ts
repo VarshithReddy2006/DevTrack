@@ -1,6 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { idempotency, createIdempotencyMiddleware } from '../../middleware/idempotency.js';
+import { idempotency, createIdempotencyMiddleware, computePayloadHash } from '../../middleware/idempotency.js';
 
 interface RedisStoreEntry {
   value: string;
@@ -490,5 +490,192 @@ describe('Idempotency-Key Middleware', () => {
     } finally {
       server.close();
     }
+  });
+
+  describe('RFC 9440 Payload Fingerprinting & Payload Mismatch Rejection', () => {
+    it('computePayloadHash produces deterministic SHA-256 independent of key ordering', () => {
+      const payloadA = { title: 'Test', count: 10, meta: { active: true, tag: 'v1' } };
+      const payloadB = { count: 10, meta: { tag: 'v1', active: true }, title: 'Test' };
+
+      const hashA = computePayloadHash(payloadA);
+      const hashB = computePayloadHash(payloadB);
+
+      expect(hashA).toBe(hashB);
+      expect(hashA).toHaveLength(64); // SHA-256 hex length
+    });
+
+    it('computePayloadHash produces distinct hashes for differing payloads', () => {
+      const hash1 = computePayloadHash({ amount: 100 });
+      const hash2 = computePayloadHash({ amount: 200 });
+      expect(hash1).not.toBe(hash2);
+    });
+
+    it('rejects with 422 IDEMPOTENCY_PAYLOAD_MISMATCH when same Idempotency-Key is reused with different body', async () => {
+      const app = express();
+      app.use(express.json());
+
+      let controllerRuns = 0;
+      app.post(
+        '/api/v1/orders',
+        idempotency({ ttlSec: 60 }),
+        (req, res) => {
+          controllerRuns++;
+          res.status(201).json({ success: true, orderId: `ord-${req.body?.amount}` });
+        }
+      );
+
+      const server = app.listen(0);
+      const port = (server.address() as any).port;
+
+      try {
+        // Request 1: creates order with amount 100
+        const firstRes = await fetch(`http://127.0.0.1:${port}/api/v1/orders`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': 'shared-order-key-001',
+          },
+          body: JSON.stringify({ amount: 100 }),
+        });
+
+        expect(firstRes.status).toBe(201);
+        const firstBody = await firstRes.json();
+        expect(firstBody).toEqual({ success: true, orderId: 'ord-100' });
+        expect(controllerRuns).toBe(1);
+
+        // Request 2: Reuses the SAME Idempotency-Key with DIFFERENT amount 500
+        const secondRes = await fetch(`http://127.0.0.1:${port}/api/v1/orders`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': 'shared-order-key-001',
+          },
+          body: JSON.stringify({ amount: 500 }),
+        });
+
+        expect(secondRes.status).toBe(422);
+        const secondBody = await secondRes.json();
+        expect(secondBody).toEqual(
+          expect.objectContaining({
+            success: false,
+            code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+            message: 'Request payload does not match the original request for this Idempotency-Key',
+          })
+        );
+        expect(controllerRuns).toBe(1); // Controller must NOT be executed
+      } finally {
+        server.close();
+      }
+    });
+
+    it('rejects with 422 IDEMPOTENCY_PAYLOAD_MISMATCH when payload differs during in-flight processing', async () => {
+      const app = express();
+      app.use(express.json());
+
+      let releaseWait!: () => void;
+      const waitPromise = new Promise<void>((r) => {
+        releaseWait = r;
+      });
+
+      app.post(
+        '/api/v1/slow-transfer',
+        idempotency({ lockTimeoutSec: 10 }),
+        async (req, res) => {
+          await waitPromise;
+          res.status(200).json({ ok: true });
+        }
+      );
+
+      const server = app.listen(0);
+      const port = (server.address() as any).port;
+
+      try {
+        // Request 1 starts with payload { transfer: 'A' }
+        const req1Promise = fetch(`http://127.0.0.1:${port}/api/v1/slow-transfer`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': 'transfer-key-inflight',
+          },
+          body: JSON.stringify({ transfer: 'A' }),
+        });
+
+        await new Promise((r) => setTimeout(r, 40));
+
+        // Request 2 arrives while Request 1 is processing with DIFFERENT payload { transfer: 'B' }
+        const req2Res = await fetch(`http://127.0.0.1:${port}/api/v1/slow-transfer`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': 'transfer-key-inflight',
+          },
+          body: JSON.stringify({ transfer: 'B' }),
+        });
+
+        expect(req2Res.status).toBe(422);
+        const req2Body = await req2Res.json();
+        expect(req2Body.code).toBe('IDEMPOTENCY_PAYLOAD_MISMATCH');
+
+        releaseWait();
+        await req1Promise;
+      } finally {
+        server.close();
+      }
+    });
+  });
+
+  describe('Unauthenticated Anonymous Client Isolation', () => {
+    it('isolates unauthenticated requests across distinct client IPs when isolateAnonymous is enabled', async () => {
+      const app = express();
+      app.use(express.json());
+
+      let controllerRuns = 0;
+      app.post(
+        '/api/v1/public/contact',
+        idempotency({ isolateAnonymous: true }),
+        (req, res) => {
+          controllerRuns++;
+          res.status(200).json({ clientIp: req.header('X-Forwarded-For'), run: controllerRuns });
+        }
+      );
+
+      const server = app.listen(0);
+      const port = (server.address() as any).port;
+
+      try {
+        // Client IP 1 sends with key "public-common-key"
+        const res1 = await fetch(`http://127.0.0.1:${port}/api/v1/public/contact`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forwarded-For': '198.51.100.1',
+            'Idempotency-Key': 'public-common-key',
+          },
+          body: JSON.stringify({ msg: 'hello from client 1' }),
+        });
+
+        const body1 = await res1.json();
+        expect(res1.status).toBe(200);
+        expect(body1).toEqual({ clientIp: '198.51.100.1', run: 1 });
+
+        // Client IP 2 sends with the EXACT SAME Idempotency-Key "public-common-key"
+        const res2 = await fetch(`http://127.0.0.1:${port}/api/v1/public/contact`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forwarded-For': '203.0.113.2',
+            'Idempotency-Key': 'public-common-key',
+          },
+          body: JSON.stringify({ msg: 'hello from client 2' }),
+        });
+
+        const body2 = await res2.json();
+        expect(res2.status).toBe(200);
+        expect(body2).toEqual({ clientIp: '203.0.113.2', run: 2 });
+        expect(res2.headers.get('idempotent-replayed')).toBeNull(); // NOT a replay of client 1!
+      } finally {
+        server.close();
+      }
+    });
   });
 });
