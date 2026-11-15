@@ -1,10 +1,11 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Eye, Crosshair, FileSearch, Wrench } from 'lucide-react';
+import { Eye, Crosshair, FileSearch, Wrench, PlayCircle } from 'lucide-react';
 
 const SECTIONS = [
   { id: 'overview', label: 'Overview', icon: Eye },
   { id: 'job-match', label: 'Job Match', icon: Crosshair },
+  { id: 'replay', label: 'ATS Replay', icon: PlayCircle },
   { id: 'resume-audit', label: 'Resume Audit', icon: FileSearch },
   { id: 'improvement-center', label: 'Improvement Center', icon: Wrench },
 ] as const;

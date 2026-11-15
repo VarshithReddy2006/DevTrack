@@ -21,9 +21,10 @@ export interface ResumeSession {
     credibility: StageResult;
     recommendations: StageResult;
   };
+  canResume?: boolean;
   atsState?: {
     atsScore?: number;
-    parserWarnings?: string[];
+    parserWarnings?: Array<string | { message: string }>;
     formattingWarnings?: string[];
     keywordCoverage?: string[];
     sectionIntegrity?: string[];
@@ -31,6 +32,7 @@ export interface ResumeSession {
     recommendations?: string[];
   };
   parsedContent?: {
+    text?: string;
     parsingDiagnostics: {
       confidence: number;
       warnings: string[];
