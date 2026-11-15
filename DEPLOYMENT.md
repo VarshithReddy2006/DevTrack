@@ -176,11 +176,12 @@ Builds images from `docker-compose.prod.yml`, starts the containers, and checks 
 ## Frontend (Vercel)
 
 1. Import the GitHub repo at https://vercel.com/new
-2. Set root directory to `frontend/`
+2. Leave the root directory at the repository root so the build can access `packages/contracts`.
 3. Framework preset: **Vite**
-4. Build command: `npm run build`
-5. Output directory: `dist`
-6. Inject environment variables:
+4. Install command: `npm ci --prefix frontend --include=dev`
+5. Build command: `npm run build --prefix frontend`
+6. Output directory: `frontend/dist`
+7. Inject environment variables:
    - `VITE_API_BASE_URL=https://your-api.render.com/api`
    - `VITE_CLERK_PUBLISHABLE_KEY=pk_live_...`
 
@@ -199,25 +200,25 @@ Rollback: Vercel Dashboard - Deployments - select last working build - Promote t
 ### 2. Backend API Service
 
 1. Name: `devtrack-api`
-2. Root directory: `backend/`
-3. Build command: `npm run build`
-4. Start command: `node dist/index.js`
+2. Root directory: repository root so the build can access `packages/contracts`
+3. Build command: `npm ci --prefix backend --include=dev && npm run build --prefix backend`
+4. Start command: `cd backend && node dist/index.js`
 5. Environment: `Node`
 6. Set `ENABLE_WORKERS=false`
 
 ### 3. Worker Services
 
-Create one Render service per worker type:
+Create one Render service per worker type with the same root directory and build command as the API.
 
 
 | Service Name | `WORKER_TYPE` | Start Command |
 |---------------|---------------|---------------|
-| `devtrack-sync` | `sync` | `node dist/worker-entrypoint.js` |
-| `devtrack-readiness` | `readiness` | `node dist/worker-entrypoint.js` |
-| `devtrack-xp` | `xp` | `node dist/worker-entrypoint.js` |
-| `devtrack-resume` | `resume-intelligence` | `node dist/worker-entrypoint.js` |
-| `devtrack-dataset` | `dataset` | `node dist/worker-entrypoint.js` |
-| `devtrack-maint` | `maintenance` | `node dist/worker-entrypoint.js` |
+| `devtrack-sync` | `sync` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-readiness` | `readiness` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-xp` | `xp` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-resume` | `resume-intelligence` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-dataset` | `dataset` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-maint` | `maintenance` | `cd backend && node dist/worker-entrypoint.js` |
 
 ### 4. Required Environment Variables (Render Dashboard)
 

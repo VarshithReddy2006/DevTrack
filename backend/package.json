@@ -7,6 +7,7 @@
     "node": "^22.13.0 || >=24.0.0"
   },
   "scripts": {
+    "postinstall": "node node_modules/@devtrack/contracts/build-for-app.mjs",
     "dev": "tsx watch src/index.ts",
     "dev:all": "tsx watch src/index.ts & tsx watch src/worker-entrypoint.ts",
     "worker": "tsx src/worker-entrypoint.ts",
@@ -26,6 +27,7 @@
     "test:e2e:server": "tsx tests/e2e-resume-server.ts"
   },
   "dependencies": {
+    "@devtrack/contracts": "file:../packages/contracts",
     "@clerk/backend": "^3.8.2",
     "@clerk/express": "^2.1.22",
     "@google/generative-ai": "^0.24.1",

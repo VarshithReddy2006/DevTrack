@@ -6,7 +6,9 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Copy package files from backend/ subdirectory (context is repo root)
-COPY backend/package*.json ./
+COPY backend/package*.json backend/.npmrc ./
+
+COPY packages/contracts/ /packages/contracts/
 
 # Install all dependencies (including devDependencies for TypeScript build)
 RUN npm install
@@ -35,7 +37,9 @@ RUN addgroup -g 1001 -S nodejs && \
 WORKDIR /app
 
 # Copy package files and install ONLY production dependencies
-COPY backend/package*.json ./
+COPY backend/package*.json backend/.npmrc ./
+COPY packages/contracts/package.json packages/contracts/build-for-app.mjs /packages/contracts/
+COPY --from=builder /app/node_modules/@devtrack/contracts/dist /packages/contracts/dist
 RUN npm install --omit=dev && npm cache clean --force
 
 # Copy compiled output from the builder stage
