@@ -217,8 +217,12 @@ export type SseEventType =
   | 'badge_earned'
   // Resume progression
   | 'resume_progression'
-  // Revision
+  // v2 Milestone SSE events
+  | 'focus_session_completed'
+  | 'dsa_problem_solved'
+  | 'contest_starting_soon'
   | 'revision_reviewed'
+  | 'streak_updated'
   // System
   | 'heartbeat';
 

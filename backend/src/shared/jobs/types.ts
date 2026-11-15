@@ -111,6 +111,7 @@ export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMainten
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
+  CONTEST_REFRESH: 'contest-refresh',
   SYSTEM_MAINTENANCE: 'system-maintenance',
   XP_PROCESSING: 'xp-processing',
   STREAK_RECALC: 'streak-recalc',

@@ -17,3 +17,11 @@ export {
 export { validateBody, validateQuery, validateParams } from './validation.js';
 
 export { rateLimit } from './rateLimit.js';
+
+export {
+  idempotency,
+  idempotencyMiddleware,
+  createIdempotencyMiddleware,
+  type IdempotencyOptions,
+  type StoredIdempotencyPayload,
+} from './idempotency.js';
