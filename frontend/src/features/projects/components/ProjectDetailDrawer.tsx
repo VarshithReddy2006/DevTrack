@@ -576,9 +576,71 @@ const OverviewTab: React.FC<{ detail: ProjectDetailVM }> = ({ detail }) => {
   );
 };
 
+function isGitHubRepository(repoUrl: string | null | undefined): boolean {
+  if (!repoUrl) return false;
+  try {
+    const url = new URL(repoUrl);
+    const [owner, repo, ...rest] = url.pathname.split('/').filter(Boolean);
+    const name = repo?.replace(/\.git$/i, '');
+    return url.origin === 'https://github.com' && !url.username && !url.password &&
+      !url.search && !url.hash && rest.length === 0 && Boolean(owner && /^[A-Za-z0-9-]{1,39}$/.test(owner) &&
+        name && /^[A-Za-z0-9._-]+$/.test(name) && name !== '.' && name !== '..');
+  } catch {
+    return false;
+  }
+}
+
+function RepositorySyncAction({ onSync, refreshing, refreshError }: {
+  onSync: () => Promise<void>;
+  refreshing: boolean;
+  refreshError: string | null;
+}) {
+  const [syncing, setSyncing] = useState(false);
+  const [synced, setSynced] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+
+  async function handleSync() {
+    if (inFlight.current || refreshing) return;
+    inFlight.current = true;
+    setSyncing(true);
+    setSynced(false);
+    setError(null);
+    try {
+      await onSync();
+      setSynced(true);
+    } catch (cause) {
+      const message = cause && typeof cause === 'object' && 'message' in cause && typeof cause.message === 'string'
+        ? cause.message : 'GitHub repository sync failed.';
+      setError(message);
+    } finally {
+      inFlight.current = false;
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <div className="px-6 pb-3">
+      <button
+        type="button"
+        disabled={syncing || refreshing}
+        onClick={() => void handleSync()}
+        className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-dt-text disabled:opacity-60"
+      >
+        <Icon name="github" size={14} />
+        {syncing ? 'Syncing from GitHub…' : refreshing ? 'Refreshing project…' : 'Sync from GitHub'}
+      </button>
+      {error && <p role="alert" className="mt-2 text-xs text-red-700">{error} Check the repository link and try again.</p>}
+      {synced && !refreshing && (refreshError
+        ? <p role="alert" className="mt-2 text-xs text-red-700">GitHub sync completed, but the project details could not reload. Reopen the project to try again.</p>
+        : <p role="status" className="mt-2 text-xs text-dt-textSecondary">GitHub metrics refreshed.</p>)}
+    </div>
+  );
+}
+
 /* ─── Main Drawer Component ─── */
 export const ProjectDetailDrawer: React.FC<ProjectDetailDrawerProps> = ({ projectId, onClose }) => {
-  const { data: detail, status, refresh } = useProjectDetail(projectId);
+  const { data: detail, status, error, refresh, syncRepository } = useProjectDetail(projectId);
   const [activeTab, setActiveTab] = useState<DrawerTab>('overview');
   const drawerRef = useDialogFocus<HTMLDivElement>(onClose);
 
@@ -649,6 +711,15 @@ export const ProjectDetailDrawer: React.FC<ProjectDetailDrawerProps> = ({ projec
                     <Icon name="x-mark" size={18} className="text-dt-textSecondary" />
                   </button>
                 </div>
+
+                {isGitHubRepository(detail.repoUrl) && (
+                  <RepositorySyncAction
+                    key={detail.id}
+                    onSync={syncRepository}
+                    refreshing={status === 'loading'}
+                    refreshError={status === 'error' ? error : null}
+                  />
+                )}
 
                 <div className="flex items-center gap-1 px-6 py-2 border-b border-gray-100">
                   {tabs.map(tab => (
