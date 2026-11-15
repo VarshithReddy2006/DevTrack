@@ -83,7 +83,7 @@ const FocusPage: React.FC = () => {
 
             {/* Focus Engine (Full Width Row) */}
             <framerMotion.section variants={itemVariants} className="w-full">
-              <PomodoroTimer />
+              <PomodoroTimer showAmbientSound />
             </framerMotion.section>
 
             {/* Mission Control (Full Width Row) */}
