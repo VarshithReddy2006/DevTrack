@@ -323,10 +323,17 @@ export class UnifiedRuntimeStateService {
     if (!state?.sessionContext?.isActive || !state.sessionContext.sessionId) return null;
     const { focusEngine } = await import('../activity/focusEngine.service.js');
     await focusEngine.abortSession(state.sessionContext.sessionId, userId);
-    return this.updateFromEvent({
+    const updated = await this.updateFromEvent({
       eventId: `focus_cancel_${userId}_${Date.now()}`,
       eventType: 'focus_session_cancelled', userId, timestamp: new Date(), data: {},
     });
+    try {
+      const { cacheManager } = await import('../../shared/cache/cacheManager.js');
+      await cacheManager.invalidateDashboard(userId);
+    } catch (err) {
+      logger.warn('[UnifiedRuntimeState] Failed to invalidate dashboard cache on cancel', { userId, error: err instanceof Error ? err.message : String(err) });
+    }
+    return updated;
   }
 
   async heartbeatFocusSession(userId: string): Promise<IUnifiedRuntimeState> {

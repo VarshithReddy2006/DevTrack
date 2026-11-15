@@ -252,10 +252,25 @@ export class FocusEngine {
    * Aborts a focus session (e.g. user manually cancelled early).
    */
   async abortSession(sessionId: string, userId: string): Promise<void> {
-    await FocusSession.updateOne(
-      { _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId), status: { $in: ['running', 'paused'] } },
-      { status: 'abandoned', completedAt: new Date() }
+    const userObjId = new Types.ObjectId(userId);
+    const sessionObjId = new Types.ObjectId(sessionId);
+    const done = await FocusSession.findOneAndUpdate(
+      { _id: sessionObjId, userId: userObjId, status: { $in: ['running', 'paused'] } },
+      { $set: { status: 'abandoned', completedAt: new Date(), lastResumedAt: null } },
+      { new: true }
     );
+    if (done) {
+      await UnifiedRuntimeState.updateMany(
+        { 'sessionContext.sessionId': String(done._id), 'sessionContext.isActive': true },
+        { $set: { 'sessionContext.isActive': false, 'sessionContext.status': 'abandoned', 'sessionContext.lastResumedAt': null } }
+      );
+      try {
+        const { cacheManager } = await import('../../shared/cache/cacheManager.js');
+        await cacheManager.invalidateDashboard(userId);
+      } catch (err) {
+        logger.warn('[focus] Failed to invalidate dashboard cache on abort', { userId, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
   }
 
   /**
