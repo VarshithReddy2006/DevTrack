@@ -217,6 +217,8 @@ export type SseEventType =
   | 'badge_earned'
   // Resume progression
   | 'resume_progression'
+  // Revision
+  | 'revision_reviewed'
   // System
   | 'heartbeat';
 

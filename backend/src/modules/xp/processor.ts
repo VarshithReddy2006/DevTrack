@@ -259,6 +259,7 @@ function calculateXpAward(
     }
     case 'focus_session': return 50; // Pomodoro/Focus session reward
     case 'challenge_completed': return typeof metadata?.xpReward === 'number' ? metadata.xpReward : 35;
+    case 'revision_review': return XP_REWARDS.revisionReview;
     case 'milestone': return 0;
     case 'manual': return 0;
     default: return 0;
