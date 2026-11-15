@@ -61,7 +61,12 @@ export type DomainEventType =
   | 'auth.login'
   | 'auth.logout'
   | 'auth.token_refreshed'
-  | 'auth.session_revoked';
+  | 'auth.session_revoked'
+  // v2 Milestone domain events
+  | 'focus.session.completed'
+  | 'dsa.problem.solved'
+  | 'revision.reviewed'
+  | 'contest.starting-soon';
 
 // ---------------------------------------------------------------------------
 // Typed Event Payloads
