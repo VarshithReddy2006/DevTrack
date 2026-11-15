@@ -2,7 +2,7 @@
 // Unit and integration tests for ProcessedEvent inbox deduplication, consumer runner, and SSE bridge.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { ProcessedEvent } from '../../db/models/processedEvent.model.js';
 import { createDomainEvent } from '../../shared/events/eventContract.js';
 import {
@@ -13,7 +13,7 @@ import {
   clearConsumerRegistry,
   type ConsumerDefinition,
 } from '../../shared/events/consumerRegistry.js';
-import { runConsumer, runConsumersForEvent } from '../../shared/events/runConsumer.js';
+import { runConsumer, runConsumersForEvent, executeInboxNonTransactional } from '../../shared/events/runConsumer.js';
 import {
   SSE_BRIDGE_ALLOWLIST,
   isEventAllowlisted,
@@ -210,6 +210,99 @@ describe('ProcessedEvent Inbox Deduplication & Consumer Runner', () => {
         eventId: event.id,
       });
       expect(recordAfterRetry).not.toBeNull();
+    });
+
+    it('removes ProcessedEvent on handler failure in executeInboxNonTransactional so retries can execute', async () => {
+      let attempts = 0;
+      const consumer: ConsumerDefinition = {
+        name: 'standalone-failing-consumer',
+        pool: 'test',
+        dedup: 'inbox',
+        handle: async () => {
+          attempts++;
+          if (attempts === 1) {
+            throw new Error('Downstream network timeout in standalone mode');
+          }
+        },
+      };
+
+      const event = createDomainEvent('xp.awarded', { amount: 75 }, {
+        userId: new Types.ObjectId().toString(),
+      });
+
+      // First run: handler throws
+      await expect(executeInboxNonTransactional(consumer, event)).rejects.toThrow(
+        'Downstream network timeout in standalone mode'
+      );
+      expect(attempts).toBe(1);
+
+      // Verify ProcessedEvent was deleted on failure
+      const recordAfterFailure = await ProcessedEvent.findOne({
+        consumer: consumer.name,
+        eventId: event.id,
+      });
+      expect(recordAfterFailure).toBeNull();
+
+      // Retry: must execute successfully rather than being skipped as duplicate_inbox
+      const retryResult = await executeInboxNonTransactional(consumer, event);
+      expect(retryResult.executed).toBe(true);
+      expect(retryResult.skipped).toBe(false);
+      expect(retryResult.reason).toBe('executed');
+      expect(attempts).toBe(2);
+
+      // Verify ProcessedEvent now exists after successful retry
+      const recordAfterSuccess = await ProcessedEvent.findOne({
+        consumer: consumer.name,
+        eventId: event.id,
+      });
+      expect(recordAfterSuccess).not.toBeNull();
+      expect(recordAfterSuccess?.result?.success).toBe(true);
+    });
+
+    it('falls back to executeInboxNonTransactional and cleans up ProcessedEvent on failure when sessions are unavailable', async () => {
+      let attempts = 0;
+      const consumer: ConsumerDefinition = {
+        name: 'sessionless-failing-consumer',
+        pool: 'test',
+        dedup: 'inbox',
+        handle: async () => {
+          attempts++;
+          if (attempts === 1) {
+            throw new Error('Service unavailable during consumer run');
+          }
+        },
+      };
+
+      const event = createDomainEvent('focus.session.completed', { minutes: 45 }, {
+        userId: new Types.ObjectId().toString(),
+      });
+
+      // Mock startSession to reject, forcing fallback to non-transactional path
+      const startSessionSpy = vi.spyOn(mongoose, 'startSession').mockRejectedValueOnce(
+        new Error('This MongoDB deployment does not support transactions')
+      );
+
+      await expect(runConsumer(consumer, event)).rejects.toThrow('Service unavailable during consumer run');
+      expect(attempts).toBe(1);
+
+      // Record should be cleaned up
+      const recordAfterFail = await ProcessedEvent.findOne({
+        consumer: consumer.name,
+        eventId: event.id,
+      });
+      expect(recordAfterFail).toBeNull();
+
+      // Mock startSession to reject again on retry
+      startSessionSpy.mockRejectedValueOnce(
+        new Error('This MongoDB deployment does not support transactions')
+      );
+
+      const retryResult = await runConsumer(consumer, event);
+      expect(retryResult.executed).toBe(true);
+      expect(retryResult.skipped).toBe(false);
+      expect(attempts).toBe(2);
+
+      startSessionSpy.mockRestore();
     });
 
     it('executes natural dedup consumers directly without ProcessedEvent records', async () => {
