@@ -456,14 +456,7 @@ git rebase -i --signoff <base-branch-or-commit>
 > [!WARNING]
 > Do not rewrite or force-push commits that have already been shared with others or merged into shared branches without coordinating first.
 
-### Automated DCO Verification in Pull Requests
-
-DevTrack validates DCO sign-offs on all incoming pull requests via automated CI (`.github/workflows/dco.yml`).
-
-- Every commit in the pull request branch must contain a valid `Signed-off-by:` trailer matching the author's identity.
-- Pull requests containing unsigned, malformed, or identity-mismatched commits will fail automated status checks and cannot be merged until all commits are appropriately signed off.
-
-#### Co-Authored Commits
+### Co-Authored Commits
 
 If a commit represents pair programming or collaborative work across multiple contributors:
 
@@ -479,12 +472,6 @@ Signed-off-by: Bob Partner <bob@example.com>
 ```
 
 A `Co-authored-by:` trailer alone does not constitute a legal certification or DCO sign-off.
-
-#### Branch Protection & Required Status Checks
-
-- The CI workflow executes under the check name: **`Verify DCO Sign-off`**.
-- Once the workflow has completed at least one run on a repository pull request, repository administrators can configure branch protection rules on `main` and `develop` to require `Verify DCO Sign-off` before merging.
-- Optionally, administrators may also install the Probot DCO GitHub App (`https://github.com/apps/dco`), which provides an additional status check named `DCO`.
 
 ## Code Review and Quality Control
 
