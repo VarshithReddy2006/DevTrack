@@ -8,7 +8,7 @@ import { z } from 'zod';
 const router = Router();
 
 const activityCreateSchema = z.object({
-  type: z.enum(['problem_solved', 'commit_pushed', 'pr_merged', 'project_created', 'project_updated', 'project_deleted', 'contest_participated', 'streak_milestone', 'note_added', 'settings_updated', 'focus_session']),
+  type: z.enum(['problem_solved', 'commit_pushed', 'pr_merged', 'project_created', 'project_updated', 'project_deleted', 'contest_participated', 'streak_milestone', 'note_added', 'settings_updated', 'github_sync_completed', 'focus_session']),
   title: z.string().min(1),
   description: z.string(),
   platform: z.string(),

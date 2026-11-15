@@ -57,7 +57,7 @@ export async function syncAllPlatforms(userId: string): Promise<SyncResult[]> {
   const failed = results.filter((r) => !r.success);
   try {
     await createActivity(userId, {
-      type: 'streak_milestone',
+      type: 'github_sync_completed',
       title: 'Platform Sync',
       description: failed.length === 0
         ? `Synced ${succeeded.length} platform(s) successfully`

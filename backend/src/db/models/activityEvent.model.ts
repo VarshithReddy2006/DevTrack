@@ -3,7 +3,7 @@ import { Schema, model, type Document } from 'mongoose';
 
 export interface IActivityEvent extends Document {
   userId: Schema.Types.ObjectId;
-  type: 'problem_solved' | 'commit_pushed' | 'pr_merged' | 'project_created' | 'project_updated' | 'project_deleted' | 'contest_participated' | 'streak_milestone' | 'note_added' | 'settings_updated' | 'focus_session';
+  type: 'problem_solved' | 'commit_pushed' | 'pr_merged' | 'project_created' | 'project_updated' | 'project_deleted' | 'contest_participated' | 'streak_milestone' | 'note_added' | 'settings_updated' | 'github_sync_completed' | 'focus_session';
   title: string;
   description: string;
   platform: string;

@@ -69,10 +69,35 @@ export async function persistContests(userId: string, platform: string, contests
       problemsSolved: 0, ratingBefore: contest.ratingBefore, ratingAfter: contest.ratingAfter, ratingChange: contest.ratingChange,
     } }, { upsert: true });
     if (result.upsertedCount) ingested++;
-    if (result.upsertedCount && contest.url && contest.participatedAt.getTime() >= Date.now() - 7 * 86_400_000) {
-      await createActivity(userId, { type: 'contest_participated', title: `Participated in ${contest.title}`,
-        description: `Rating changed by ${contest.ratingChange ?? 0}`, platform, url: contest.url,
-        tags: ['contest', platform], metadata: { contestName: contest.title, ratingChange: contest.ratingChange ?? 0 } });
+    if (contest.url && contest.participatedAt.getTime() >= Date.now() - 7 * 86_400_000) {
+      try {
+        const { ActivityEvent } = await import('../../db/models/index.js');
+        const existingActivity = await ActivityEvent.findOne({
+          userId: new Types.ObjectId(userId),
+          type: 'contest_participated',
+          platform,
+          'metadata.contestName': contest.title,
+        }).lean();
+
+        if (!existingActivity) {
+          await createActivity(userId, {
+            type: 'contest_participated',
+            title: `Participated in ${contest.title}`,
+            description: `Rating changed by ${contest.ratingChange ?? 0}`,
+            platform,
+            url: contest.url,
+            tags: ['contest', platform],
+            metadata: { contestName: contest.title, ratingChange: contest.ratingChange ?? 0 },
+            occurredAt: contest.participatedAt,
+          });
+        }
+      } catch (err) {
+        logger.warn('[sync] Failed to record contest activity event', {
+          userId,
+          contest: contest.title,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
   return ingested;
