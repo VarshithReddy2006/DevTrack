@@ -34,6 +34,7 @@ router.get('/trust/verifications', authMiddleware, opsAuditorMiddleware, opsCont
 router.post('/recovery/rebuild-all', authMiddleware, adminMiddleware, opsController.rebuildAll);
 router.post('/recovery/invalidate-cache', authMiddleware, adminMiddleware, opsController.invalidateL2Cache);
 router.post('/trust/:userId/recalculate', authMiddleware, adminMiddleware, opsController.recalculateTrust);
+router.post('/contests/refresh', authMiddleware, adminMiddleware, opsController.refreshContests);
   router.get('/ai/audits', authMiddleware, opsAuditorMiddleware, opsController.getAIAuditLogs);
   router.get('/providers/health', authMiddleware, opsAuditorMiddleware, opsController.getProviderHealth);
   

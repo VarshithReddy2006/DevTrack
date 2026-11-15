@@ -16,6 +16,8 @@
     "worker:maintenance": "tsx src/worker-entrypoint.ts maintenance",
     "worker:resume-intelligence": "tsx src/worker-entrypoint.ts resume-intelligence",
     "worker:dataset": "tsx src/worker-entrypoint.ts dataset",
+    "postinstall": "node build-ats-core.mjs",
+    "prebuild": "node build-ats-core.mjs",
     "build": "tsc -p tsconfig.json && node fix-esm-imports.mjs",
     "start": "node dist/index.js",
     "test": "vitest run",
@@ -28,6 +30,7 @@
   "dependencies": {
     "@clerk/backend": "^3.8.2",
     "@clerk/express": "^2.1.22",
+    "@devtrack/ats-core": "file:../packages/ats-core",
     "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.76.7",

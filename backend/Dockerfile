@@ -6,7 +6,9 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Copy package files from backend/ subdirectory (context is repo root)
-COPY backend/package*.json ./
+COPY backend/package*.json backend/build-ats-core.mjs ./
+COPY packages/ats-core/package.json packages/ats-core/tsconfig.json /packages/ats-core/
+COPY packages/ats-core/src /packages/ats-core/src
 
 # Install all dependencies (including devDependencies for TypeScript build)
 RUN npm install
@@ -35,7 +37,9 @@ RUN addgroup -g 1001 -S nodejs && \
 WORKDIR /app
 
 # Copy package files and install ONLY production dependencies
-COPY backend/package*.json ./
+COPY backend/package*.json backend/build-ats-core.mjs ./
+COPY packages/ats-core/package.json /packages/ats-core/
+COPY --from=builder /packages/ats-core/dist /packages/ats-core/dist
 RUN npm install --omit=dev && npm cache clean --force
 
 # Copy compiled output from the builder stage

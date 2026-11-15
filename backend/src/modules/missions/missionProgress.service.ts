@@ -39,32 +39,57 @@ export async function updateMissionProgress(
         continue;
       }
 
-      // Increment progress
-      const newCount = mission.currentCount + 1;
-      const isCompleted = newCount >= mission.targetCount;
-
-      // Update mission
-      await Mission.findByIdAndUpdate(mission._id, {
-        $set: {
-          currentCount: newCount,
-          status: isCompleted ? 'completed' : 'in_progress',
-          completedAt: isCompleted ? new Date() : null,
+      // Atomically increment progress
+      const updated = await Mission.findOneAndUpdate(
+        { _id: mission._id, status: { $ne: 'completed' } },
+        {
+          $inc: { currentCount: 1 },
+          $set: { status: 'in_progress' },
         },
-      });
+        { new: true }
+      );
+
+      // If already completed or not found, skip
+      if (!updated) continue;
+
+      // Atomically gate completion transition so only one thread executes completion
+      let justCompleted = false;
+      if (updated.currentCount >= updated.targetCount) {
+        const completedDoc = await Mission.findOneAndUpdate(
+          {
+            _id: mission._id,
+            status: { $ne: 'completed' },
+            currentCount: { $gte: updated.targetCount },
+          },
+          {
+            $set: {
+              status: 'completed',
+              completedAt: new Date(),
+            },
+          },
+          { new: true }
+        );
+
+        if (completedDoc) {
+          justCompleted = true;
+        }
+      }
 
       await cacheManager.invalidateDashboard(userId);
+
+      const isCompleted = justCompleted || updated.currentCount >= updated.targetCount;
 
       // Emit SSE event for progress update
       eventBus.emitMissionProgress(userId, {
         missionId: mission._id.toString(),
         title: mission.title,
-        currentCount: newCount,
-        targetCount: mission.targetCount,
+        currentCount: updated.currentCount,
+        targetCount: updated.targetCount,
         completed: isCompleted,
       });
 
-      // If completed, award XP and emit completion event
-      if (isCompleted) {
+      // If completed on this atomic transition, award XP and emit completion event
+      if (justCompleted) {
         await handleMissionCompletion(userId, mission);
       }
 
@@ -72,8 +97,8 @@ export async function updateMissionProgress(
         userId,
         missionId: mission._id.toString(),
         title: mission.title,
-        currentCount: newCount,
-        targetCount: mission.targetCount,
+        currentCount: updated.currentCount,
+        targetCount: updated.targetCount,
         completed: isCompleted,
       });
     }

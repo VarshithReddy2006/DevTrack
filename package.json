@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "DevTrack: All-in-one developer productivity + tracking platform",
+  "workspaces": ["packages/*"],
   "scripts": {
     "dev:all": "tsx dev-orchestrator/src/index.ts",
     "dev:backend": "npm run dev --prefix backend",

@@ -72,8 +72,8 @@ export async function createApp(): Promise<express.Express> {
     origin: env.CORS_ORIGIN,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    exposedHeaders: ['Content-Length', 'X-Request-ID', 'Retry-After'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+    exposedHeaders: ['Content-Length', 'X-Request-ID', 'Retry-After', 'Idempotent-Replayed'],
   }));
 
   app.use(morgan(env.IS_DEV ? 'dev' : 'combined'));
