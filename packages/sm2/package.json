@@ -1,0 +1,25 @@
+{
+  "name": "@devtrack/sm2",
+  "version": "1.0.0",
+  "description": "SuperMemo-2 (SM-2) spaced repetition scheduling engine",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "spaced-repetition",
+    "sm2",
+    "supermemo"
+  ],
+  "author": "DevTrack",
+  "license": "MIT"
+}
