@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Code2, Target, CheckCircle, Zap, Cpu } from 'lucide-react';
+import { Code2, Target, CheckCircle, Zap, Cpu, RefreshCw } from 'lucide-react';
 import { useDSAIntelligence } from '../../features/readiness/hooks/useDSAIntelligence';
 import { TrustConfidenceLayer } from '../../features/readiness/components/TrustConfidenceLayer';
 import { EmptyState } from '../../components/shared/EmptyState';
@@ -11,7 +11,7 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
   const isZeroState = dist.total === 0;
 
   return (
-    <div className="relative overflow-hidden rounded-3xl bg-black/40 backdrop-blur-xl border border-white/10 p-8 shadow-2xl group hover:border-white/20 transition-all duration-500">
+    <div className="relative overflow-hidden rounded-3xl bg-black/40 backdrop-blur-xl border border-white/10 p-4 sm:p-8 shadow-2xl group hover:border-white/20 transition-all duration-500">
       <div className="absolute top-0 right-0 -mr-20 -mt-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl opacity-50 group-hover:opacity-100 transition-opacity duration-700" />
       
       <div className="relative z-10">
@@ -23,14 +23,14 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
              <p className="text-gray-400 font-medium tracking-wide">Awaiting initial telemetry...</p>
            </div>
         ) : (
-          <div className="flex gap-6 mb-4">
+          <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:gap-6">
             {[
               { label: 'Easy', value: dist.easy, color: 'bg-emerald-400', glow: 'shadow-[0_0_15px_rgba(52,211,153,0.5)]', pct: Math.round((dist.easy / total) * 100) },
               { label: 'Medium', value: dist.medium, color: 'bg-amber-400', glow: 'shadow-[0_0_15px_rgba(251,191,36,0.5)]', pct: Math.round((dist.medium / total) * 100) },
               { label: 'Hard', value: dist.hard, color: 'bg-rose-400', glow: 'shadow-[0_0_15px_rgba(244,63,94,0.5)]', pct: Math.round((dist.hard / total) * 100) },
             ].map((d) => (
-              <div key={d.label} className="flex-1">
-                <div className="flex items-end justify-between mb-2">
+              <div key={d.label} className="min-w-0 flex-1">
+                <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-2">
                   <span className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">{d.label}</span>
                   <span className="text-2xl font-black text-white">{d.value}</span>
                 </div>
@@ -60,7 +60,7 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
 
 // ─── Main Page ───
 const DSAIntelligencePage: React.FC = () => {
-  const { data, isLoading, error, refetch } = useDSAIntelligence();
+  const { data, isLoading, isFetching, isRefetchError, error, refetch } = useDSAIntelligence();
 
   if (isLoading) {
     return (
@@ -74,7 +74,7 @@ const DSAIntelligencePage: React.FC = () => {
     );
   }
 
-  if (error || !data) {
+  if (!data) {
     return (
       <div className="flex flex-col items-center justify-center h-[60vh] bg-[#0a0a0a] text-white">
         <EmptyState 
@@ -137,10 +137,10 @@ const DSAIntelligencePage: React.FC = () => {
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="mb-8 p-6 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between"
+            className="mb-8 flex flex-col gap-4 rounded-3xl border border-indigo-500/20 bg-indigo-500/10 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6"
           >
             <div className="flex items-center gap-4">
-              <div className="p-3 bg-indigo-500/20 rounded-xl">
+              <div className="shrink-0 rounded-xl bg-indigo-500/20 p-3">
                 <Cpu className="w-6 h-6 text-indigo-400" />
               </div>
               <div>
@@ -148,10 +148,22 @@ const DSAIntelligencePage: React.FC = () => {
                 <p className="text-indigo-200/70 text-sm">We are awaiting your first telemetry packet. Solve a problem to ignite the engine.</p>
               </div>
             </div>
-            <button className="px-6 py-2 bg-white text-black font-bold rounded-xl hover:scale-105 transition-transform">
-              Sync Data
+            <button
+              type="button"
+              onClick={() => void refetch({ cancelRefetch: false })}
+              disabled={isFetching}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-6 py-2 font-bold text-black transition-transform enabled:hover:scale-105 disabled:opacity-70"
+            >
+              {isFetching && <RefreshCw size={16} aria-hidden="true" className="motion-safe:animate-spin" />}
+              {isFetching ? 'Syncing…' : 'Sync Data'}
             </button>
           </motion.div>
+        )}
+
+        {isRefetchError && !isFetching && (
+          <p role="alert" className="mb-4 text-sm text-rose-300">
+            Could not refresh DSA data. Showing the last loaded results.
+          </p>
         )}
 
         <motion.div variants={containerVariants} initial="hidden" animate="show" className="flex flex-col gap-8">
@@ -167,15 +179,15 @@ const DSAIntelligencePage: React.FC = () => {
               <motion.div
                 key={m.label}
                 variants={itemVariants}
-                className={`rounded-3xl bg-gradient-to-br ${m.color} border border-white/5 p-6 backdrop-blur-md shadow-lg ${m.border} transition-all duration-300 hover:-translate-y-1 group relative overflow-hidden`}
+                className={`rounded-3xl bg-gradient-to-br ${m.color} border border-white/5 p-3 sm:p-4 xl:p-6 backdrop-blur-md shadow-lg ${m.border} transition-all duration-300 hover:-translate-y-1 group relative overflow-hidden`}
               >
                 <div className="flex justify-between items-start mb-4">
                   <div className="p-2 bg-black/20 rounded-lg border border-white/5">{m.icon}</div>
                 </div>
                 <div>
                   <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">{m.label}</p>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-4xl font-black text-white group-hover:scale-105 transition-transform origin-left">{m.value}</span>
+                  <div className="flex flex-wrap items-baseline gap-x-1">
+                    <span className="min-w-0 break-all text-2xl font-black text-white sm:text-3xl md:text-4xl">{m.value}</span>
                     <span className="text-sm font-bold text-gray-500">{m.suffix}</span>
                   </div>
                 </div>
