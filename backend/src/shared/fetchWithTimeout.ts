@@ -11,12 +11,28 @@ export async function fetchWithTimeout(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+  let onExternalAbort: (() => void) | undefined;
+  if (fetchInit.signal) {
+    if (fetchInit.signal.aborted) {
+      controller.abort();
+    } else {
+      onExternalAbort = () => controller.abort();
+      fetchInit.signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
   try {
     const res = await fetch(url, { ...fetchInit, signal: controller.signal });
     clearTimeout(timer);
+    if (fetchInit.signal && onExternalAbort) {
+      fetchInit.signal.removeEventListener('abort', onExternalAbort);
+    }
     return res;
   } catch (err) {
     clearTimeout(timer);
+    if (fetchInit.signal && onExternalAbort) {
+      fetchInit.signal.removeEventListener('abort', onExternalAbort);
+    }
     throw err;
   }
 }
