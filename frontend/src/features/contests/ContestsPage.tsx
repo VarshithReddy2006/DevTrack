@@ -38,7 +38,13 @@ export default function ContestsPage() {
   }), [contests, selectedPlatforms, search]);
 
   return (
-    <PageShell title="Contest Hub" subtitle="Upcoming programming contests across your platforms">
+    <PageShell
+      title="Contest Hub"
+      subtitle="Upcoming programming contests across your platforms"
+      status={isError ? 'error' : isPending ? 'loading' : 'success'}
+      error={isError ? (error instanceof Error ? error.message : 'Unable to load upcoming contests.') : null}
+      onRetry={() => void refetch()}
+    >
       <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 pb-12">
         <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -75,13 +81,6 @@ export default function ContestsPage() {
         </section>
 
         {isPending && <div className="rounded-2xl border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500">Loading upcoming contests…</div>}
-
-        {isError && (
-          <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
-            <p>{error instanceof Error ? error.message : 'Unable to load upcoming contests.'}</p>
-            <button type="button" onClick={() => void refetch()} className="mt-3 font-semibold underline">Try again</button>
-          </div>
-        )}
 
         {!isPending && !isError && filteredContests.length === 0 && (
           <div className="rounded-2xl border border-dashed border-zinc-300 bg-white p-10 text-center">
