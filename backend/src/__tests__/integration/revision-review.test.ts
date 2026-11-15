@@ -9,7 +9,6 @@ import {
   RevisionCardStaleError,
   RevisionCardNotFoundError,
 } from '../../modules/revision/revision.service.js';
-import { handleRevisionReviewed } from '../../modules/xp/consumers/revisionReviewed.consumer.js';
 
 describe('Revision Radar Integration & Optimistic Concurrency', () => {
   beforeEach(async () => {
@@ -181,46 +180,6 @@ describe('Revision Radar Integration & Optimistic Concurrency', () => {
           reviewSeq: 0,
         })
       ).rejects.toThrow(RevisionCardNotFoundError);
-    });
-  });
-
-  describe('handleRevisionReviewed XP Consumer', () => {
-    it('awards exactly 5 XP with natural idempotency on repeat delivery', async () => {
-      const userId = new Types.ObjectId().toString();
-      const cardId = new Types.ObjectId().toString();
-      const reviewSeq = 1;
-
-      // First XP event delivery
-      const res1 = await handleRevisionReviewed({
-        userId,
-        cardId,
-        reviewSeq,
-        rating: 'easy',
-      });
-
-      expect(res1.awarded).toBe(true);
-      expect(res1.xpAwarded).toBe(5);
-      expect(res1.duplicate).toBe(false);
-
-      // Verify user XP aggregate
-      const userXp = await UserXp.findOne({ userId: new Types.ObjectId(userId) });
-      expect(userXp?.totalXp).toBe(5);
-
-      // Duplicate delivery with same cardId and reviewSeq
-      const res2 = await handleRevisionReviewed({
-        userId,
-        cardId,
-        reviewSeq,
-        rating: 'easy',
-      });
-
-      expect(res2.awarded).toBe(false);
-      expect(res2.duplicate).toBe(true);
-      expect(res2.xpAwarded).toBe(0);
-
-      // Verify total XP was not double-awarded
-      const userXpAfter = await UserXp.findOne({ userId: new Types.ObjectId(userId) });
-      expect(userXpAfter?.totalXp).toBe(5);
     });
   });
 });

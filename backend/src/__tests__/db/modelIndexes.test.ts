@@ -69,6 +69,7 @@ import '../../db/models/resumeProfile.model.js';
 import '../../db/models/resumeSession.model.js';
 import '../../db/models/resumeVariant.model.js';
 import '../../db/models/resumeVersion.model.js';
+import '../../db/models/revisionCard.model.js';
 import '../../db/models/semanticAnalysis.model.js';
 import '../../db/models/sessionReplay.model.js';
 import '../../db/models/syncJob.model.js';
