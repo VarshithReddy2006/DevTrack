@@ -3,7 +3,7 @@
 
 import { Response } from 'express';
 import { AuthenticatedRequest } from '../../middleware/auth.js';
-import { getRedisClient } from '../../shared/redis/client.js';
+import { getRedisClient, isRedisConfigured } from '../../shared/redis/client.js';
 import { getAllQueues, getQueue } from '../../shared/jobs/queueFactory.js';
 import { getXpWorkerStatus } from '../../shared/jobs/xpWorker.js';
 import { getRedisHealth } from '../../shared/redis/client.js';
@@ -86,20 +86,29 @@ export const opsController = {
     }
 
     // Check Redis
-    try {
-      const redisStart = Date.now();
-      const redis = getRedisClient();
-      await redis.ping();
+    if (!isRedisConfigured()) {
       healthStatus.checks.redis = {
-        status: 'ok',
-        latencyMs: Date.now() - redisStart,
+        status: 'disabled',
+        error: 'Redis not configured (operating in standalone in-memory mode)',
       };
-    } catch (err) {
-      healthStatus.checks.redis = {
-        status: 'error',
-        error: err instanceof Error ? err.message : 'Unknown error',
-      };
-      healthStatus.status = 'unhealthy';
+    } else {
+      try {
+        const redisStart = Date.now();
+        const redis = getRedisClient();
+        await redis.ping();
+        healthStatus.checks.redis = {
+          status: 'ok',
+          latencyMs: Date.now() - redisStart,
+        };
+      } catch (err) {
+        healthStatus.checks.redis = {
+          status: 'error',
+          error: err instanceof Error ? err.message : 'Unknown error',
+        };
+        if (healthStatus.status !== 'unhealthy') {
+          healthStatus.status = 'degraded';
+        }
+      }
     }
 
     // Overall latency

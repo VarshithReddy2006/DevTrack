@@ -20,7 +20,7 @@ import { validateStartup } from './shared/startup-validation.js';
 import { getOrCreateQueue, QueueNames } from './shared/jobs/index.js';
 import { getWorkerStatus, getXpWorkerStatus } from './shared/jobs/index.js';
 import { orchestrator } from './shared/runtime/index.js';
-import { getInfrastructureState } from './shared/runtime/infrastructureRegistry.js';
+import { getInfrastructureState, setApiStatus } from './shared/runtime/infrastructureRegistry.js';
 import routes from './routes/index.js';
 import { getRegisteredWorkerStatuses } from './shared/jobs/workers.js';
 import { dlqRoutes } from './routes/dlq.routes.js';
@@ -129,6 +129,7 @@ async function bootstrap() {
   // Phase 6.5: Start orchestrator in background (non-blocking)
   orchestrator.startup(app).catch((err) => {
     logger.error('Orchestrator startup failed (server still running in degraded mode)', err);
+    setApiStatus('failed', err instanceof Error ? err.message : String(err));
   });
 
   // Phase 7: Graceful shutdown — drain infrastructure before exiting
@@ -166,7 +167,7 @@ async function bootstrap() {
 // Health & system endpoints
 // ---------------------------------------------------------------------------
 
-function setupHealthEndpoints(
+export function setupHealthEndpoints(
   app: express.Express,
   getRedisHealth: () => { status: string; host: string; port: number; lastError: string | null; reconnectAttempts: number },
   getWorkerStatus: () => { running: boolean },
@@ -177,15 +178,68 @@ function setupHealthEndpoints(
   syncState: { getSnapshot(): { status: string; lastSyncStartedAt: string | null; lastSyncCompletedAt: string | null; lastSyncStatus: 'success' | 'partial' | 'failed' | null; lastSyncDurationMs: number | null; totalSyncs: number; failedSyncs: number } },
   getInfrastructureState: () => { api: { status: string }; mongodb: { status: string }; redis: { status: string }; queues: { status: string }; platformSyncWorker: { status: string }; xpWorker: { status: string }; scheduler: { status: string }; sse: { status: string }; degraded: boolean; degradedComponents: string[]; startedAt: number },
 ): void {
-  app.get('/health', (_req, res) => {
-    const state = getInfrastructureState();
-    res.json({
-      status: state.api.status === 'healthy' ? 'ok' : 'degraded',
+  // Liveness probe — process is alive and responding
+  app.get('/health/live', (_req, res) => {
+    res.status(200).json({
+      status: 'ok',
+      uptime: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
-      environment: env.NODE_ENV,
-      degraded: state.degraded,
-      degradedComponents: state.degradedComponents,
     });
+  });
+
+  // Readiness probe — application is ready to accept user traffic
+  app.get('/health/ready', (_req, res) => {
+    try {
+      const state = getInfrastructureState();
+      const mongoReady = state.mongodb.status === 'healthy' && mongoose.connection.readyState !== 0;
+      const apiReady = state.api.status === 'healthy';
+      const isReady = mongoReady && apiReady;
+
+      res.status(isReady ? 200 : 503).json({
+        status: isReady ? 'ok' : 'unhealthy',
+        ready: isReady,
+        timestamp: new Date().toISOString(),
+        checks: {
+          mongodb: mongoReady ? 'connected' : (state.mongodb.status || 'disconnected'),
+          api: state.api.status,
+        },
+      });
+    } catch (err) {
+      res.status(503).json({
+        status: 'unhealthy',
+        ready: false,
+        timestamp: new Date().toISOString(),
+        error: err instanceof Error ? err.message : 'Readiness check failed',
+      });
+    }
+  });
+
+  // Primary health check — overall service health, compatible with Render and frontend
+  app.get('/health', (_req, res) => {
+    try {
+      const state = getInfrastructureState();
+      const mongoReady = state.mongodb.status === 'healthy' && mongoose.connection.readyState !== 0;
+      const apiReady = state.api.status === 'healthy';
+      const isCriticalHealthy = mongoReady && apiReady;
+
+      const statusCode = isCriticalHealthy ? 200 : 503;
+
+      res.status(statusCode).json({
+        status: state.degraded ? 'degraded' : 'ok',
+        timestamp: new Date().toISOString(),
+        environment: env.NODE_ENV,
+        degraded: state.degraded,
+        degradedComponents: state.degradedComponents,
+      });
+    } catch (err) {
+      res.status(503).json({
+        status: 'degraded',
+        timestamp: new Date().toISOString(),
+        environment: env.NODE_ENV,
+        degraded: true,
+        degradedComponents: ['api'],
+      });
+    }
   });
 
   app.get('/health/detailed', authMiddleware, adminMiddleware, (req: AuthenticatedRequest, res: express.Response) => {
@@ -347,7 +401,9 @@ function setupHealthEndpoints(
   });
 }
 
-bootstrap().catch((error) => {
-  logger.error('Failed to start server', error);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== 'test') {
+  bootstrap().catch((error) => {
+    logger.error('Failed to start server', error);
+    process.exit(1);
+  });
+}

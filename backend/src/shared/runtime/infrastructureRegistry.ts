@@ -2,6 +2,7 @@
 // Singleton registry that tracks the health of all infrastructure subsystems.
 // Read-only snapshots exposeable by health endpoints.
 
+import mongoose from 'mongoose';
 import { logger } from '../logger.js';
 import type { RedisHealth } from '../redis/client.js';
 
@@ -136,11 +137,30 @@ function emitLifecycleEvent(
 }
 
 // ---------------------------------------------------------------------------
+// Live state synchronization
+// ---------------------------------------------------------------------------
+
+function syncLiveDependencies(): void {
+  try {
+    const readyState = mongoose.connection?.readyState;
+    if (readyState === 0 && store.mongodb.status === 'healthy') {
+      store.mongodb = { status: 'failed', statusSince: Date.now(), error: 'MongoDB disconnected' };
+    } else if (readyState === 1 && store.mongodb.status === 'unknown') {
+      store.mongodb = { status: 'healthy', statusSince: Date.now() };
+    }
+  } catch {
+    // Ignore in unit test or decoupled environments
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Query helpers
 // ---------------------------------------------------------------------------
 
 export function getInfrastructureState(): InfrastructureState {
-  const degraded = isOverallDegraded();
+  syncLiveDependencies();
+  const degradedComponents = getDegradedComponents();
+  const degraded = degradedComponents.length > 0;
   return {
     api: store.api,
     mongodb: store.mongodb,
@@ -151,38 +171,59 @@ export function getInfrastructureState(): InfrastructureState {
     scheduler: store.scheduler,
     sse: store.sse,
     degraded,
-    degradedComponents: getDegradedComponents(),
+    degradedComponents,
     startedAt: store.startedAt,
   };
 }
 
-function isOverallDegraded(): boolean {
-  const criticalHealthy = [
-    store.api.status === 'healthy' || store.api.status === 'unknown',
-    store.mongodb.status === 'healthy',
-  ];
-
-  const optionalDegraded = [
-    store.redis.status === 'degraded' || store.redis.status === 'stopped' || store.redis.status === 'failed',
-    store.queues.status === 'degraded' || store.queues.status === 'stopped' || store.queues.status === 'failed',
-    store.platformSyncWorker.status === 'degraded' || store.platformSyncWorker.status === 'stopped',
-    store.xpWorker.status === 'degraded' || store.xpWorker.status === 'stopped',
-    store.scheduler.status === 'degraded' || store.scheduler.status === 'stopped',
-  ];
-
-  return !criticalHealthy.every(Boolean) || optionalDegraded.some(Boolean);
+export function isOverallDegraded(): boolean {
+  return getDegradedComponents().length > 0;
 }
 
-function getDegradedComponents(): string[] {
+export function getDegradedComponents(): string[] {
+  syncLiveDependencies();
   const degraded: string[] = [];
-  const subsystems: (keyof Omit<RuntimeStore, 'startedAt'>)[] = [
-    'redis', 'queues', 'platformSyncWorker', 'xpWorker', 'scheduler', 'sse',
-  ];
-  for (const key of subsystems) {
-    if (store[key].status === 'degraded' || store[key].status === 'failed' || store[key].status === 'stopped') {
-      degraded.push(key);
-    }
+
+  // Critical dependencies
+  if (store.api.status !== 'healthy') {
+    degraded.push('api');
   }
+  if (store.mongodb.status !== 'healthy') {
+    degraded.push('mongodb');
+  }
+
+  // Optional infrastructure dependencies
+  if (store.redis.status === 'degraded' || store.redis.status === 'failed') {
+    degraded.push('redis');
+  }
+  if (store.queues.status === 'degraded' || store.queues.status === 'failed') {
+    degraded.push('queues');
+  }
+
+  // Workers: in split production, workers are stopped intentionally on the API server
+  const workersDisabled = process.env.ENABLE_WORKERS === 'false';
+  if (
+    store.platformSyncWorker.status === 'degraded' ||
+    store.platformSyncWorker.status === 'failed' ||
+    (!workersDisabled && store.platformSyncWorker.status === 'stopped')
+  ) {
+    degraded.push('platformSyncWorker');
+  }
+  if (
+    store.xpWorker.status === 'degraded' ||
+    store.xpWorker.status === 'failed' ||
+    (!workersDisabled && store.xpWorker.status === 'stopped')
+  ) {
+    degraded.push('xpWorker');
+  }
+
+  if (store.scheduler.status === 'degraded' || store.scheduler.status === 'failed') {
+    degraded.push('scheduler');
+  }
+  if (store.sse.status === 'degraded' || store.sse.status === 'failed') {
+    degraded.push('sse');
+  }
+
   return degraded;
 }
 
@@ -225,4 +266,16 @@ export function setSchedulerStatus(status: SubsystemStatus, error?: string): voi
 
 export function setSseStatus(status: SubsystemStatus, error?: string): void {
   updateSubsystem('sse', status, error);
+}
+
+export function resetInfrastructureStoreForTesting(): void {
+  store.api = { status: 'unknown', statusSince: Date.now() };
+  store.mongodb = { status: 'unknown', statusSince: Date.now() };
+  store.redis = { status: 'unknown', statusSince: Date.now() };
+  store.queues = { status: 'unknown', statusSince: Date.now() };
+  store.platformSyncWorker = { status: 'unknown', statusSince: Date.now() };
+  store.xpWorker = { status: 'unknown', statusSince: Date.now() };
+  store.scheduler = { status: 'unknown', statusSince: Date.now() };
+  store.sse = { status: 'unknown', statusSince: Date.now() };
+  store.startedAt = Date.now();
 }

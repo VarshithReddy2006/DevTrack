@@ -6,6 +6,7 @@ import { env } from '../../config/env.js';
 import { logger } from '../logger.js';
 
 let _client: Redis | null = null;
+let _mockClient: Redis | null = null;
 let _connecting = false;
 
 export interface RedisHealth {
@@ -59,6 +60,7 @@ export async function checkRedisEvictionPolicy(redis: Pick<Redis, 'config'>): Pr
 export function getRedisClient(): Redis {
   // If Redis is not configured at all, return a mock client that doesn't connect
   if (!isRedisConfigured()) {
+    if (_mockClient) return _mockClient;
     logger.warn('[redis] Neither REDIS_URL nor REDIS_HOST set - returning null client (Redis features disabled)');
     // Return a mock Redis instance that won't try to connect
     const mockClient = new Redis({
@@ -70,6 +72,8 @@ export function getRedisClient(): Redis {
     });
     // Prevent it from ever connecting
     mockClient.connect = () => Promise.reject(new Error('Redis disabled - REDIS_URL / REDIS_HOST not set'));
+    mockClient.ping = (() => Promise.reject(new Error('Redis disabled - REDIS_URL / REDIS_HOST not set'))) as unknown as typeof mockClient.ping;
+    _mockClient = mockClient;
     return mockClient;
   }
 
