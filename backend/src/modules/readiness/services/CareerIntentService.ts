@@ -34,75 +34,109 @@ function normalizeRole(role: string): string {
   return roleAliases.get(normalized) ?? normalized;
 }
 
+function isDuplicateKeyError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const anyErr = err as { code?: number; name?: string; message?: string };
+  return anyErr.code === 11000 || (typeof anyErr.message === 'string' && anyErr.message.includes('E11000'));
+}
+
+function isVersionError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const anyErr = err as { name?: string; message?: string };
+  return anyErr.name === 'VersionError' || (typeof anyErr.message === 'string' && anyErr.message.includes('No matching document found'));
+}
+
 export const CareerIntentService = {
   /**
-   * Create or update career intent with history tracking
+   * Create or update career intent with history tracking and optimistic concurrency retry
    */
   async upsertCareerIntent(input: CareerIntentInput): Promise<ICareerIntent> {
-    try {
-      const existing = await CareerIntent.findOne({ userId: input.userId });
-      const now = new Date();
-      
-      if (existing) {
-        // Track history if role or package changed
-        const roleChanged = normalizeRole(existing.dreamRole ?? '') !== normalizeRole(input.dreamRole);
-        const packageChanged = input.targetPackage !== undefined && existing.targetPackage !== input.targetPackage;
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        const existing = await CareerIntent.findOne({ userId: input.userId });
+        const now = new Date();
         
-        if (roleChanged || packageChanged) {
-          existing.history.push({
-            role: existing.dreamRole,
-            package: existing.targetPackage,
-            recordedAt: now,
-          });
-        }
-        
-        // Update current intent
-        existing.dreamRole = input.dreamRole;
-        existing.targetPackage = input.targetPackage ?? existing.targetPackage;
-        existing.targetCompanyTier = input.targetCompanyTier ?? existing.targetCompanyTier;
-        existing.preferredDomain = input.preferredDomain ?? existing.preferredDomain;
-        existing.currentStrongestSkills = input.currentStrongestSkills ?? existing.currentStrongestSkills;
-        existing.desiredSkills = input.desiredSkills ?? existing.desiredSkills;
-        existing.specializationGoals = input.specializationGoals ?? existing.specializationGoals;
-        existing.timelineGoals = input.timelineGoals ?? existing.timelineGoals;
-        
-        existing.goal = input.goal ?? existing.goal;
-        existing.experienceLevel = input.experienceLevel ?? existing.experienceLevel;
-        existing.weeklyHours = input.weeklyHours ?? existing.weeklyHours;
+        if (existing) {
+          // Track history if role or package changed
+          const roleChanged = normalizeRole(existing.dreamRole ?? '') !== normalizeRole(input.dreamRole);
+          const packageChanged = input.targetPackage !== undefined && existing.targetPackage !== input.targetPackage;
+          
+          if (roleChanged || packageChanged) {
+            const lastHistory = existing.history[existing.history.length - 1];
+            const isDuplicateHistory = lastHistory &&
+              normalizeRole(lastHistory.role ?? '') === normalizeRole(existing.dreamRole ?? '') &&
+              (lastHistory.package ?? '') === (existing.targetPackage ?? '') &&
+              (now.getTime() - new Date(lastHistory.recordedAt).getTime()) < 5_000;
 
-        // Explicit confirmation also refreshes an otherwise unchanged intent.
-        existing.updatedAt = now;
-        existing.confidenceState = this.calculateConfidenceState(existing, now.getTime());
-        
-        await existing.save();
-        logger.info('[CareerIntentService] Updated career intent', { userId: input.userId });
-        return existing;
-      } else {
-        // Create new intent
-        const newIntent = await CareerIntent.create({
-          userId: input.userId,
-          dreamRole: input.dreamRole,
-          targetPackage: input.targetPackage || '',
-          targetCompanyTier: input.targetCompanyTier || '',
-          preferredDomain: input.preferredDomain || '',
-          currentStrongestSkills: input.currentStrongestSkills || [],
-          desiredSkills: input.desiredSkills || [],
-          specializationGoals: input.specializationGoals || [],
-          timelineGoals: input.timelineGoals || '',
-          goal: input.goal,
-          experienceLevel: input.experienceLevel,
-          weeklyHours: input.weeklyHours,
-          confidenceState: this.calculateConfidenceState(input, now.getTime()),
-          history: [],
-        });
-        
-        logger.info('[CareerIntentService] Created career intent', { userId: input.userId });
-        return newIntent;
+            if (!isDuplicateHistory) {
+              existing.history.push({
+                role: existing.dreamRole,
+                package: existing.targetPackage,
+                recordedAt: now,
+              });
+            }
+          }
+          
+          // Update current intent
+          existing.dreamRole = input.dreamRole;
+          existing.targetPackage = input.targetPackage ?? existing.targetPackage;
+          existing.targetCompanyTier = input.targetCompanyTier ?? existing.targetCompanyTier;
+          existing.preferredDomain = input.preferredDomain ?? existing.preferredDomain;
+          existing.currentStrongestSkills = input.currentStrongestSkills ?? existing.currentStrongestSkills;
+          existing.desiredSkills = input.desiredSkills ?? existing.desiredSkills;
+          existing.specializationGoals = input.specializationGoals ?? existing.specializationGoals;
+          existing.timelineGoals = input.timelineGoals ?? existing.timelineGoals;
+          
+          existing.goal = input.goal ?? existing.goal;
+          existing.experienceLevel = input.experienceLevel ?? existing.experienceLevel;
+          existing.weeklyHours = input.weeklyHours ?? existing.weeklyHours;
+
+          // Explicit confirmation also refreshes an otherwise unchanged intent.
+          existing.updatedAt = now;
+          existing.confidenceState = this.calculateConfidenceState(existing, now.getTime());
+          
+          await existing.save();
+          logger.info('[CareerIntentService] Updated career intent', { userId: input.userId, attempt });
+          return existing;
+        } else {
+          // Create new intent
+          const newIntent = await CareerIntent.create({
+            userId: input.userId,
+            dreamRole: input.dreamRole,
+            targetPackage: input.targetPackage || '',
+            targetCompanyTier: input.targetCompanyTier || '',
+            preferredDomain: input.preferredDomain || '',
+            currentStrongestSkills: input.currentStrongestSkills || [],
+            desiredSkills: input.desiredSkills || [],
+            specializationGoals: input.specializationGoals || [],
+            timelineGoals: input.timelineGoals || '',
+            goal: input.goal,
+            experienceLevel: input.experienceLevel,
+            weeklyHours: input.weeklyHours,
+            confidenceState: this.calculateConfidenceState(input, now.getTime()),
+            history: [],
+          });
+          
+          logger.info('[CareerIntentService] Created career intent', { userId: input.userId, attempt });
+          return newIntent;
+        }
+      } catch (error) {
+        if ((isDuplicateKeyError(error) || isVersionError(error)) && attempt < MAX_RETRIES - 1) {
+          logger.warn('[CareerIntentService] Concurrency conflict during upsert, retrying', {
+            userId: input.userId,
+            attempt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          const delayMs = Math.min(25 * Math.pow(2, attempt) + Math.random() * 20, 500);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+        logger.error('[CareerIntentService] Failed to upsert career intent', { userId: input.userId, error });
+        throw error;
       }
-    } catch (error) {
-      logger.error('[CareerIntentService] Failed to upsert career intent', { userId: input.userId, error });
-      throw error;
     }
+    throw new Error(`[CareerIntentService] Exceeded maximum retries (${MAX_RETRIES}) upserting career intent for user ${input.userId}`);
   },
 
   /**
