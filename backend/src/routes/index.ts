@@ -27,6 +27,7 @@ import uploadRoutes from '../modules/resume/upload/upload.routes.js';
 import recommendationRoutes from '../modules/recommendations/recommendation.routes.js';
 import { resumeIntelligenceRoutes } from '../modules/resume/index.js';
 import analyticsRoutes from '../modules/analytics/analytics.routes.js';
+import { aiQuotaRoutes } from '../modules/ai/quota.routes.js';
 import { rateLimiters } from '../middleware/rateLimitAdvanced.js';
 
 const router = Router();
@@ -80,5 +81,6 @@ router.use('/resume', uploadRoutes);
 router.use('/resume-intelligence', resumeIntelligenceRoutes);
 router.use('/recommendations', rateLimiters.ai, recommendationRoutes);
 router.use('/analytics', analyticsRoutes);
+router.use('/ai', rateLimiters.ai, aiQuotaRoutes);
 
 export default router;

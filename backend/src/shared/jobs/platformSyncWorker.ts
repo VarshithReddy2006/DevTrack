@@ -187,6 +187,16 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
     concurrency: 5,
   });
 
+  // Start contest refresh worker in the sync worker pool
+  void import('./contestRefreshWorker.js')
+    .then(({ startContestRefreshWorker, scheduleContestRefreshTask }) => {
+      startContestRefreshWorker();
+      return scheduleContestRefreshTask();
+    })
+    .catch((err) => {
+      logger.warn('[sync] Failed starting contest refresh worker', { err });
+    });
+
   return _worker;
 }
 
@@ -196,6 +206,12 @@ export async function stopPlatformSyncWorker(): Promise<void> {
   logger.info('[worker] Stopping platform sync worker', { event: 'worker_stopping' });
   await _worker.close();
   _worker = null;
+  try {
+    const { stopContestRefreshWorker } = await import('./contestRefreshWorker.js');
+    await stopContestRefreshWorker();
+  } catch (err) {
+    logger.warn('[sync] Failed stopping contest refresh worker', { err });
+  }
   logger.info('[worker] Platform sync worker stopped', { event: 'worker_stopped' });
 }
 

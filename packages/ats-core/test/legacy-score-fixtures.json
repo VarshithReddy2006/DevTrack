@@ -1,0 +1,625 @@
+[
+  {
+    "input": {
+      "name": "complete resume with section aliases and symbol keywords",
+      "content": "Professional Summary\r\nBackend engineer focused on reliability.\r\n## Professional Experience\r\nBuilt C++ and C# services.\r\nSelected Projects\r\n- Reduced latency by 25%.\r\n  Core Competencies:  \r\nC++, C# and Node.js\r\nEducation & Credentials\r\nBSc Computer Science\r\nCERTIFICATIONS\r\nAWS developer",
+      "keywords": [
+        "C++",
+        "c#",
+        "node.js",
+        "AWS"
+      ]
+    },
+    "expected": {
+      "parserWarnings": [],
+      "formattingWarnings": [
+        {
+          "type": "heading_inconsistency",
+          "message": "Inconsistent heading styles detected",
+          "location": "document",
+          "impact": "medium"
+        }
+      ],
+      "keywordCoverage": [
+        {
+          "keyword": "C++",
+          "found": true,
+          "frequency": 2,
+          "context": [
+            "## Professional Experience\r\nBuilt C++ and C# services",
+            "Core Competencies:  \r\nC++, C# and Node"
+          ]
+        },
+        {
+          "keyword": "c#",
+          "found": true,
+          "frequency": 2,
+          "context": [
+            "## Professional Experience\r\nBuilt C++ and C# services",
+            "Core Competencies:  \r\nC++, C# and Node"
+          ]
+        },
+        {
+          "keyword": "node.js",
+          "found": true,
+          "frequency": 1,
+          "context": []
+        },
+        {
+          "keyword": "AWS",
+          "found": true,
+          "frequency": 1,
+          "context": [
+            "js\r\nEducation & Credentials\r\nBSc Computer Science\r\nCERTIFICATIONS\r\nAWS developer"
+          ]
+        }
+      ],
+      "sectionIntegrity": [
+        {
+          "sectionName": "summary",
+          "detected": true,
+          "confidence": 90,
+          "matchedHeading": "Professional Summary",
+          "issues": []
+        },
+        {
+          "sectionName": "experience",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "## Professional Experience",
+          "issues": []
+        },
+        {
+          "sectionName": "projects",
+          "detected": true,
+          "confidence": 90,
+          "matchedHeading": "Selected Projects",
+          "issues": []
+        },
+        {
+          "sectionName": "skills",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "Core Competencies:",
+          "issues": []
+        },
+        {
+          "sectionName": "education",
+          "detected": true,
+          "confidence": 90,
+          "matchedHeading": "Education & Credentials",
+          "issues": []
+        },
+        {
+          "sectionName": "certifications",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "CERTIFICATIONS",
+          "issues": []
+        }
+      ],
+      "extractionConfidence": 92,
+      "atsScore": 94,
+      "recommendations": [],
+      "wordCount": 37
+    }
+  },
+  {
+    "input": {
+      "name": "body mentions and list items are not section headings",
+      "content": "Summary\nExperience with distributed systems\n- Professional Experience\n1. Projects\n• Skills\nCollaborated with education providers\nEducation.\nCertifications: AWS",
+      "keywords": [
+        "distributed systems",
+        "Redis"
+      ],
+      "targetRole": "Backend Engineer"
+    },
+    "expected": {
+      "parserWarnings": [],
+      "formattingWarnings": [],
+      "keywordCoverage": [
+        {
+          "keyword": "distributed systems",
+          "found": true,
+          "frequency": 1,
+          "context": [
+            "Summary\nExperience with distributed systems\n- Professional Experience\n1"
+          ]
+        },
+        {
+          "keyword": "Redis",
+          "found": false,
+          "frequency": 0,
+          "context": []
+        }
+      ],
+      "sectionIntegrity": [
+        {
+          "sectionName": "summary",
+          "detected": true,
+          "confidence": 90,
+          "matchedHeading": "Summary",
+          "issues": []
+        },
+        {
+          "sectionName": "experience",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"experience\" not found"
+          ]
+        },
+        {
+          "sectionName": "projects",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"projects\" not found"
+          ]
+        },
+        {
+          "sectionName": "skills",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"skills\" not found"
+          ]
+        },
+        {
+          "sectionName": "education",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"education\" not found"
+          ]
+        },
+        {
+          "sectionName": "certifications",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"certifications\" not found"
+          ]
+        }
+      ],
+      "extractionConfidence": 75,
+      "atsScore": 52,
+      "recommendations": [
+        "Add missing keywords: Redis",
+        "Add missing sections: experience, projects, skills, education, certifications"
+      ],
+      "wordCount": 19
+    }
+  },
+  {
+    "input": {
+      "name": "graphics, tables and multicolumn penalties",
+      "content": "SUMMARY\nExperience\nName    Role\nJohn    Engineer\nMary    Lead\n|---|---|\n★ [image]\nComic Sans\n****************\nNode.js",
+      "keywords": [
+        "Node.js",
+        ".*",
+        "[",
+        "★"
+      ],
+      "targetRole": "DevOps",
+      "credibilityPenalty": 10
+    },
+    "expected": {
+      "parserWarnings": [
+        {
+          "severity": "critical",
+          "message": "Multi-column layout detected",
+          "section": "layout",
+          "suggestion": "Use single-column layout for better ATS compatibility"
+        },
+        {
+          "severity": "warning",
+          "message": "Tables detected in content",
+          "section": "formatting",
+          "suggestion": "Replace tables with simple text formatting"
+        },
+        {
+          "severity": "info",
+          "message": "Special characters detected",
+          "section": "content",
+          "suggestion": "Minimize use of special characters and symbols"
+        },
+        {
+          "severity": "critical",
+          "message": "Graphics or images detected",
+          "section": "content",
+          "suggestion": "Remove all images and graphics for ATS compatibility"
+        }
+      ],
+      "formattingWarnings": [
+        {
+          "type": "heading_inconsistency",
+          "message": "Inconsistent heading styles detected",
+          "location": "document",
+          "impact": "medium"
+        },
+        {
+          "type": "font_issue",
+          "message": "Non-standard fonts may not parse correctly",
+          "location": "document",
+          "impact": "medium"
+        }
+      ],
+      "keywordCoverage": [
+        {
+          "keyword": "Node.js",
+          "found": true,
+          "frequency": 1,
+          "context": []
+        },
+        {
+          "keyword": ".*",
+          "found": false,
+          "frequency": 0,
+          "context": []
+        },
+        {
+          "keyword": "[",
+          "found": false,
+          "frequency": 0,
+          "context": [
+            "SUMMARY\nExperience\nName    Role\nJohn    Engineer\nMary    Lead\n|---|---|\n★ [image]\nComic Sans\n****************\nNode"
+          ]
+        },
+        {
+          "keyword": "★",
+          "found": true,
+          "frequency": 1,
+          "context": [
+            "SUMMARY\nExperience\nName    Role\nJohn    Engineer\nMary    Lead\n|---|---|\n★ [image]\nComic Sans\n****************\nNode"
+          ]
+        }
+      ],
+      "sectionIntegrity": [
+        {
+          "sectionName": "summary",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "SUMMARY",
+          "issues": []
+        },
+        {
+          "sectionName": "experience",
+          "detected": true,
+          "confidence": 90,
+          "matchedHeading": "Experience",
+          "issues": []
+        },
+        {
+          "sectionName": "projects",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"projects\" not found"
+          ]
+        },
+        {
+          "sectionName": "skills",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"skills\" not found"
+          ]
+        },
+        {
+          "sectionName": "education",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"education\" not found"
+          ]
+        },
+        {
+          "sectionName": "certifications",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"certifications\" not found"
+          ]
+        }
+      ],
+      "extractionConfidence": 9,
+      "atsScore": 0,
+      "recommendations": [
+        "Address critical parser warnings immediately",
+        "Add missing keywords: .*, [",
+        "Add missing sections: projects, skills, education, certifications"
+      ],
+      "wordCount": 15
+    }
+  },
+  {
+    "input": {
+      "name": "credible versus unverified system evidence calibration",
+      "content": "SUMMARY\nEXPERIENCE\nPROJECTS\nSKILLS\nEDUCATION\nCERTIFICATIONS\nBuilt distributed systems with Kafka and Docker.",
+      "keywords": [
+        "Kafka",
+        "Docker",
+        "AWS",
+        "Redis"
+      ],
+      "targetRole": "SRE",
+      "credibilityPenalty": 15
+    },
+    "expected": {
+      "parserWarnings": [],
+      "formattingWarnings": [],
+      "keywordCoverage": [
+        {
+          "keyword": "Kafka",
+          "found": true,
+          "frequency": 1,
+          "context": [
+            "SUMMARY\nEXPERIENCE\nPROJECTS\nSKILLS\nEDUCATION\nCERTIFICATIONS\nBuilt distributed systems with Kafka and Docker"
+          ]
+        },
+        {
+          "keyword": "Docker",
+          "found": true,
+          "frequency": 1,
+          "context": [
+            "SUMMARY\nEXPERIENCE\nPROJECTS\nSKILLS\nEDUCATION\nCERTIFICATIONS\nBuilt distributed systems with Kafka and Docker"
+          ]
+        },
+        {
+          "keyword": "AWS",
+          "found": false,
+          "frequency": 0,
+          "context": []
+        },
+        {
+          "keyword": "Redis",
+          "found": false,
+          "frequency": 0,
+          "context": []
+        }
+      ],
+      "sectionIntegrity": [
+        {
+          "sectionName": "summary",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "SUMMARY",
+          "issues": []
+        },
+        {
+          "sectionName": "experience",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "EXPERIENCE",
+          "issues": []
+        },
+        {
+          "sectionName": "projects",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "PROJECTS",
+          "issues": []
+        },
+        {
+          "sectionName": "skills",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "SKILLS",
+          "issues": []
+        },
+        {
+          "sectionName": "education",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "EDUCATION",
+          "issues": []
+        },
+        {
+          "sectionName": "certifications",
+          "detected": true,
+          "confidence": 100,
+          "matchedHeading": "CERTIFICATIONS",
+          "issues": []
+        }
+      ],
+      "extractionConfidence": 100,
+      "atsScore": 80,
+      "recommendations": [
+        "Add missing keywords: AWS, Redis"
+      ],
+      "wordCount": 13
+    }
+  },
+  {
+    "input": {
+      "name": "empty resume defaults",
+      "content": "",
+      "keywords": []
+    },
+    "expected": {
+      "parserWarnings": [],
+      "formattingWarnings": [],
+      "keywordCoverage": [],
+      "sectionIntegrity": [
+        {
+          "sectionName": "summary",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"summary\" not found"
+          ]
+        },
+        {
+          "sectionName": "experience",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"experience\" not found"
+          ]
+        },
+        {
+          "sectionName": "projects",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"projects\" not found"
+          ]
+        },
+        {
+          "sectionName": "skills",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"skills\" not found"
+          ]
+        },
+        {
+          "sectionName": "education",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"education\" not found"
+          ]
+        },
+        {
+          "sectionName": "certifications",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"certifications\" not found"
+          ]
+        }
+      ],
+      "extractionConfidence": 70,
+      "atsScore": 75,
+      "recommendations": [
+        "Add missing sections: summary, experience, projects, skills, education, certifications"
+      ],
+      "wordCount": 1
+    }
+  },
+  {
+    "input": {
+      "name": "keyword boundaries and context ordering",
+      "content": "Node.js C++ and C#. C# appeared again! C#? C# xC#tag. (parens) .NET .netCore",
+      "keywords": [
+        "node.js",
+        "c++",
+        "C#",
+        "(",
+        ".net",
+        "core"
+      ]
+    },
+    "expected": {
+      "parserWarnings": [],
+      "formattingWarnings": [],
+      "keywordCoverage": [
+        {
+          "keyword": "node.js",
+          "found": true,
+          "frequency": 1,
+          "context": []
+        },
+        {
+          "keyword": "c++",
+          "found": true,
+          "frequency": 1,
+          "context": [
+            "js C++ and C#"
+          ]
+        },
+        {
+          "keyword": "C#",
+          "found": true,
+          "frequency": 4,
+          "context": [
+            "js C++ and C#",
+            "C# appeared again",
+            "C#"
+          ]
+        },
+        {
+          "keyword": "(",
+          "found": false,
+          "frequency": 0,
+          "context": [
+            "(parens)"
+          ]
+        },
+        {
+          "keyword": ".net",
+          "found": true,
+          "frequency": 1,
+          "context": []
+        },
+        {
+          "keyword": "core",
+          "found": false,
+          "frequency": 0,
+          "context": [
+            "netCore"
+          ]
+        }
+      ],
+      "sectionIntegrity": [
+        {
+          "sectionName": "summary",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"summary\" not found"
+          ]
+        },
+        {
+          "sectionName": "experience",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"experience\" not found"
+          ]
+        },
+        {
+          "sectionName": "projects",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"projects\" not found"
+          ]
+        },
+        {
+          "sectionName": "skills",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"skills\" not found"
+          ]
+        },
+        {
+          "sectionName": "education",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"education\" not found"
+          ]
+        },
+        {
+          "sectionName": "certifications",
+          "detected": false,
+          "confidence": 0,
+          "issues": [
+            "Section \"certifications\" not found"
+          ]
+        }
+      ],
+      "extractionConfidence": 70,
+      "atsScore": 72,
+      "recommendations": [
+        "Add missing keywords: (, core",
+        "Add missing sections: summary, experience, projects, skills, education, certifications"
+      ],
+      "wordCount": 13
+    }
+  }
+]

@@ -1,8 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeAll, beforeEach } from 'vitest';
 import { CareerIntent } from '../../../../db/models/careerIntent.model.js';
 import { CareerIntentService } from '../CareerIntentService.js';
 
 describe('CareerIntentService Concurrency & Error Recovery', () => {
+  beforeAll(async () => {
+    await CareerIntent.init();
+  });
+
+  beforeEach(async () => {
+    await CareerIntent.deleteMany({});
+  });
+
   it('recovers from E11000 duplicate key error during concurrent initial creations', async () => {
     const userId = 'concurrent-create-user';
     const input1 = {

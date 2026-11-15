@@ -673,6 +673,21 @@ export const opsController = {
       logger.error('[ops] Failed to get ingestion status', error);
       res.status(500).json({ error: 'Failed to get ingestion status' });
     }
+  },
+
+  async refreshContests(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { contestRefreshService } = await import('../platform-sync/contests/contestRefresh.service.js');
+      const result = await contestRefreshService.refreshAllContests();
+      logger.warn('[ops] Admin triggered contest refresh', {
+        admin: req.user?.username,
+        result,
+      });
+      res.json({ success: true, message: 'Contest refresh triggered successfully', data: result });
+    } catch (error) {
+      logger.error('[ops] Failed to refresh contests', error);
+      res.status(500).json({ error: 'Failed to refresh contests' });
+    }
   }
 
 };

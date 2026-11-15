@@ -6,6 +6,9 @@
 // Core AI Provider
 // ---------------------------------------------------------------------------
 export { AIProviderAdapter, type AIProvider, type AIRequest, type AIResponse, type ProviderHealth, type TokenUsage } from './provider/AIProviderAdapter.js';
+export { LLMGateway, llmGateway, type LLMCompletionRequest, type LLMCompletionResponse } from './provider/LLMGateway.js';
+export { QuotaService, quotaService, AIQuotaExceededError, type QuotaCheckResult } from './quota.service.js';
+export { aiQuotaRoutes } from './quota.routes.js';
 
 // ---------------------------------------------------------------------------
 // Embedding Systems

@@ -7,11 +7,14 @@
 import { Types } from 'mongoose';
 import { FocusSession, UnifiedRuntimeState } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
+import { FOCUS_HEARTBEAT_SECONDS } from './focusXpDecision.js';
 
 export interface FocusSessionResult {
   sessionId: string;
   qualityScore: number;
   actualDuration: number;
+  plannedDurationMinutes: number;
+  coveredHeartbeatIntervals: number;
   activeDurationMs: number;
 }
 
@@ -289,19 +292,30 @@ export class FocusEngine {
       }
     }
 
-    const { activeSec, activeDurationMs } = computeActiveDuration({
-      startedAt: session.startedAt,
-      status: session.status,
-      pauses: session.pauses,
-      now,
-    });
+    const activeMs = { $add: [
+      { $ifNull: ['$activeDurationMs', 0] },
+      { $max: [0, { $subtract: [now, { $ifNull: ['$lastResumedAt', '$startedAt'] }] }] },
+    ] };
+    const interval = { $ceil: { $divide: [activeMs, FOCUS_HEARTBEAT_SECONDS * 1000] } };
+    const coversNewInterval = { $and: [
+      { $eq: ['$status', 'running'] },
+      { $gt: [interval, { $ifNull: ['$lastCoveredHeartbeatInterval', 0] }] },
+    ] };
 
     const updated = await FocusSession.findOneAndUpdate(
-      { _id: session._id, userId: session.userId },
-      {
-        $set: { lastHeartbeatAt: now, activeSec, activeDurationMs },
-        $inc: { heartbeatCount: 1, heartbeatsCount: 1 },
-      },
+      { _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId), status: { $in: ['running', 'paused'] } },
+      [{ $set: {
+        heartbeatCount: { $add: [{ $ifNull: ['$heartbeatCount', 0] }, 1] },
+        heartbeatsCount: { $add: [{ $ifNull: ['$heartbeatsCount', 0] }, 1] },
+        lastHeartbeatAt: { $max: [now, '$lastHeartbeatAt'] },
+        coveredHeartbeatIntervals: { $add: [
+          { $ifNull: ['$coveredHeartbeatIntervals', 0] },
+          { $cond: [coversNewInterval, 1, 0] },
+        ] },
+        lastCoveredHeartbeatInterval: { $cond: [
+          coversNewInterval, interval, '$lastCoveredHeartbeatInterval',
+        ] },
+      } }],
       { new: true }
     );
 
@@ -383,12 +397,9 @@ export class FocusEngine {
       if (!p.endedAt) p.endedAt = completedAt;
     }
 
-    const { activeSec, activeDurationMs } = computeActiveDuration({
-      startedAt: session.startedAt,
-      status: 'completed',
-      pauses,
-      now: completedAt,
-    });
+    const activeDurationMs = (session.activeDurationMs ?? 0) + (session.status === 'running'
+      ? Math.max(0, completedAt.getTime() - (session.lastResumedAt ?? session.startedAt).getTime()) : 0);
+    const activeSec = Math.round(activeDurationMs / 1000);
     const actualDurationMinutes = Math.round(activeDurationMs / 60000);
     
     // Quality Score Heuristics
@@ -438,6 +449,8 @@ export class FocusEngine {
       sessionId: completed._id.toString(),
       qualityScore,
       actualDuration: actualDurationMinutes,
+      plannedDurationMinutes: completed.plannedDurationMinutes,
+      coveredHeartbeatIntervals: completed.coveredHeartbeatIntervals ?? 0,
       activeDurationMs,
       session: completed,
     } as any;

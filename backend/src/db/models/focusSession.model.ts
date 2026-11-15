@@ -35,6 +35,8 @@ export interface IFocusSession extends Document {
   focusQualityScore: number; // 0-100
   heartbeatCount: number;
   heartbeatsCount: number;
+  coveredHeartbeatIntervals?: number;
+  lastCoveredHeartbeatInterval?: number;
   distractionEvents: number;
 
   // Work Output (linked from activity tracking during session)
@@ -77,6 +79,8 @@ const FocusSessionSchema = new Schema<IFocusSession>(
     focusQualityScore: { type: Number, default: 0 },
     heartbeatCount: { type: Number, default: 0 },
     heartbeatsCount: { type: Number, default: 0 },
+    coveredHeartbeatIntervals: { type: Number, default: 0 },
+    lastCoveredHeartbeatInterval: { type: Number, default: 0 },
     distractionEvents: { type: Number, default: 0 },
 
     filesModified: { type: Number, default: 0 },
