@@ -1,34 +1,13 @@
 // src/db/models/atsAnalysis.model.ts
 import { Schema, model, type Document } from 'mongoose';
 
-export interface IParserWarning {
-  severity: 'critical' | 'warning' | 'info';
-  message: string;
-  section: string;
-  suggestion: string;
-}
-
-export interface IFormattingWarning {
-  type: string;
-  message: string;
-  location: string;
-  impact: 'high' | 'medium' | 'low';
-}
-
-export interface IKeywordCoverage {
-  keyword: string;
-  found: boolean;
-  frequency: number;
-  context: string[];
-}
-
-export interface ISectionIntegrity {
-  sectionName: string;
-  detected: boolean;
-  confidence: number;
-  matchedHeading?: string;
-  issues: string[];
-}
+import type {
+  ParserWarning as IParserWarning,
+  FormattingWarning as IFormattingWarning,
+  KeywordCoverage as IKeywordCoverage,
+  SectionIntegrity as ISectionIntegrity,
+} from '@devtrack/ats-core';
+export type { IParserWarning, IFormattingWarning, IKeywordCoverage, ISectionIntegrity };
 
 export interface IATSAnalysis extends Document {
   userId: Schema.Types.ObjectId;
