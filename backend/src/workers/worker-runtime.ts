@@ -21,16 +21,6 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../shared/jobs/platformSyncWorker.js');
     return { start: m.startPlatformSyncWorker, stop: m.stopPlatformSyncWorker };
   } },
-  { role: 'sync', queueName: 'contest-refresh', load: async () => {
-    const m = await import('../shared/jobs/contestRefreshWorker.js');
-    return {
-      start: async () => {
-        m.startContestRefreshWorker();
-        await m.scheduleContestRefreshTask();
-      },
-      stop: m.stopContestRefreshWorker,
-    };
-  } },
   { role: 'xp', queueName: 'xp-processing', load: async () => {
     const m = await import('../shared/jobs/xpWorker.js');
     return { start: m.startXpWorker, stop: m.stopXpWorker };

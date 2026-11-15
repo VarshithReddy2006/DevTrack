@@ -8,7 +8,18 @@ import { contestRefreshService } from '../../modules/platform-sync/contests/cont
 
 export const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 
-export const contestRefreshQueue: Queue = getOrCreateQueue(QueueNames.CONTEST_REFRESH);
+let _contestRefreshQueue: Queue | null = null;
+export function getContestRefreshQueue(): Queue {
+  if (!_contestRefreshQueue) {
+    _contestRefreshQueue = getOrCreateQueue(QueueNames.CONTEST_REFRESH);
+  }
+  return _contestRefreshQueue;
+}
+
+export const contestRefreshQueue: Queue = {
+  add: (...args: any[]) => (getContestRefreshQueue() as any).add(...args),
+  close: () => _contestRefreshQueue?.close(),
+} as unknown as Queue;
 
 let worker: Worker | null = null;
 
