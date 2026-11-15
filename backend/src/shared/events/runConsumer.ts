@@ -162,8 +162,10 @@ export async function runConsumer<P = unknown>(
 
 /**
  * Fallback execution for standalone MongoDB environments without replica set support.
+ * Acquires an optimistic inbox lock in ProcessedEvent, executes the handler, and
+ * deletes the record if the handler throws an error so that queue retries are not lost.
  */
-async function executeInboxNonTransactional<P>(
+export async function executeInboxNonTransactional<P>(
   consumer: ConsumerDefinition<P>,
   event: DomainEventEnvelope<any, P>
 ): Promise<RunConsumerResult> {
@@ -238,6 +240,16 @@ async function executeInboxNonTransactional<P>(
       eventType,
       error: error instanceof Error ? error.message : String(error),
     });
+    // Remove optimistic inbox record so subsequent retries are not permanently dropped as duplicates
+    try {
+      await ProcessedEvent.deleteOne({ consumer: consumerName, eventId });
+    } catch (cleanupErr) {
+      logger.error('[runConsumer] Failed to clean up ProcessedEvent after handler failure', {
+        consumer: consumerName,
+        eventId,
+        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      });
+    }
     throw error;
   }
 }
