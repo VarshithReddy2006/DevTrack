@@ -80,10 +80,7 @@ router.use('/resume', uploadRoutes);
 router.use('/resume-intelligence', resumeIntelligenceRoutes);
 router.use('/recommendations', rateLimiters.ai, recommendationRoutes);
 router.use('/analytics', analyticsRoutes);
-<<<<<<< HEAD
 router.use('/revision', revisionRoutes);
-=======
 router.use('/ai', rateLimiters.ai, aiQuotaRoutes);
->>>>>>> upstream/main
 
 export default router;
