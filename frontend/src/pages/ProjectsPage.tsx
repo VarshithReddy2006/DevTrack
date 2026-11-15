@@ -445,6 +445,8 @@ const ProjectsPage: React.FC = () => {
   const [filter, setFilter] = React.useState<ProjectFilter>('All');
   const [mounted, setMounted] = React.useState(false);
   const [showCreate, setShowCreate] = React.useState(false);
+  const createRequested = searchParams.get('create') === '1';
+  const createOpen = showCreate || createRequested;
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>(null);
   const [viewMode, setViewMode] = React.useState<ViewMode>('grid');
@@ -466,7 +468,7 @@ const ProjectsPage: React.FC = () => {
     const handleKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (showCreate || selectedProjectId) return;
+      if (createOpen || selectedProjectId) return;
 
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); setShowCreate(true); }
       if (e.key === 'g' || e.key === 'G') { e.preventDefault(); setViewMode('grid'); }
@@ -475,7 +477,7 @@ const ProjectsPage: React.FC = () => {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [showCreate, selectedProjectId]);
+  }, [createOpen, selectedProjectId]);
 
   const projects = React.useMemo(() => data?.projects ?? [], [data]);
 
@@ -787,8 +789,15 @@ const ProjectsPage: React.FC = () => {
 
       {/* ─── Create Modal ─── */}
       <CreateProjectModal
-        open={showCreate}
-        onClose={() => setShowCreate(false)}
+        open={createOpen}
+        onClose={() => {
+          setShowCreate(false);
+          if (createRequested) {
+            const next = new URLSearchParams(searchParams);
+            next.delete('create');
+            setSearchParams(next, { replace: true });
+          }
+        }}
         onCreate={createProject}
       />
 
