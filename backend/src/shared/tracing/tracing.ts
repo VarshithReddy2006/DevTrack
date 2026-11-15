@@ -3,6 +3,8 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID } from 'crypto';
+import { context as otelContext, isSpanContextValid, trace, SpanKind } from '@opentelemetry/api';
+import { startTraceOperation } from './propagation.js';
 
 // Trace context storage
 const traceStorage = new AsyncLocalStorage<TraceContext>();
@@ -31,8 +33,8 @@ const spanStorage = new AsyncLocalStorage<Span[]>();
 // ─── Core tracing functions ─────────────────────────────────────────────
 
 export function startTrace(): TraceContext {
-  const traceId = randomUUID();
-  const spanId = randomUUID().slice(0, 16);
+  const traceId = randomUUID().replaceAll('-', '');
+  const spanId = randomUUID().replaceAll('-', '').slice(0, 16);
 
   const context: TraceContext = {
     traceId,
@@ -40,8 +42,6 @@ export function startTrace(): TraceContext {
     correlationId: traceId,
     timestamp: Date.now(),
   };
-
-  spanStorage.enterWith([]);
 
   return context;
 }
@@ -51,7 +51,7 @@ export function getTraceContext(): TraceContext | undefined {
 }
 
 export function runInTrace<T>(context: TraceContext, fn: () => Promise<T>): Promise<T> {
-  return traceStorage.run(context, fn);
+  return traceStorage.run(context, () => spanStorage.run([], fn));
 }
 
 // Span management
@@ -119,28 +119,25 @@ export function syncTraceSpan<T>(
 import type { Request, Response, NextFunction } from 'express';
 
 export function tracingMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Extract or create trace context
-  const incomingTraceId = req.headers['x-trace-id'] as string || req.headers['x-request-id'] as string;
-  const incomingSpanId = req.headers['x-span-id'] as string;
+  const active = trace.getActiveSpan();
+  const span = active ?? startTraceOperation('http.request', {
+    traceparent: req.get('traceparent'),
+  }, { kind: SpanKind.SERVER });
+  if (!active) {
+    res.once('finish', () => span.end());
+    res.once('close', () => { if (!res.writableFinished) span.end(); });
+  }
 
-  const context = incomingTraceId
-    ? {
-        traceId: incomingTraceId,
-        spanId: randomUUID().slice(0, 16),
-        parentSpanId: incomingSpanId,
-        correlationId: req.headers['x-correlation-id'] as string || incomingTraceId,
-        timestamp: Date.now(),
-      }
+  const ids = span.spanContext();
+  const requestTrace = isSpanContextValid(ids)
+    ? { traceId: ids.traceId, spanId: ids.spanId, correlationId: req.context?.requestId ?? ids.traceId, timestamp: Date.now() }
     : startTrace();
-
-  // Set response headers for client tracing
-  res.setHeader('X-Trace-ID', context.traceId);
-  res.setHeader('X-Span-ID', context.spanId);
-
-  // Store in request for downstream access
-  (req as unknown as { traceContext: TraceContext }).traceContext = context;
-
-  next();
+  req.traceContext = requestTrace;
+  res.setHeader('X-Trace-ID', requestTrace.traceId);
+  res.setHeader('X-Span-ID', requestTrace.spanId);
+  otelContext.with(trace.setSpan(otelContext.active(), span), () => {
+    traceStorage.run(requestTrace, () => spanStorage.run([], next));
+  });
 }
 
 // Add user context to trace
@@ -155,17 +152,13 @@ export function setUserContext(userId: string, metadata?: Record<string, unknown
 // ─── Queue job propagation ──────────────────────────────────────────────
 
 export function injectTraceIntoJob(jobData: Record<string, unknown>): Record<string, unknown> {
-  const context = getTraceContext();
-  if (!context) return jobData;
+  const { traceId, spanId, correlationId } = getTraceMetadata();
+  if (!traceId) return jobData;
 
+  // Preserve the payload format for workers during mixed-version deployments.
   return {
     ...jobData,
-    _trace: {
-      traceId: context.traceId,
-      spanId: context.spanId,
-      parentSpanId: context.parentSpanId,
-      correlationId: context.correlationId,
-    },
+    _trace: { traceId, spanId, parentSpanId: getTraceContext()?.parentSpanId, correlationId: correlationId ?? traceId },
   };
 }
 
@@ -194,7 +187,8 @@ export async function runJobInTrace<T>(
 
   const context: TraceContext = {
     ...trace,
-    spanId: randomUUID().slice(0, 16),
+    parentSpanId: trace.spanId,
+    spanId: randomUUID().replaceAll('-', '').slice(0, 16),
     timestamp: Date.now(),
   };
 
@@ -211,13 +205,14 @@ export function createSseTraceContext(): TraceContext {
 
 export function getTraceMetadata(): Record<string, string> {
   const context = getTraceContext();
-  if (!context) return {};
-
+  const active = trace.getSpanContext(otelContext.active());
+  const ids = active && isSpanContextValid(active) ? active : context;
+  if (!ids) return {};
   return {
-    traceId: context.traceId,
-    spanId: context.spanId,
-    correlationId: context.correlationId,
-    ...(context.userId && { userId: context.userId }),
+    traceId: ids.traceId,
+    spanId: ids.spanId,
+    ...(context && { correlationId: context.correlationId }),
+    ...(context?.userId && { userId: context.userId }),
   };
 }
 

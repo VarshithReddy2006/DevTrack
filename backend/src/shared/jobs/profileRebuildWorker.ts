@@ -45,7 +45,7 @@ export function startProfileRebuildWorker() {
   );
 
   worker.on('failed', (job, err) => {
-    logger.error(`[profile-rebuild] Job ${job?.id} failed with error ${err.message}`);
+    logger.error('[profile-rebuild] Job failed', err, { jobId: job?.id });
   });
 
   return worker;

@@ -5,6 +5,7 @@
 import { Worker, Job, Queue } from 'bullmq';
 import { getRedisClient } from '../redis/index.js';
 import { logger } from '../logger.js';
+import { getQueueTelemetry } from '../tracing/queueTelemetry.js';
 import { createDlqWorker, dlqService, DLQ_QUEUE_NAMES } from './dlq.service.js';
 import { QueueNames, SystemMaintenanceJobData } from './types.js';
 import { runScheduledMissionSweep } from '../scheduler/missionScheduler.js';
@@ -281,6 +282,7 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
 
   _queue = new Queue<SystemMaintenanceJobData>(QueueNames.SYSTEM_MAINTENANCE, {
     connection: redis,
+    telemetry: getQueueTelemetry(),
   });
 
   // DLQ cleanup every 6 hours

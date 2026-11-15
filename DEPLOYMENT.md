@@ -80,6 +80,14 @@ docker compose -f docker-compose.prod.yml logs -f
 
 > **Port note:** `docker-compose.prod.yml` publishes the API on host port **4000** by default and routes it to container port **3001**. Override only the host port with `API_PORT`. Development publishes container port 3001 directly.
 
+### Distributed traces
+
+Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to the collector's full HTTP/JSON trace ingest URL, such as `http://otel-collector:4318/v1/traces`. You can also set `OTEL_EXPORTER_OTLP_ENDPOINT` to the base collector URL. Set `OTEL_SERVICE_NAME` per deployment role to distinguish API and worker spans. Without an endpoint, the API and workers propagate trace IDs locally and skip exporting spans. Set `OTEL_SDK_DISABLED=true` to disable the SDK.
+
+For custom process entry points, preload the built SDK with `node --import ./dist/instrumentation.js ...` before loading instrumented libraries. Exported spans keep trace IDs, timings, operation names, and status codes. The exporter drops request URLs, database arguments, Redis payloads, and exception bodies.
+
+When the transactional outbox from issue #296 is available, persist `captureTraceContext()` in the event's `traceContext` field. Enqueue within `withTraceContext(row.traceContext, () => queue.add(...))` so BullMQ derives its metadata from the originating request.
+
 
 ---
 

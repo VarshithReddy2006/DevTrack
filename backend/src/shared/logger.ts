@@ -1,6 +1,7 @@
 // src/shared/logger.ts — Structured logger with performance monitoring
 import { env } from '../config/env.js';
 import { getTraceMetadata } from './tracing/tracing.js';
+import { redactLogValue } from './tracing/logRedaction.js';
 
 interface LogEntry {
   timestamp: string;
@@ -8,6 +9,7 @@ interface LogEntry {
   service: string;
   event: string;
   traceId?: string;
+  spanId?: string;
   correlationId?: string;
   durationMs?: number;
   requestId?: string;
@@ -17,7 +19,7 @@ interface LogEntry {
 }
 
 function formatEntry(entry: LogEntry): string {
-  return JSON.stringify(entry);
+  return JSON.stringify(entry, redactLogValue);
 }
 
 function emit(entry: LogEntry): void {
@@ -25,9 +27,9 @@ function emit(entry: LogEntry): void {
   if (process.env.SILENT_LOGGING === 'true' || (process.env.NODE_ENV === 'test' && process.env.DEBUG !== 'true')) {
     return;
   }
-  // Automatically attach trace context if available (AsyncLocalStorage)
   const traceCtx = getTraceMetadata();
-  if (traceCtx.traceId && !entry.traceId) entry.traceId = traceCtx.traceId;
+  if (traceCtx.traceId) entry.traceId = traceCtx.traceId;
+  if (traceCtx.spanId) entry.spanId = traceCtx.spanId;
   if (traceCtx.correlationId && !entry.correlationId) entry.correlationId = traceCtx.correlationId;
   if (traceCtx.userId && !entry.userId) entry.userId = traceCtx.userId;
 
@@ -70,34 +72,22 @@ export const logger = {
   },
 
   error(event: string, error?: unknown, meta?: Record<string, unknown>): void {
-    let errorMsg = '';
-    let stack: string | undefined = undefined;
-    let finalMeta = meta;
-
-    if (error instanceof Error) {
-      errorMsg = error.message;
-      stack = error.stack;
-    } else if (error && typeof error === 'object') {
-      const errObj = error as Record<string, unknown>;
-      errorMsg = typeof errObj.message === 'string' ? errObj.message : String(errObj.error || JSON.stringify(errObj));
-      stack = typeof errObj.stack === 'string' ? errObj.stack : undefined;
-      finalMeta = { ...errObj, ...meta };
-    } else {
-      errorMsg = String(error ?? '');
-    }
+    const details = error && typeof error === 'object' ? error as Record<string, unknown> : undefined;
+    const errorName = typeof details?.name === 'string' ? details.name : 'Error';
+    const code = details?.code;
+    const errorCode = typeof code === 'number' || (typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(code))
+      ? code
+      : undefined;
 
     emit({
       timestamp: new Date().toISOString(),
       level: 'ERROR',
       service: SERVICE_NAME,
       event,
-      requestId: ((finalMeta as any)?.requestId || (finalMeta as any)?.metadata?.requestId) as string | undefined,
-      userId: ((finalMeta as any)?.userId || (finalMeta as any)?.metadata?.userId) as string | undefined,
-      error: errorMsg || undefined,
-      metadata: {
-        ...excludeMeta(finalMeta),
-        ...(stack ? { stack } : {}),
-      },
+      requestId: (meta?.requestId ?? details?.requestId) as string | undefined,
+      userId: (meta?.userId ?? details?.userId) as string | undefined,
+      error: error == null ? undefined : errorName,
+      metadata: excludeMeta(errorCode === undefined ? meta : { errorCode, ...meta }),
     });
   },
 
