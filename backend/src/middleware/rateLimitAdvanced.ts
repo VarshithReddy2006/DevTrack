@@ -2,6 +2,7 @@
 // Phase-1 Hardening: Rate limiting layer
 
 import type { Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'node:crypto';
 import { getRedisClient } from '../shared/redis/client.js';
 import { logger } from '../shared/logger.js';
 
@@ -214,6 +215,56 @@ function getIdentifier(req: Request): string {
   return `ip:${ip}`;
 }
 
+// Atomic sliding-window limiter for expensive, user-triggered regeneration.
+// Redis stores one timestamp per accepted request and expires the key after one window.
+const EXPENSIVE_ACTION_SCRIPT = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+local count = redis.call('ZCARD', key)
+if count >= limit then
+  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+  return {0, math.max(1, tonumber(oldest[2]) + window - now)}
+end
+redis.call('ZADD', key, now, ARGV[4])
+redis.call('PEXPIRE', key, window)
+return {1, limit - count - 1}
+`;
+
+export function createSlidingWindowRateLimiter(windowMs: number, maxRequests: number) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const userId = (req as Request & { user?: { id?: string } }).user?.id;
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Authentication required' });
+      return;
+    }
+    try {
+      const result = await getRedisClient().eval(
+        EXPENSIVE_ACTION_SCRIPT, 1, `rl:expensive-action:user:${userId}`,
+        String(Date.now()), String(windowMs), String(maxRequests), randomUUID(),
+      );
+      if (!Array.isArray(result) || result.length !== 2) throw new Error('Invalid rate limit response');
+      const [allowed, value] = result.map(Number);
+      if ((allowed !== 0 && allowed !== 1) || !Number.isFinite(value) || value < 0) {
+        throw new Error('Invalid rate limit response');
+      }
+      if (!allowed) {
+        res.set('Retry-After', String(Math.ceil(value / 1000)));
+        res.status(429).json({ success: false, message: 'Recommendation refresh limit exceeded', code: 'RATE_LIMIT_EXCEEDED' });
+        return;
+      }
+      res.set('X-RateLimit-Limit', String(maxRequests));
+      res.set('X-RateLimit-Remaining', String(value));
+      next();
+    } catch (error) {
+      // Fail closed when Redis is unavailable: an unbounded LLM operation is unsafe.
+      next(error);
+    }
+  };
+}
+
 // Pre-configured rate limiters for common endpoints
 export const rateLimiters = {
   sse: createRateLimiter('sse'),
@@ -226,6 +277,7 @@ export const rateLimiters = {
   resumeRead: createRateLimiter('resumeRead'),
   resumeReadIngress: createRateLimiter('resumeReadIngress'),
   analytics: createRateLimiter('analytics'),
+  expensiveAction: createSlidingWindowRateLimiter(3_600_000, 5),
   default: createRateLimiter('default'),
 };
 

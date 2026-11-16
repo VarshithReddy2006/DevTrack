@@ -85,6 +85,20 @@ graph TD
 | **Real-time WebChannels** | Server-Sent Events (SSE) singleton channels backed by Redis pub/sub for real-time dashboard state updates and live toasts. | `backend/src/shared/sse` |
 | **Operations & Observability** | BullMQ queue metrics, Dead Letter Queue (DLQ) inspection and replay, health probes, and beta observability telemetry. | `backend/src/modules/ops` |
 
+### Recommendation intelligence API
+
+Authenticated `GET /api/v1/recommendations/intelligence/:resumeReference` reads saved
+active, accepted, and completed findings without regenerating them. An owned
+resume with no saved findings returns an empty array. The resume reference may
+be an owned session ID or owned resume profile/session document ID; unknown or
+other users' references return `404`.
+
+`POST /api/v1/recommendations/intelligence/:resumeReference/refresh` explicitly
+regenerates and saves findings. A Redis sliding window allows five refreshes
+per hour per user across their resumes; excess requests return `429` and a
+`Retry-After` header. The resume tracker exposes this action as **Refresh
+insights**. Its normal page load uses the read route.
+
 ---
 
 ## System Architecture
