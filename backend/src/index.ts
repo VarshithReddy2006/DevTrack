@@ -24,6 +24,7 @@ import { getInfrastructureState, setApiStatus, type InfrastructureState } from '
 import routes from './routes/index.js';
 import { getRegisteredWorkerStatuses } from './shared/jobs/workers.js';
 import { dlqRoutes } from './routes/dlq.routes.js';
+import { registerPublicProfileShell } from './modules/profile/ogShell.routes.js';
 import { mountApiRoutes } from './routes/mount.js';
 import { sanitizeMongoError } from './db/connection.js';
 
@@ -83,6 +84,8 @@ export async function createApp(): Promise<express.Express> {
 
   // Phase 2: Health & observability endpoints (before routes)
   setupHealthEndpoints(app, getRedisHealth, getWorkerStatus, getXpWorkerStatus, getOrCreateQueue, QueueNames, eventBus, syncState, getInfrastructureState);
+
+  registerPublicProfileShell(app, env.CORS_ORIGIN);
 
   // Phase 3: API routes
   app.use('/api/system/dlq', dlqRoutes);
