@@ -20,6 +20,7 @@ export interface IDsaContest extends Document {
   url?: string | null;
   phase?: string | null;
   stale?: boolean;
+  alertEmitted?: boolean;
   fetchedAt?: Date | null;
   createdAt: Date;
 }
@@ -72,6 +73,10 @@ const dsaContestSchema = new Schema<IDsaContest>(
       default: null,
     },
     stale: {
+      type: Boolean,
+      default: false,
+    },
+    alertEmitted: {
       type: Boolean,
       default: false,
     },
@@ -136,5 +141,6 @@ dsaContestSchema.index(
     },
   }
 );
+dsaContestSchema.index({ kind: 1, startTime: 1, alertEmitted: 1 });
 
 export const DsaContest = model<IDsaContest>('DsaContest', dsaContestSchema);

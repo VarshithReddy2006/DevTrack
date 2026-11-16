@@ -1,7 +1,7 @@
 // src/modules/resume-intelligence/evidence/EvidenceGraphEngine.ts
 import type { Types } from 'mongoose';
 import { logger } from '../../../shared/logger.js';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { ClaimLineageResolver } from './ClaimLineageResolver.js';
 import { EvidenceRelationshipMapper } from './EvidenceRelationshipMapper.js';
 import { VerificationConfidenceEngine } from './VerificationConfidenceEngine.js';
@@ -48,7 +48,7 @@ export class EvidenceGraphEngine {
     logger.info(`[EvidenceGraph] Building graph for user ${userId}`);
     
     // 1. Resolve claim lineage
-    const claims = await ResumeEvidenceClaim.find({ userId });
+    const claims = await ResumeEvidenceClaim.find({ userId, ...resumeClaimScope });
     for (const claim of claims) {
       await this.lineageResolver.resolveLineage(claim);
     }
@@ -68,7 +68,7 @@ export class EvidenceGraphEngine {
     provenance: any;
     confidence: number;
   }> {
-    const claim = await ResumeEvidenceClaim.findById(claimId);
+    const claim = await ResumeEvidenceClaim.findOne({ _id: claimId, ...resumeClaimScope });
     if (!claim) throw new Error('Claim not found');
 
     return {

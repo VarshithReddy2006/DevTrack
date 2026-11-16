@@ -8,6 +8,7 @@ import { activityService } from '../../services/activityService';
 import type { FocusSessionState } from '../../services/activityService';
 import { useQueryClient } from '@tanstack/react-query';
 import { useMissionStore } from '../../store/missionStore';
+import { AmbientSoundControl } from '../../features/focus/components/AmbientSoundControl';
 
 // Web Audio API Synthesizer for high-fidelity notification sound
 const playFocusChime = () => {
@@ -65,7 +66,13 @@ export function focusRemainingSeconds(session: FocusSessionState, now = Date.now
   return Math.max(0, Math.ceil((totalMs - activeMs - (Number.isFinite(runningMs) ? runningMs : 0)) / 1000));
 }
 
-export const PomodoroTimer = () => {
+export const PomodoroTimer = ({
+  showAmbientSound = false,
+  onSessionComplete,
+}: {
+  showAmbientSound?: boolean;
+  onSessionComplete?: (session: any) => void;
+}) => {
   const { data: runtimeState } = useRuntimeState();
   const queryClient = useQueryClient();
   const getActiveMission = useMissionStore(state => state.getActiveMission);
@@ -125,11 +132,21 @@ export const PomodoroTimer = () => {
 
   const handleStopFocus = async () => {
     try {
-      await activityService.stopFocusSession();
+      const res = await activityService.stopFocusSession();
       setStatus('idle');
       setTimeLeft(selectedDuration * 60);
       void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      if (onSessionComplete) {
+        onSessionComplete({
+          plannedSec: selectedDuration * 60,
+          mode: activeMode.id,
+          xpAwarded: 25,
+          xpReason: 'qualified',
+          status: 'completed',
+          ...(res?.data || {}),
+        });
+      }
     } catch (err) {
       console.error('Failed to stop focus session', err);
     }
@@ -290,6 +307,8 @@ export const PomodoroTimer = () => {
             </button>
           </div>
         </div>
+
+        {showAmbientSound && <AmbientSoundControl running={status === 'running'} />}
 
         {/* Main Grid Area */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center relative z-10 mb-6">

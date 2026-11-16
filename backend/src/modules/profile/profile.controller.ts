@@ -89,7 +89,7 @@ export async function getAchievements(req: AuthenticatedRequest, res: Response):
   }, 'Achievements retrieved successfully');
 }
 
-import { PublicProfileService } from './publicProfile.service.js';
+import { canViewPublicProfile, PublicProfileService } from './publicProfile.service.js';
 import { UserSettings } from '../../db/models/userSettings.model.js';
 import { mapToPublicProfileDTO } from './profile.dto.js';
 
@@ -118,8 +118,7 @@ export async function getPublicProfile(req: AuthenticatedRequest, res: Response)
     }
 
     const settings = await UserSettings.findOne({ userId: profile.userId }).select('privacy').lean();
-    if (profile.visibility !== 'public' ||
-        (settings?.privacy?.profileVisibility && settings.privacy.profileVisibility !== 'public')) {
+    if (!canViewPublicProfile(profile, settings?.privacy)) {
       commonErrors.notFound(res, 'Public Profile');
       return;
     }

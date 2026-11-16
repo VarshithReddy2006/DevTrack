@@ -1,7 +1,7 @@
 import type { Types } from 'mongoose';
 import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { logger } from '../../../shared/logger.js';
 import {
   calculateAtsScore, calculateExtractionConfidence, checkKeywordCoverage, countResumeWords,
@@ -57,7 +57,7 @@ export class ATSCompatibilityEngine {
       }
 
       // Check for unverified system / infrastructure claims
-      const claims = await ResumeEvidenceClaim.find({ resumeProfileId: input.resumeProfileId });
+      const claims = await ResumeEvidenceClaim.find({ resumeProfileId: input.resumeProfileId, ...resumeClaimScope });
       let hasDistributedClaims = false;
       let unverifiedClaimsCount = 0;
 

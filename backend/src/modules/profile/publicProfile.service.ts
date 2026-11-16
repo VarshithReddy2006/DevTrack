@@ -1,4 +1,5 @@
-import { PublicProfile } from '../../db/models/publicProfile.model.js';
+import { UserSettings, type IUserSettings } from '../../db/models/userSettings.model.js';
+import { PublicProfile, type IPublicProfile } from '../../db/models/publicProfile.model.js';
 import { User } from '../../db/models/user.model.js';
 import { PlatformStats } from '../../db/models/platformStats.model.js';
 import { ActivityEvent } from '../../db/models/activityEvent.model.js';
@@ -10,11 +11,10 @@ import { XpTransaction } from '../../db/models/xpTransaction.model.js';
 import { VerifiedProject } from '../../db/models/verifiedProject.model.js';
 import { UserXp } from '../../db/models/userXp.model.js';
 import { ProfileView } from '../../db/models/profileView.model.js';
-import { VerificationEngine } from './verification.engine.js';
+import { SUSPICION_FLAG_THRESHOLD, VerificationEngine } from './verification.engine.js';
 import mongoose from 'mongoose';
 import { calculateStreaks, formatISODate, getStartOfDay, getStartOfYear, subtractDays } from '../../shared/date.js';
 import { getAchievements } from '../dashboard/dashboard.service.js';
-import { escapeRegExp } from '../../shared/regex.js';
 
 const SNAPSHOT_VERSION = 2;
 
@@ -22,7 +22,34 @@ function numericStat(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+export function canViewPublicProfile(
+  profile: Pick<IPublicProfile, 'published' | 'visibility'>,
+  privacy?: Partial<IUserSettings['privacy']>,
+): boolean {
+  return profile.published === true
+    && profile.visibility === 'public'
+    && (!privacy?.profileVisibility || privacy.profileVisibility === 'public');
+}
+
 export class PublicProfileService {
+  /** Read only explicitly public snapshot metadata. Crawlers do not count as profile views. */
+  static async getPublishedPreview(slug: string) {
+    const profile = await PublicProfile.findOne({ slug, published: true, visibility: 'public' })
+      .select('userId username published visibility isIndexable snapshot.identity.displayName seo.ogDescription seo.ogImageUrl')
+      .lean();
+    if (!profile) return null;
+
+    const settings = await UserSettings.findOne({ userId: profile.userId }).select('privacy.profileVisibility').lean();
+    if (!canViewPublicProfile(profile, settings?.privacy)) return null;
+
+    return {
+      displayName: profile.snapshot?.identity?.displayName || profile.username,
+      description: profile.seo?.ogDescription || 'View this verified engineering portfolio on DevTrack.',
+      imageUrl: profile.seo?.ogImageUrl,
+      isIndexable: profile.isIndexable !== false,
+    };
+  }
+
   /**
    * Recompute the public profile snapshot for a user based on verified signals.
    */
@@ -66,7 +93,7 @@ export class PublicProfileService {
           { $group: { _id: null, total: { $sum: '$xpAwarded' } } },
         ]),
         getAchievements(String(userId)),
-        PublicProfile.findOne({ userId }).select('snapshot.achievements').lean(),
+        PublicProfile.findOne({ userId }).select('slug snapshot.achievements').lean(),
       ]);
 
     const githubStats = platforms.find(({ platformName }) => platformName === 'github');
@@ -184,68 +211,66 @@ export class PublicProfileService {
       },
     };
 
+    // The handle is chosen at publication. A rebuild must never move it, so it is only
+    // seeded from the username when the document is first created.
+    const slug = prior?.slug ?? user.username.toLowerCase();
     const profileData = {
       userId,
       username: user.username,
-      slug: user.username.toLowerCase(),
       snapshot: computedSnapshot,
       'antiGaming.suspicionScore': verificationScore.suspicionScore,
       'antiGaming.flags': verificationScore.flags,
-      'antiGaming.isFlagged': verificationScore.suspicionScore > 70,
+      'antiGaming.isFlagged': verificationScore.suspicionScore > SUSPICION_FLAG_THRESHOLD,
       seo: {
         ogTitle: `${user.username} | Verified Engineering Profile`,
         ogDescription: `View ${user.username}'s verified engineering metrics, projects, and proof of work on DevTrack.`,
         ogImageUrl: null,
-        canonicalUrl: `https://devtrack.io/u/${user.username.toLowerCase()}`,
+        canonicalUrl: `https://devtrack.io/u/${slug}`,
       },
     };
 
     await PublicProfile.findOneAndUpdate(
       { userId },
-      { $set: profileData },
+      { $set: profileData, $setOnInsert: { slug } },
       { upsert: true, new: true }
     );
     return verificationScore;
   }
 
   /**
-   * Get a public profile by username
+   * Get a published public profile by handle. Unknown and unpublished handles are
+   * indistinguishable ('Profile not found') and never create or compute anything.
    */
   static async getPublicProfileByUsername(username: string, viewerIp: string, viewerType: 'public' | 'recruiter' | 'authenticated', viewerUserId?: mongoose.Types.ObjectId) {
-    let profile = await PublicProfile.findOne({ slug: username.toLowerCase() });
-    
-    if (profile && profile.snapshot.version < SNAPSHOT_VERSION) {
+    let profile = await PublicProfile.findOne({ slug: username.toLowerCase(), published: true });
+    if (!profile) throw new Error('Profile not found');
+
+    if (profile.snapshot.version < SNAPSHOT_VERSION) {
       await this.computeProfile(profile.userId);
-      profile = await PublicProfile.findOne({ userId: profile.userId });
-    } else if (!profile) {
-      const user = await User.findOne({ username: new RegExp(`^${escapeRegExp(username)}$`, 'i') });
-      if (!user) throw new Error('Profile not found');
-      
-      await this.computeProfile(user._id as mongoose.Types.ObjectId);
-      profile = await PublicProfile.findOne({ slug: user.username.toLowerCase() });
+      // The owner may have unpublished while the snapshot was rebuilding.
+      profile = await PublicProfile.findOne({ userId: profile.userId, published: true });
+      if (!profile) throw new Error('Profile not found');
     }
 
-    if (profile) {
-      // Track view asynchronously
-      ProfileView.create({
-        profileUserId: profile.userId,
-        viewerType,
-        viewerUserId: viewerUserId || null,
-        viewerIp,
-      }).catch(err => console.error('Error tracking profile view:', err));
+    // Track view asynchronously
+    ProfileView.create({
+      profileUserId: profile.userId,
+      viewerType,
+      viewerUserId: viewerUserId || null,
+      viewerIp,
+    }).catch(err => console.error('Error tracking profile view:', err));
 
-      // Update stats on profile (can be debounced in prod)
-      await PublicProfile.updateOne(
-        { _id: profile._id },
-        { 
-          $inc: { 
-            'stats.profileViews': viewerType === 'public' ? 1 : 0,
-            'stats.recruiterViews': viewerType === 'recruiter' ? 1 : 0,
-          },
-          $set: { 'stats.lastViewedAt': new Date() }
-        }
-      );
-    }
+    // Update stats on profile (can be debounced in prod)
+    await PublicProfile.updateOne(
+      { _id: profile._id },
+      {
+        $inc: {
+          'stats.profileViews': viewerType === 'public' ? 1 : 0,
+          'stats.recruiterViews': viewerType === 'recruiter' ? 1 : 0,
+        },
+        $set: { 'stats.lastViewedAt': new Date() }
+      }
+    );
 
     return profile;
   }

@@ -15,6 +15,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      '/u/': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
       '/api': {
         target: process.env.DEVTRACK_E2E_FIXTURE === '1' ? 'http://127.0.0.1:3001' : 'http://localhost:3001',
         changeOrigin: true,
@@ -27,6 +31,10 @@ export default defineConfig({
   },
   preview: {
     proxy: {
+      '/u/': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,

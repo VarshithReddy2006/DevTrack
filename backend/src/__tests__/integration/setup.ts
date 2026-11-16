@@ -28,7 +28,7 @@ afterAll(async () => {
   }
 });
 
-const [{ getRedisClient }, { logger }, { User, UserXp }] = await Promise.all([
+const [{ getRedisClient, disconnectRedis }, { logger }, { User, UserXp }] = await Promise.all([
   import('../../shared/redis/index.js'),
   import('../../shared/logger.js'),
   import('../../db/models/index.js'),
@@ -53,9 +53,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Disconnect Redis
-  const redis = getRedisClient();
-  await redis.quit();
+  await disconnectRedis();
 });
 
 beforeEach(async () => {

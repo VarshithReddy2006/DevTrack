@@ -9,6 +9,8 @@ export const ResumeRecommendationPanel: React.FC = () => {
   const { currentSession } = useSessionState();
   const [recommendations, setRecommendations] = useState<IIntelligenceRecommendation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const isProcessing = currentSession?.stages.recommendations.status === 'processing';
   const isPending = currentSession?.stages.recommendations.status === 'pending';
@@ -35,6 +37,22 @@ export const ResumeRecommendationPanel: React.FC = () => {
     fetchIntelligence();
   }, [currentSession?.sessionId, isPending, isProcessing]);
 
+  const refreshIntelligence = async () => {
+    if (!currentSession?.sessionId) return;
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      const res = await api.post(`/recommendations/intelligence/${currentSession.sessionId}/refresh`);
+      if (res.data?.success) {
+        setRecommendations(res.data.data.filter((rec: IIntelligenceRecommendation) => rec.state !== 'completed'));
+      }
+    } catch {
+      setRefreshError('Could not refresh insights. Please try again later.');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   if (isPending) return null;
 
   const renderIcon = (category: string) => {
@@ -59,10 +77,18 @@ export const ResumeRecommendationPanel: React.FC = () => {
 
   return (
     <div className="w-full flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        <Lightbulb size={16} className="text-violet-600" />
-        <h2 className="text-[13px] font-black uppercase tracking-widest text-slate-900">Engineering Analysis Guidance</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Lightbulb size={16} className="text-violet-600" />
+          <h2 className="text-[13px] font-black uppercase tracking-widest text-slate-900">Engineering Analysis Guidance</h2>
+        </div>
+        <button type="button" onClick={() => void refreshIntelligence()} disabled={isProcessing || isLoading || isRefreshing}
+          className="rounded-lg border border-violet-200 px-3 py-1.5 text-xs font-semibold text-violet-700 disabled:opacity-50">
+          {isRefreshing ? 'Refreshing...' : 'Refresh insights'}
+        </button>
       </div>
+
+      {refreshError && <p role="alert" className="text-xs text-rose-600">{refreshError}</p>}
 
       <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-slate-200 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] p-6 min-h-[200px] relative overflow-hidden">
         {isProcessing || isLoading ? (
@@ -85,8 +111,8 @@ export const ResumeRecommendationPanel: React.FC = () => {
         ) : recommendations.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 h-full">
             <CheckCircle className="w-10 h-10 text-emerald-500 mb-3" />
-            <p className="text-sm font-bold text-slate-900">No Actionable Gaps Detected</p>
-            <p className="text-xs text-slate-500 mt-1 font-medium">Your profile meets structural and semantic engineering standards.</p>
+            <p className="text-sm font-bold text-slate-900">No saved recommendations yet</p>
+            <p className="text-xs text-slate-500 mt-1 font-medium">Use Refresh insights to generate a new analysis.</p>
           </div>
         ) : (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-1 lg:grid-cols-2 gap-6">

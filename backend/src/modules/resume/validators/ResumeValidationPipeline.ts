@@ -2,7 +2,7 @@
 import type { Types } from 'mongoose';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { logger } from '../../../shared/logger.js';
 
 export interface IValidationResult {
@@ -64,7 +64,7 @@ export class ResumeValidationPipeline {
     }
 
     // 3. Evidence & Unsupported Claims
-    const claims = await ResumeEvidenceClaim.find({ userId });
+    const claims = await ResumeEvidenceClaim.find({ userId, ...resumeClaimScope });
     const unverifiedClaims = claims.filter(c => c.verificationStatus === 'unverified');
     if (unverifiedClaims.length > 0) {
       warnings.push(`${unverifiedClaims.length} unsupported engineering claims detected.`);
