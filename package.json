@@ -18,6 +18,7 @@
     "build:backend": "echo 'Use --prefix backend'",
     "lint": "npm run lint --prefix frontend",
     "test": "npm test --prefix backend",
+    "test:chaos": "npm run test:chaos --prefix backend",
     "test:load:reads": "k6 run infra/k6/read-paths.js",
     "test:load:sse": "k6 run infra/k6/sse-1000.js",
     "test:load:writes": "k6 run infra/k6/write-mix.js",
