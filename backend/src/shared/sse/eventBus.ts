@@ -223,6 +223,7 @@ export type SseEventType =
   | 'contest_starting_soon'
   | 'revision_reviewed'
   | 'streak_updated'
+  | 'league_week_finalized'
   // System
   | 'heartbeat';
 

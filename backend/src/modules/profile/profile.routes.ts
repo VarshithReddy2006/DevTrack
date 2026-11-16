@@ -2,6 +2,8 @@
 import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
 import * as controller from './profile.controller.js';
+import * as publication from './publication.controller.js';
+import { publishProfileSchema } from './publication.schemas.js';
 import { z } from 'zod';
 
 const router = Router();
@@ -41,6 +43,9 @@ router.get('/platforms/stats', authMiddleware, asyncHandler(controller.getPlatfo
 router.get('/achievements', authMiddleware, asyncHandler(controller.getAchievements));
 router.post('/tech-stack', authMiddleware, validateBody(techStackSchema), asyncHandler(controller.addTechStack));
 router.delete('/tech-stack/:tag', authMiddleware, asyncHandler(controller.removeTechStack));
+router.get('/publication', authMiddleware, asyncHandler(publication.getPublication));
+router.put('/publication', authMiddleware, validateBody(publishProfileSchema), asyncHandler(publication.publishProfile));
+router.delete('/publication', authMiddleware, asyncHandler(publication.unpublishProfile));
 router.get('/public/:username', asyncHandler(controller.getPublicProfile as any));
 
 export default router;
