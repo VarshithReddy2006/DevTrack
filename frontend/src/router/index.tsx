@@ -13,6 +13,7 @@ import FocusPage from '../pages/FocusPage';
 
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const DsaPage = lazy(() => import('../pages/DsaPage'));
+const RevisionPage = lazy(() => import('../pages/RevisionPage'));
 const ContestsPage = lazy(() => import('../features/contests/ContestsPage'));
 const ProjectsPage = lazy(() => import('../pages/ProjectsPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
@@ -149,6 +150,16 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="DSA Workspace">
               <Suspense fallback={<PageFallback />}>
                 <DsaPage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/dsa/revision"
+          element={
+            <ErrorBoundary pageName="Revision Radar">
+              <Suspense fallback={<PageFallback />}>
+                <RevisionPage />
               </Suspense>
             </ErrorBoundary>
           }

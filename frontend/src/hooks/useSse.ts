@@ -268,21 +268,30 @@ export async function connectGlobalSse(
   emitChange();
   updateStatus('reconnecting');
 
-  let ticket: string | null = null;
+  // The server only accepts a single-use handshake ticket. A raw JWT in the query string is
+  // rejected (and would leak into logs), so if the ticket cannot be obtained we back off and
+  // retry instead of falling back to the token.
+  let ticket: string;
   try {
     const { default: axiosClient } = await import('../utils/axiosClient');
     const { data } = await axiosClient.post<{ data: { ticket: string } }>('/auth/sse-handshake');
     ticket = data.data.ticket;
   } catch {
-    console.warn('[SSE] Failed to obtain secure SSE handshake ticket, fallback to JWT.');
+    console.warn('[SSE] Failed to obtain SSE handshake ticket, will retry.');
+    globalConsecutiveFailures += 1;
+    store.consecutiveFailures = globalConsecutiveFailures;
+    if (globalConsecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      store.connectionStatus = 'disconnected';
+      emitChange();
+      updateStatus('disconnected');
+      updateDegraded(true);
+      return;
+    }
+    scheduleReconnect(false, updateStatus, updateDegraded);
+    return;
   }
 
-  const urlParams = new URLSearchParams();
-  if (ticket) {
-    urlParams.set('ticket', ticket);
-  } else if (token) {
-    urlParams.set('token', token);
-  }
+  const urlParams = new URLSearchParams({ ticket });
   
   if (store.lastEventId) {
     urlParams.set('lastEventId', store.lastEventId);

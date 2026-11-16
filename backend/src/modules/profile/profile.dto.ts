@@ -10,6 +10,8 @@ export function mapToPublicProfileDTO(profile: IPublicProfile, privacy?: Partial
   const showDsa = privacy?.showDsaProgress !== false;
   const showProjects = privacy?.showProjects !== false;
   const showActivity = privacy?.showActivity !== false;
+  // Badges are derived from the activity counters the anti-gaming audit distrusts, so hide them while flagged.
+  const underReview = profile.antiGaming?.isFlagged === true;
 
   return {
     username: profile.username,
@@ -49,7 +51,8 @@ export function mapToPublicProfileDTO(profile: IPublicProfile, privacy?: Partial
       totalPRs: snapshot.github.totalPRs,
     } : undefined,
     projects: showProjects ? snapshot.projects : [],
-    achievements: snapshot.achievements.filter(({ category }) => {
+    trust: { underReview },
+    achievements: underReview ? [] : snapshot.achievements.filter(({ category }) => {
       if (category === 'streak') return showStreak;
       if (category === 'projects') return showProjects;
       if (category === 'problems' || category === 'contest') return showDsa;
