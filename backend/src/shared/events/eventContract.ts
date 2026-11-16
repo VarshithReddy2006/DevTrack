@@ -67,6 +67,9 @@ export type DomainEventType =
   | 'dsa.problem.solved'
   | 'revision.reviewed'
   | 'contest.starting-soon'
+  | 'league.week.finalized'
+  // Public profile integrity
+  | 'profile.flagged'
   // Public portfolio publication
   | 'profile.published'
   | 'profile.unpublished';
@@ -107,6 +110,12 @@ export interface ProfilePublicationPayload {
   publicationVersion: number;
 }
 
+export interface ProfileFlaggedPayload {
+  suspicionScore: number;
+  previousSuspicionScore: number | null;
+  flags: string[];
+}
+
 export interface OrchestrationStageFailedPayload {
   stage: string;
   error: string;
@@ -132,6 +141,7 @@ export type StreakUpdatedEvent = DomainEventEnvelope<'streak.updated', StreakUpd
 export type AchievementUnlockedEvent = DomainEventEnvelope<'achievement.unlocked', AchievementUnlockedPayload>;
 export type ProfilePublishedEvent = DomainEventEnvelope<'profile.published', ProfilePublicationPayload>;
 export type ProfileUnpublishedEvent = DomainEventEnvelope<'profile.unpublished', ProfilePublicationPayload>;
+export type ProfileFlaggedEvent = DomainEventEnvelope<'profile.flagged', ProfileFlaggedPayload>;
 export type OrchestrationStageFailedEvent = DomainEventEnvelope<'orchestration.stage_failed', OrchestrationStageFailedPayload>;
 export type WorkerPoisonedEvent = DomainEventEnvelope<'worker.poisoned', WorkerPoisonedPayload>;
 

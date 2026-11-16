@@ -7,7 +7,7 @@ import { ProfileAuditLog } from '../../../db/models/profileAuditLog.model.js';
 import { PublicProfile } from '../../../db/models/publicProfile.model.js';
 import { RESERVED_SLUGS, UsernameReservation } from '../../../db/models/usernameReservation.model.js';
 import { User } from '../../../db/models/user.model.js';
-import { migratePublicProfileOptIn, rollbackPublicProfileOptIn } from '../../../db/migrations/0012-public-profile-opt-in.js';
+import { migratePublicProfileOptIn, rollbackPublicProfileOptIn } from '../../../db/migrations/0013-public-profile-opt-in.js';
 import { registerPublicProfileShell } from '../../../modules/profile/ogShell.routes.js';
 import profileRoutes from '../../../modules/profile/profile.routes.js';
 import { PublicProfileService } from '../../../modules/profile/publicProfile.service.js';

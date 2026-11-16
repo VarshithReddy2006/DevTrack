@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { migratePublicProfileOptIn, rollbackPublicProfileOptIn } from './0012-public-profile-opt-in.js';
+import { migratePublicProfileOptIn, rollbackPublicProfileOptIn } from './0013-public-profile-opt-in.js';
 
 const uri = process.env.MONGODB_URI;
 if (!uri) throw new Error('Set MONGODB_URI explicitly before running this migration');

@@ -343,6 +343,7 @@ All primary endpoints are versioned under `/api/v1` (legacy `/api/*` routes are 
 | **Evidence ledger** | `/evidence/claims` | Required | Current user's evidence, optionally filtered by `subjectType` and `verificationStatus` |
 | **Focus** | `/focus` | Required | Stopwatch sessions, Pomodoro cycle tracking, and checklists |
 | **Gamification** | `/xp`, `/streak`, `/missions` | Required | XP allocation sagas, streak updates with freeze mechanics |
+| **Weekly leagues** | `/leagues` | Required | Opt-in weekly cohorts: live Redis standings, Sunday 00:00 UTC rollover with promotion and demotion |
 | **Projects** | `/projects` | Required | Project and task CRUD operations, GitHub repository links |
 | **Platforms** | `/platforms` | Required | Third-party platform synchronizers (LeetCode, Codeforces, GitHub) |
 | **Ops (Admin)** | `/ops` | Auditor / Admin | Queue metrics, Dead Letter Queue (DLQ) inspection, and replays |
@@ -354,6 +355,12 @@ All primary endpoints are versioned under `/api/v1` (legacy `/api/*` routes are 
 With evidence writers stopped and `MONGODB_URI` explicitly set to the intended database, run `npm run migrate:evidence-ledger --prefix backend -- up` before deploying the ledger. The migration backfills legacy resume claims by document ID, preserving duplicate claim text, and creates the unique subject index.
 
 To roll back, stop the ledger-enabled app and run the same command with `down`. This removes the index and the fields added to legacy rows. Claims written by the ledger remain in MongoDB. If you also revert the application to a pre-ledger release, its resume queries can include retained platform claims because they lack subject filtering.
+
+### Weekly leagues migration
+
+Run `npm run migrate:leagues --prefix backend -- up` with `MONGODB_URI` explicitly set. It creates the `leaguestandings` indexes and writes `leagues.participate: false` onto existing user settings (leagues are opt-in). `down` drops those indexes and removes the `leagues` settings field; `LeagueStanding` rows are kept as history.
+
+Live standings are Redis sorted sets named `league:{weekKey}:{division}:{cohortId}`, scored by the `league-score` queue. The `league-rollover` repeatable job (Sunday 00:00 UTC) is scheduled by the `maintenance` worker role and the score worker runs in the `xp` role. If Redis is flushed, the next standings read rebuilds the affected cohort from the `XpTransaction` ledger.
 
 ## Security & Performance Hardening
 
