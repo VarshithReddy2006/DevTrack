@@ -47,6 +47,7 @@ import '../../db/models/mlExperiment.model.js';
 import '../../db/models/mission.model.js';
 import '../../db/models/notification.model.js';
 import '../../db/models/onboardingAnalytics.model.js';
+import '../../db/models/outboxEvent.model.js';
 import '../../db/models/platformStats.model.js';
 import '../../db/models/processedEvent.model.js';
 import '../../db/models/profileAuditLog.model.js';
