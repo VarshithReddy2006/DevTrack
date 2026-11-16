@@ -14,7 +14,7 @@ import { ResumeProfile } from '../../db/models/resumeProfile.model.js';
 import { ResumeSession } from '../../db/models/resumeSession.model.js';
 
 export class RecommendationIntelligenceService {
-  static async refreshOwnedRecommendations(userId: string, reference: string) {
+  private static async resolveOwnedResumeId(userId: string, reference: string): Promise<string> {
     const session = await ResumeSession.findOne({ userId, sessionId: reference }).select('_id');
     let ownerResourceId = session?._id;
 
@@ -28,7 +28,17 @@ export class RecommendationIntelligenceService {
       throw Object.assign(new Error('Resume not found'), { statusCode: 404 });
     }
 
-    const resumeId = String(ownerResourceId);
+    return String(ownerResourceId);
+  }
+
+  /** An owned read path must not generate, update decay, or persist recommendations. */
+  static async getActiveRecommendationsByReference(userId: string, reference: string) {
+    const resumeId = await this.resolveOwnedResumeId(userId, reference);
+    return this.getActiveRecommendations(userId, resumeId, undefined, true);
+  }
+
+  static async refreshOwnedRecommendations(userId: string, reference: string) {
+    const resumeId = await this.resolveOwnedResumeId(userId, reference);
     const currentIds = await this.generateIntelligence(userId, resumeId);
     return this.getActiveRecommendations(userId, resumeId, currentIds, true);
   }
