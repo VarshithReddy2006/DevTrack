@@ -62,6 +62,10 @@ The `readiness` role runs all six Readiness consumers. The `xp` role also runs
 streak recalculation and notifications. The Resume role includes both legacy
 feature queues and session-based upload, ATS, embedding, semantic and recommendation
 queues. Start all six roles in production with API `ENABLE_WORKERS=false`.
+Recurring work (mission generation, platform sync sweeps, cleanups) runs as BullMQ
+repeatable jobs registered by the maintenance role, not as timers inside the API, so any number of
+API replicas produce each scheduled job exactly once. Keep at least one `maintenance` worker (or an
+`all` process) running, otherwise nothing triggers the schedules.
 Shutdown allows nine seconds for startup/drain/disconnect, then exits nonzero on a
 deadline failure; unfinished work is recovered through BullMQ stalled-job handling.
 
@@ -104,8 +108,8 @@ docker compose -f docker-compose.prod.yml logs -f
 | `GITHUB_TOKEN` | No | - | Raises GitHub API rate limits |
 | `ENABLE_WORKERS` | No | - | Set `false` on API-only containers |
 | `WORKER_TYPE` | No | `all` | Worker process selector |
-| `SYNC_ENABLED` | No | `true` | Platform sync scheduler |
-| `SYNC_INTERVAL_MINUTES` | No | `15` (prod) | Sync cron interval |
+| `SYNC_ENABLED` | No | `true` | Platform sync sweep (BullMQ repeatable on the maintenance worker; `false` removes it) |
+| `SYNC_INTERVAL_MINUTES` | No | `15` (prod) | Sync sweep interval in minutes, applied by the maintenance worker at startup |
 | `CLOSED_BETA` | No | `false` | Restrict access to beta users |
 | `RATE_LIMIT_WINDOW_MS` | No | `900000` | Global rate limit window |
 | `RATE_LIMIT_MAX_REQUESTS` | No | `100` | Max requests per window |

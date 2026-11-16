@@ -12,14 +12,6 @@ import { getRedisClient, disconnectRedis, getRedisHealth } from '../redis/index.
 import { getOrCreateQueue, closeAllQueues, QueueNames } from '../jobs/index.js';
 import { startAllWorkers, stopAllWorkers } from '../jobs/workers.js';
 import {
-  startSyncScheduler,
-  stopSyncScheduler,
-} from '../syncScheduler.js';
-import {
-  startMissionScheduler,
-  stopMissionScheduler,
-} from '../scheduler/missionScheduler.js';
-import {
   setApiStatus,
   setMongoStatus,
   setRedisStatus,
@@ -167,23 +159,18 @@ async function bootWorkers(redisOk: boolean): Promise<{ platformSync: boolean; x
   }
 }
 
+// Recurring work (mission generation, platform sync sweeps, cleanups) is a set of BullMQ
+// repeatables registered by the maintenance worker, so the API process runs no timers of its own.
+// The scheduler subsystem is healthy when the queues that hold those schedules are available.
 function bootScheduler(queuesOk: boolean): boolean {
   if (!queuesOk) {
     setSchedulerStatus('degraded', 'Queues unavailable');
     logger.warn('[startup] Scheduler paused — queues not available', { event: 'scheduler_paused', reason: 'queues_unavailable' });
     return false;
   }
-  try {
-    startSyncScheduler();
-    startMissionScheduler(); // Start mission scheduler
-    setSchedulerStatus('healthy');
-    logger.info('[startup] Scheduler started (sync + missions)', { event: 'scheduler_resumed' });
-    return true;
-  } catch (err) {
-    setSchedulerStatus('failed', err instanceof Error ? err.message : String(err));
-    logger.error('[startup] Scheduler failed to start', err as Error);
-    return false;
-  }
+  setSchedulerStatus('healthy');
+  logger.info('[startup] Recurring jobs are BullMQ repeatables owned by the maintenance worker', { event: 'scheduler_resumed' });
+  return true;
 }
 
 export async function startup(app: Express): Promise<StartupResult> {
@@ -300,8 +287,6 @@ async function performShutdown(server?: Server): Promise<void> {
       server.close(error => error ? reject(error) : resolve());
     });
     try {
-      stopSyncScheduler();
-      stopMissionScheduler();
       setSchedulerStatus('stopped');
       eventBus.broadcastShutdown();
     } finally {
