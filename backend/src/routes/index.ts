@@ -16,6 +16,7 @@ import { handleSseRequest } from '../shared/sse/index.js';
 import { xpRoutes } from '../modules/xp/xp.routes.js';
 import { streakRoutes } from '../modules/streak/index.js';
 import { opsRoutes } from '../modules/ops/ops.routes.js';
+import { flagRoutes } from '../modules/flags/flags.routes.js';
 import { runtimeStateRoutes } from '../modules/runtime-state/index.js';
 import { observationRoutes } from '../modules/observation/index.js';
 import missionsRoutes from '../modules/missions/missions.routes.js';
@@ -57,8 +58,10 @@ router.use((req, res, next) => {
 // Auth routes (no auth required for login/register)
 router.use('/auth', authRoutes);
 
-// SSE endpoint — auth via ?token= query param (EventSource limitation)
-router.get('/events', handleSseRequest);
+// SSE endpoint. EventSource cannot send an Authorization header, so the handshake is a
+// single-use ticket (POST /auth/sse-handshake). The limiter runs first so a client cannot
+// open connections (and burn ticket lookups) without bound.
+router.get('/events', rateLimiters.sse, handleSseRequest);
 
 // Protected routes
 router.use('/dashboard', dashboardRoutes);
@@ -73,6 +76,7 @@ router.use('/platforms', rateLimiters.sync, syncRoutes);
 router.use('/xp', rateLimiters.xp, xpRoutes);
 router.use('/streak', rateLimiters.streak, streakRoutes);
 router.use('/ops', opsRoutes);
+router.use('/flags', flagRoutes);
 router.use('/runtime-state', runtimeStateRoutes);
 router.use('/observation', observationRoutes);
 router.use('/missions', missionsRoutes);
