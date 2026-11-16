@@ -88,7 +88,17 @@ export class ContestRefreshService {
         );
       }
 
-      // Populate Redis Cache
+      // Prune obsolete scheduled contests for this platform that are no longer returned upstream
+      const activeExternalIds = fetched
+        .map((c) => c.externalId)
+        .filter((id): id is string => Boolean(id));
+
+      await DsaContest.deleteMany({
+        platform,
+        kind: 'scheduled',
+        endTime: { $gte: now },
+        externalId: { $nin: activeExternalIds },
+      });
       if (redis && redis.status === 'ready') {
         try {
           await redis.set(cacheKey, JSON.stringify(fetched), 'EX', CONTEST_CACHE_TTL_SECONDS);
