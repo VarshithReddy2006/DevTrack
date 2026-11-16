@@ -31,6 +31,10 @@ vi.mock('../../middleware/auth.js', () => ({
   }],
 }));
 
+vi.mock('../../middleware/rateLimitAdvanced.js', () => ({
+  rateLimiters: { expensiveAction: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next() },
+}));
+
 let server: Server;
 let base: string;
 
@@ -95,6 +99,7 @@ describe('recommendation authorization', () => {
   it('requires sign-in for the report and intelligence routes', async () => {
     expect((await request('/recommendations/report')).status).toBe(401);
     expect((await request('/recommendations/intelligence/sample-resume')).status).toBe(401);
+    expect((await request('/recommendations/intelligence/sample-resume/refresh', undefined, undefined, 'POST')).status).toBe(401);
     expect((await request('/recommendations/report', 'ada')).status).toBe(200);
   });
 
@@ -115,25 +120,53 @@ describe('recommendation authorization', () => {
     });
 
     for (const reference of [String(profile._id), 'sample-resume', String(sessionId)]) {
-      const owned = await request('/recommendations/intelligence/' + reference, 'ada');
+      const owned = await request('/recommendations/intelligence/' + reference + '/refresh', 'ada', undefined, 'POST');
       expect(owned.status).toBe(200);
       const rows = (await owned.json()).data;
       expect(rows.length).toBeGreaterThan(0);
       expect(rows.every((row: { userId: string }) => row.userId === accounts.ada)).toBe(true);
+      const read = await request('/recommendations/intelligence/' + reference, 'ada');
+      expect(read.status).toBe(200);
+      expect((await read.json()).data).toHaveLength(rows.length);
     }
 
     const unavailable = await request('/recommendations/intelligence/missing-resume', 'lin');
     expect(unavailable.status).toBe(404);
+    expect((await request('/recommendations/intelligence/' + profile._id, 'lin')).status).toBe(404);
+    expect((await request('/recommendations/intelligence/' + profile._id + '/refresh', 'lin', undefined, 'POST')).status).toBe(404);
     expect(await IntelligenceRecommendation.findById(foreignRow._id).lean()).toMatchObject({
       title: 'Other account fixture',
       state: 'active',
     });
   });
 
+  it('reads saved findings repeatedly without generating or changing MongoDB documents', async () => {
+    const profile = await ResumeProfile.create({ userId: accounts.ada });
+    await IntelligenceRecommendation.create({
+      userId: accounts.ada, resumeProfileId: profile._id,
+      category: 'ats', title: 'Saved finding', content: 'Existing analysis',
+    });
+    const path = '/recommendations/intelligence/' + profile._id;
+    const before = await IntelligenceRecommendation.find({ resumeProfileId: profile._id }).lean();
+    const generate = vi.spyOn(RecommendationIntelligenceService, 'generateIntelligence');
+
+    try {
+      const first = await request(path, 'ada');
+      const second = await request(path, 'ada');
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect((await first.json()).data).toEqual((await second.json()).data);
+      expect(generate).not.toHaveBeenCalled();
+      expect(await IntelligenceRecommendation.find({ resumeProfileId: profile._id }).lean()).toEqual(before);
+    } finally {
+      generate.mockRestore();
+    }
+  });
+
   it('persists user actions across refreshes and rejects foreign or invalid transitions', async () => {
     const profile = await ResumeProfile.create({ userId: accounts.ada });
     const listPath = '/recommendations/intelligence/' + profile._id;
-    const first = await request(listPath, 'ada');
+    const first = await request(listPath + '/refresh', 'ada', undefined, 'POST');
     const [{ id }] = (await first.json()).data;
     expect(id).toMatch(/^[a-f0-9]{24}$/);
     const action = (name: string, account?: keyof typeof accounts) =>
@@ -173,7 +206,10 @@ describe('recommendation authorization', () => {
   it('keeps one lifecycle per finding under concurrent refreshes and preserves dismissals', async () => {
     const profile = await ResumeProfile.create({ userId: accounts.ada });
     const path = '/recommendations/intelligence/' + profile._id;
-    const responses = await Promise.all([request(path, 'ada'), request(path, 'ada')]);
+    const responses = await Promise.all([
+      request(path + '/refresh', 'ada', undefined, 'POST'),
+      request(path + '/refresh', 'ada', undefined, 'POST'),
+    ]);
     expect(responses.map(response => response.status)).toEqual([200, 200]);
     const [first, second] = await Promise.all(responses.map(response => response.json()));
     expect(first.data.map((row: { id: string }) => row.id).sort())
@@ -198,7 +234,7 @@ describe('recommendation authorization', () => {
       title: 'Old finding', content: 'Evidence that no longer exists.',
     });
 
-    const response = await request('/recommendations/intelligence/' + profile._id, 'ada');
+    const response = await request('/recommendations/intelligence/' + profile._id + '/refresh', 'ada', undefined, 'POST');
     const rows = (await response.json()).data;
     expect(response.status).toBe(200);
     expect(rows).not.toContainEqual(expect.objectContaining({ id: String(previous._id) }));

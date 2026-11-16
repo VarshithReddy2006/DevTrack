@@ -2,7 +2,7 @@ import { Types } from 'mongoose';
 import { ProviderHealthRegistry } from '../provider/ProviderHealthRegistry.js';
 import { IntelligentRecommendationEngine } from '../recommendation/IntelligentRecommendationEngine.js';
 import { ConnectedPlatform } from '../../../db/models/connectedPlatform.model.js';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { logger } from '../../../shared/logger.js';
 
 export interface TrustAwareInput {
@@ -164,7 +164,7 @@ class TrustAwareGuidanceLayerClass {
     
     const [claimCounts, platforms] = await Promise.all([
       ResumeEvidenceClaim.aggregate<{ total: number; verified: number }>([
-        { $match: { userId: new Types.ObjectId(userId) } },
+        { $match: { userId: new Types.ObjectId(userId), ...resumeClaimScope } },
         {
           $group: {
             _id: null,

@@ -207,25 +207,25 @@ Rollback: Vercel Dashboard - Deployments - select last working build - Promote t
 ### 2. Backend API Service
 
 1. Name: `devtrack-api`
-2. Root directory: `backend/`
-3. Build command: `npm run build`
-4. Start command: `node dist/index.js`
+2. Root directory: leave blank to use the repository root. The backend imports the ATS workspace from `packages/ats-core`.
+3. Build command: `npm ci --prefix backend --include=dev && npm run build --prefix backend`
+4. Start command: `cd backend && node dist/index.js`
 5. Environment: `Node`
 6. Set `ENABLE_WORKERS=false`
 
 ### 3. Worker Services
 
-Create one Render service per worker type:
+Create one Render service per worker type. Use the same repository root and build command as the API.
 
 
 | Service Name | `WORKER_TYPE` | Start Command |
 |---------------|---------------|---------------|
-| `devtrack-sync` | `sync` | `node dist/worker-entrypoint.js` |
-| `devtrack-readiness` | `readiness` | `node dist/worker-entrypoint.js` |
-| `devtrack-xp` | `xp` | `node dist/worker-entrypoint.js` |
-| `devtrack-resume` | `resume-intelligence` | `node dist/worker-entrypoint.js` |
-| `devtrack-dataset` | `dataset` | `node dist/worker-entrypoint.js` |
-| `devtrack-maint` | `maintenance` | `node dist/worker-entrypoint.js` |
+| `devtrack-sync` | `sync` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-readiness` | `readiness` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-xp` | `xp` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-resume` | `resume-intelligence` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-dataset` | `dataset` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-maint` | `maintenance` | `cd backend && node dist/worker-entrypoint.js` |
 
 ### 4. Required Environment Variables (Render Dashboard)
 

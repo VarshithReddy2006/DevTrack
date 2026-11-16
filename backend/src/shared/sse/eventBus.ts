@@ -218,6 +218,12 @@ export type SseEventType =
   | 'badge_earned'
   // Resume progression
   | 'resume_progression'
+  // v2 Milestone SSE events
+  | 'focus_session_completed'
+  | 'dsa_problem_solved'
+  | 'contest_starting_soon'
+  | 'revision_reviewed'
+  | 'streak_updated'
   // System
   | 'heartbeat';
 
@@ -273,6 +279,7 @@ const encoder = new TextEncoder();
 // ---------------------------------------------------------------------------
 
 class EventBus extends EventEmitter {
+  private draining = false;
   private clients = new Map<string, SseClient>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private readonly HEARTBEAT_INTERVAL_MS = 25_000;
@@ -321,6 +328,7 @@ class EventBus extends EventEmitter {
 
       // Persistent subscriber
       const subscriber = createRedisConnection(connectionOptions) as any;
+      this.redisSubscriber = subscriber;
       let isSubscribed = false;
       let subscriptionPromise: Promise<void> | null = null;
 
@@ -394,10 +402,11 @@ class EventBus extends EventEmitter {
           // Warning logged with context inside ensureSubscribed
         });
       }
-      this.redisSubscriber = subscriber as any;
+      if (this.draining) return;
 
       // Shared singleton publisher
       const publisher = createRedisConnection(connectionOptions) as any;
+      this.redisPublisher = publisher;
       (publisher as any).on('error', (err: Error) => {
         logger.error('[sse-redis] Publisher error', err);
       });
@@ -407,7 +416,7 @@ class EventBus extends EventEmitter {
       await (publisher as any).connect().catch((err: unknown) => {
         logger.warn('[sse-redis] Publisher connect failed', { error: err instanceof Error ? err.message : String(err) });
       });
-      this.redisPublisher = publisher as any;
+      if (this.draining) return;
 
       logger.info('[sse] Redis PubSub & Publisher singletons initialized', { channel: SSE_CHANNEL });
     } catch (err) {
@@ -469,6 +478,7 @@ class EventBus extends EventEmitter {
   // ---------------------------------------------------------------------------
 
   register(client: SseClient): void {
+    if (this.draining) throw new Error('Server is shutting down');
     if (this.clients.size >= this.MAX_CLIENTS) {
       logger.warn('[sse] Max clients reached, rejecting connection', {
         currentClients: this.clients.size,
@@ -1010,6 +1020,21 @@ class EventBus extends EventEmitter {
   emitRuntimeStateUpdated(userId: string, state: Record<string, unknown>): void {
     // Use new patch method
     void this.emitRuntimeStatePatch(userId, state);
+  }
+
+  broadcastShutdown(): void {
+    this.draining = true;
+    for (const client of this.clients.values()) {
+      const reconnectDelayMs = 2000 + Math.floor(Math.random() * 3001);
+      const data = JSON.stringify({ reconnectDelayMs });
+      try {
+        client.controller.enqueue(encoder.encode(`event: server_shutdown\nretry: ${reconnectDelayMs}\ndata: ${data}\n\n`));
+        client.controller.close();
+      } catch {
+        // The response may already have disconnected.
+      }
+      this.unregister(client.id);
+    }
   }
 
   shutdown(): void {

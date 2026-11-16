@@ -95,6 +95,28 @@ describe('EventBus Resilience & Degraded Mode (No Redis)', () => {
     return { client, enqueuedChunks };
   }
 
+  it('notifies each local SSE client before closing its stream', () => {
+    const bus = new EventBus();
+    const clients = ['first', 'second'].map(id => createMockClient(id, id));
+    for (const { client } of clients) bus.register(client);
+
+    bus.broadcastShutdown();
+
+    for (const { client, enqueuedChunks } of clients) {
+      expect(enqueuedChunks).toHaveLength(1);
+      const frame = enqueuedChunks[0];
+      const delay = Number(frame.match(/^retry: (\d+)$/m)?.[1]);
+      expect(delay).toBeGreaterThanOrEqual(2000);
+      expect(delay).toBeLessThanOrEqual(5000);
+      expect(frame).toContain('event: server_shutdown');
+      expect(frame).toContain(JSON.stringify({ reconnectDelayMs: delay }));
+      expect(client.controller.enqueue).toHaveBeenCalledBefore(vi.mocked(client.controller.close));
+    }
+    expect(bus.getMetrics().activeConnections).toBe(0);
+    expect(() => bus.register(createMockClient('late', 'late').client)).toThrow('shutting down');
+    bus.shutdown();
+  });
+
   it('skips Redis PubSub and does not instantiate ioredis when REDIS_URL is absent', () => {
     delete process.env.REDIS_URL;
 

@@ -2,7 +2,7 @@
 import type { Types } from 'mongoose';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeVariant, type RoleType } from '../../../db/models/resumeVariant.model.js';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
 import { ResumeExport } from '../../../db/models/resumeExport.model.js';
 import { ResumeVersion } from '../../../db/models/resumeVersion.model.js';
@@ -191,7 +191,7 @@ export class ResumeIntelligenceService {
    * Get evidence claims
    */
   async getEvidenceClaims(userId: Types.ObjectId): Promise<typeof ResumeEvidenceClaim.prototype[]> {
-    return await ResumeEvidenceClaim.find({ userId }).sort({ createdAt: -1 });
+    return await ResumeEvidenceClaim.find({ userId, ...resumeClaimScope }).sort({ createdAt: -1 });
   }
 
   /**

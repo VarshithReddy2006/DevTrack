@@ -85,6 +85,20 @@ graph TD
 | **Real-time WebChannels** | Server-Sent Events (SSE) singleton channels backed by Redis pub/sub for real-time dashboard state updates and live toasts. | `backend/src/shared/sse` |
 | **Operations & Observability** | BullMQ queue metrics, Dead Letter Queue (DLQ) inspection and replay, health probes, and beta observability telemetry. | `backend/src/modules/ops` |
 
+### Recommendation intelligence API
+
+Authenticated `GET /api/v1/recommendations/intelligence/:resumeReference` reads saved
+active, accepted, and completed findings without regenerating them. An owned
+resume with no saved findings returns an empty array. The resume reference may
+be an owned session ID or owned resume profile/session document ID; unknown or
+other users' references return `404`.
+
+`POST /api/v1/recommendations/intelligence/:resumeReference/refresh` explicitly
+regenerates and saves findings. A Redis sliding window allows five refreshes
+per hour per user across their resumes; excess requests return `429` and a
+`Retry-After` header. The resume tracker exposes this action as **Refresh
+insights**. Its normal page load uses the read route.
+
 ---
 
 ## System Architecture
@@ -326,6 +340,7 @@ All primary endpoints are versioned under `/api/v1` (legacy `/api/*` routes are 
 | **DSA** | `/dsa` | Required | Solved problem index, platform scrapers, and contest tracking |
 | **Readiness** | `/readiness` | Required | Diagnostic benchmarks, role gap analysis, and roadmap trees |
 | **Resume** | `/resume` | Required | Multi-format parsing, ATS scoring, and GitHub claim audit |
+| **Evidence ledger** | `/evidence/claims` | Required | Current user's evidence, optionally filtered by `subjectType` and `verificationStatus` |
 | **Focus** | `/focus` | Required | Stopwatch sessions, Pomodoro cycle tracking, and checklists |
 | **Gamification** | `/xp`, `/streak`, `/missions` | Required | XP allocation sagas, streak updates with freeze mechanics |
 | **Projects** | `/projects` | Required | Project and task CRUD operations, GitHub repository links |
@@ -333,6 +348,12 @@ All primary endpoints are versioned under `/api/v1` (legacy `/api/*` routes are 
 | **Ops (Admin)** | `/ops` | Auditor / Admin | Queue metrics, Dead Letter Queue (DLQ) inspection, and replays |
 
 ---
+
+### Evidence ledger migration
+
+With evidence writers stopped and `MONGODB_URI` explicitly set to the intended database, run `npm run migrate:evidence-ledger --prefix backend -- up` before deploying the ledger. The migration backfills legacy resume claims by document ID, preserving duplicate claim text, and creates the unique subject index.
+
+To roll back, stop the ledger-enabled app and run the same command with `down`. This removes the index and the fields added to legacy rows. Claims written by the ledger remain in MongoDB. If you also revert the application to a pre-ledger release, its resume queries can include retained platform claims because they lack subject filtering.
 
 ## Security & Performance Hardening
 

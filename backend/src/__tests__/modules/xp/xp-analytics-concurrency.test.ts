@@ -21,14 +21,14 @@ describe('XP Post-Commit Analytics Consistency — Issue #175', () => {
     // Award 1: 50 XP
     const event1 = {
       userId,
-      sourceType: 'focus_session' as const,
+      sourceType: 'challenge_completed' as const,
       sourceId: 'session-1',
       metadata: { xpReward: 50 },
     };
     // Award 2: 50 XP
     const event2 = {
       userId,
-      sourceType: 'focus_session' as const,
+      sourceType: 'challenge_completed' as const,
       sourceId: 'session-2',
       metadata: { xpReward: 50 },
     };
@@ -69,7 +69,7 @@ describe('XP Post-Commit Analytics Consistency — Issue #175', () => {
   it('repairs missing UserAnalytics upon idempotent replay after post-commit analytics failure', async () => {
     const event = {
       userId,
-      sourceType: 'focus_session' as const,
+      sourceType: 'challenge_completed' as const,
       sourceId: 'failed-analytics-session',
       metadata: { xpReward: 50 },
     };

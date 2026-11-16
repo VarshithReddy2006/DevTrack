@@ -1,4 +1,5 @@
-import { PublicProfile } from '../../db/models/publicProfile.model.js';
+import { UserSettings, type IUserSettings } from '../../db/models/userSettings.model.js';
+import { PublicProfile, type IPublicProfile } from '../../db/models/publicProfile.model.js';
 import { User } from '../../db/models/user.model.js';
 import { PlatformStats } from '../../db/models/platformStats.model.js';
 import { ActivityEvent } from '../../db/models/activityEvent.model.js';
@@ -22,7 +23,33 @@ function numericStat(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+export function canViewPublicProfile(
+  profile: Pick<IPublicProfile, 'visibility'>,
+  privacy?: Partial<IUserSettings['privacy']>,
+): boolean {
+  return profile.visibility === 'public'
+    && (!privacy?.profileVisibility || privacy.profileVisibility === 'public');
+}
+
 export class PublicProfileService {
+  /** Read only explicitly public snapshot metadata. Crawlers do not count as profile views. */
+  static async getPublishedPreview(slug: string) {
+    const profile = await PublicProfile.findOne({ slug, visibility: 'public' })
+      .select('userId username visibility isIndexable snapshot.identity.displayName seo.ogDescription seo.ogImageUrl')
+      .lean();
+    if (!profile) return null;
+
+    const settings = await UserSettings.findOne({ userId: profile.userId }).select('privacy.profileVisibility').lean();
+    if (!canViewPublicProfile(profile, settings?.privacy)) return null;
+
+    return {
+      displayName: profile.snapshot?.identity?.displayName || profile.username,
+      description: profile.seo?.ogDescription || 'View this verified engineering portfolio on DevTrack.',
+      imageUrl: profile.seo?.ogImageUrl,
+      isIndexable: profile.isIndexable !== false,
+    };
+  }
+
   /**
    * Recompute the public profile snapshot for a user based on verified signals.
    */

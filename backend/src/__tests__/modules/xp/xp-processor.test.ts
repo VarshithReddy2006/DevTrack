@@ -413,7 +413,7 @@ describe('XP Processor — persisted weekly analytics', () => {
 
   it('uses award deltas for supported non-DSA sources including a zero-XP event', async () => {
     const sources = [
-      ['focus_session', 50], ['sync_completed', 5], ['daily_streak', 15],
+      ['sync_completed', 5], ['daily_streak', 15],
       ['dsa_contest', 40], ['challenge_completed', 35], ['manual', 0],
     ] as const;
     for (const [sourceType, award] of sources) {
@@ -421,7 +421,7 @@ describe('XP Processor — persisted weekly analytics', () => {
       expect(result.xpAwarded).toBe(award);
     }
     const analytics = await expectTotals(userId, sources.map(([, award]) => award));
-    expect(analytics.weeklyXPHistory[0].xp).toBe(145);
+    expect(analytics.weeklyXPHistory[0].xp).toBe(95);
     expect(analytics.dsaSolveCount).toBe(0);
   });
 

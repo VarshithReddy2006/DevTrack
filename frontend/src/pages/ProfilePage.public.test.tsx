@@ -76,9 +76,9 @@ describe('public profile route /u/:username', () => {
     );
   }
 
-  it('renders for a signed-out visitor without redirecting to /login', async () => {
-    renderAt('/u/someone');
-    expect(await screen.findByText('Verified Proof-of-Work')).toBeTruthy();
+  it.each(['/u/someone', '/portfolio/someone'])('renders %s for a signed-out visitor', async path => {
+    renderAt(path);
+    expect(await screen.findByText('Verified Proof-of-Work', {}, { timeout: 5000 })).toBeTruthy();
     expect(await screen.findByText('Some One')).toBeTruthy();
     expect(screen.queryByText('Login')).toBeNull();
   });

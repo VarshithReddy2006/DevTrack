@@ -1,11 +1,11 @@
 // src/shared/runtime/orchestrator.ts — Boot orchestrator (entry point for index.ts)
 // Wires multi-phase startup + graceful shutdown into a single callable.
 
+import type { Server } from 'node:http';
 import type { Express } from 'express';
 import mongoose from 'mongoose';
-import { connectDatabase, sanitizeMongoError, scheduleMongoReconnect } from '../../db/connection.js';
+import { connectDatabase, disconnectDatabase, sanitizeMongoError, scheduleMongoReconnect } from '../../db/connection.js';
 import { setupProductionIndexes } from '../../db/migrations/index-setup.js';
-import { env } from '../../config/env.js';
 import { logger } from '../logger.js';
 import { eventBus } from '../sse/index.js';
 import { getRedisClient, disconnectRedis, getRedisHealth } from '../redis/index.js';
@@ -58,6 +58,7 @@ export interface StartupResult {
 async function bootMongo(retries = 3, retryDelayMs = 2000): Promise<boolean> {
   setMongoStatus('initializing');
   for (let attempt = 1; attempt <= retries; attempt++) {
+    assertStarting();
     try {
       logger.info(`[startup] MongoDB connection attempt ${attempt}/${retries}...`);
       await connectDatabase();
@@ -79,6 +80,7 @@ async function bootMongo(retries = 3, retryDelayMs = 2000): Promise<boolean> {
       logger.info('[startup] MongoDB connected and ready', { event: 'mongodb_connected', readyState: mongoose.connection.readyState });
       return true;
     } catch (err) {
+      assertStarting();
       const msg = err instanceof Error ? err.message : String(err);
       const safeMsg = typeof sanitizeMongoError === 'function' ? sanitizeMongoError(msg) : msg;
       logger.error(`[startup] MongoDB connection attempt ${attempt}/${retries} failed: ${safeMsg}`);
@@ -233,40 +235,121 @@ export async function startup(app: Express): Promise<StartupResult> {
 // Shutdown
 // ---------------------------------------------------------------------------
 
-export function shutdown(): Promise<void> {
+export function shutdown(server?: Server): Promise<void> {
   shutdownRequested = true;
-  shutdownPromise ??= performShutdown();
+  shutdownPromise ??= performShutdown(server);
   return shutdownPromise;
 }
 
-async function performShutdown(): Promise<void> {
+export function registerShutdownSignals(server: Server, afterShutdown?: () => Promise<void>): void {
+  const handleSignal = () => {
+    if (shutdownRequested) return;
+
+    // The individual phase budgets total 14 seconds.
+    const watchdog = setTimeout(() => {
+      logger.error('[shutdown] Forced shutdown after timeout');
+      process.exit(1);
+    }, 15_000);
+
+    void shutdown(server).then(() => afterShutdown?.()).then(
+      () => {
+        clearTimeout(watchdog);
+        process.exit(0);
+      },
+      (error: unknown) => {
+        clearTimeout(watchdog);
+        logger.error('[shutdown] Shutdown failed', error);
+        process.exit(1);
+      },
+    );
+  };
+
+  process.on('SIGTERM', handleSignal);
+  process.on('SIGINT', handleSignal);
+}
+
+async function performShutdown(server?: Server): Promise<void> {
+  const startedAt = Date.now();
+  const failures: string[] = [];
+  let firstError: unknown;
   logger.info('[shutdown] Initiating graceful shutdown');
 
-  stopSyncScheduler();
-  stopMissionScheduler(); // Stop mission scheduler
-  setSchedulerStatus('stopped');
-
-  let workerError: unknown;
-  try { await stopAllWorkers(); } catch (error) { workerError = error; }
-  setPlatformSyncWorkerStatus('stopped');
-  setXpWorkerStatus('stopped');
-
-  await closeAllQueues();
-  setQueuesStatus('stopped');
-
-  try {
-    const { unifiedRuntimeStateService } = await import('../../modules/runtime-state/unifiedRuntimeState.service.js');
-    await unifiedRuntimeStateService.flushPendingEvents();
-  } catch (error) { workerError ??= error; }
-  await disconnectRedis();
-  setRedisStatus('stopped');
-
-  eventBus.shutdown?.();
-  setSseStatus('stopped');
+  async function runPhase(name: string, timeoutMs: number, task: () => void | Promise<void>): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve().then(task),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${name} timed out after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+      return true;
+    } catch (error) {
+      if (failures.length === 0) firstError = error;
+      failures.push(name);
+      logger.error(`[shutdown] ${name} failed`, error);
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   setApiStatus('stopped');
-  if (workerError) throw workerError;
-  logger.info('[shutdown] Graceful shutdown complete', { event: 'shutdown_complete' });
+  const trafficDrained = await runPhase('HTTP and SSE drain', 2_000, async () => {
+    const httpClosed = server && new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    });
+    try {
+      stopSyncScheduler();
+      stopMissionScheduler();
+      setSchedulerStatus('stopped');
+      eventBus.broadcastShutdown();
+    } finally {
+      await httpClosed;
+    }
+    setSseStatus('stopped');
+  });
+  if (!trafficDrained) server?.closeAllConnections();
+
+  // Worker.close() stops local consumption and drains active jobs. A global
+  // Queue.pause() would also stop healthy workers in other replicas.
+  if (await runPhase('BullMQ worker drain', 5_000, () => stopAllWorkers(5_000))) {
+    setPlatformSyncWorkerStatus('stopped');
+    setXpWorkerStatus('stopped');
+  }
+  if (await runPhase('BullMQ queue close', 1_000, closeAllQueues)) {
+    setQueuesStatus('stopped');
+  }
+
+  await runPhase('Runtime state and audit flush', 3_000, async () => {
+    const results = await Promise.allSettled([
+      import('../../modules/runtime-state/unifiedRuntimeState.service.js')
+        .then(({ unifiedRuntimeStateService }) => unifiedRuntimeStateService.flushPendingEvents()),
+      import('../../modules/ai/audit/AIResponseAuditLog.js')
+        .then(({ AIResponseAuditLog }) => AIResponseAuditLog.flushPendingWrites()),
+    ]);
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Pending writes failed to flush');
+  });
+
+  await runPhase('Redis teardown', 1_000, async () => {
+    try {
+      eventBus.shutdown();
+    } finally {
+      await disconnectRedis();
+    }
+    setRedisStatus('stopped');
+  });
+  await runPhase('MongoDB teardown', 2_000, disconnectDatabase);
+
+  setApiStatus('stopped');
+  const metrics = { durationMs: Date.now() - startedAt, failedPhases: failures };
+  if (failures.length) {
+    logger.warn('[shutdown] Graceful shutdown finished with errors', metrics);
+    throw firstError;
+  }
+  logger.info('[shutdown] Graceful shutdown complete', { event: 'shutdown_complete', ...metrics });
 }
 
 // ---------------------------------------------------------------------------

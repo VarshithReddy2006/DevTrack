@@ -4,7 +4,7 @@ import { ReadinessCore } from '../../../db/models/readinessCore.model.js';
 import { ReadinessDsa } from '../../../db/models/readinessDsa.model.js';
 import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js';
 import { ResumeCredibility } from '../../../db/models/resumeCredibility.model.js';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { ResumeSession } from '../../../db/models/resumeSession.model.js';
 import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
 import { EmbeddingProviderAdapter } from '../../ai/embedding/EmbeddingProviderAdapter.js';
@@ -79,7 +79,7 @@ export class ResumeMLService {
       ReadinessCore.findOne({ userId: ownerKey }).select('overallScore targetRoleAlignment isDegraded').lean(),
       ReadinessDsa.findOne({ userId: ownerKey }).select('weakTopics neglectedTopics').lean(),
       ReadinessProjects.findOne({ userId: ownerKey }).select('evidenceCoverage deploymentEvidence').lean(),
-      ResumeEvidenceClaim.exists({ userId: owner, verificationStatus: { $in: ['partial', 'unverified', 'flagged'] } }),
+      ResumeEvidenceClaim.exists({ userId: owner, ...resumeClaimScope, verificationStatus: { $in: ['partial', 'unverified', 'flagged'] } }),
       VerifiedProject.findOne({ userId: owner, 'verification.status': 'verified' })
         .sort({ updatedAt: -1, _id: -1 }).select('name').lean(),
       ResumeSession.findOne({ userId: owner, 'timestamps.completedAt': { $ne: null } })

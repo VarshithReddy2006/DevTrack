@@ -9,6 +9,8 @@ export const ImprovementCenterSection: React.FC = () => {
   const { currentSession } = useSessionState();
   const [recommendations, setRecommendations] = useState<IIntelligenceRecommendation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -39,6 +41,20 @@ export const ImprovementCenterSection: React.FC = () => {
 
     fetchIntelligence();
   }, [currentSession?.sessionId, isPending, isProcessing]);
+
+  const refreshIntelligence = async () => {
+    if (!currentSession?.sessionId) return;
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      const res = await api.post(`/recommendations/intelligence/${currentSession.sessionId}/refresh`);
+      if (res.data?.success) setRecommendations(res.data.data);
+    } catch {
+      setRefreshError('Could not refresh insights. Please try again later.');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const updateRecommendation = async (id: string, action: 'accept' | 'complete' | 'dismiss') => {
     setPendingAction(id);
@@ -107,6 +123,15 @@ export const ImprovementCenterSection: React.FC = () => {
   return (
     <motion.div variants={stagger} initial="hidden" animate="show" className="flex flex-col gap-5">
 
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-section-label">Recommendation intelligence</p>
+        <button type="button" onClick={() => void refreshIntelligence()} disabled={isRefreshing}
+          className="rounded-lg border border-dt-primary/20 px-3 py-1.5 text-xs font-semibold text-dt-primary disabled:opacity-50">
+          {isRefreshing ? 'Refreshing...' : 'Refresh insights'}
+        </button>
+      </div>
+      {refreshError && <p role="alert" className="text-xs text-rose-600">{refreshError}</p>}
+
       {/* Summary bar */}
       {recommendations.length > 0 && (
         <Card className="!p-4">
@@ -167,9 +192,9 @@ export const ImprovementCenterSection: React.FC = () => {
       ) : (
         <Card className="flex flex-col items-center gap-3 !py-10">
           <CheckCircle className="w-10 h-10 text-emerald-500" />
-          <p className="text-[14px] font-semibold text-dt-text">No Actionable Gaps Detected</p>
+          <p className="text-[14px] font-semibold text-dt-text">No saved recommendations yet</p>
           <p className="text-[13px] text-dt-textMuted font-medium text-center max-w-md">
-            Your profile meets structural and semantic engineering standards.
+            Use Refresh insights to generate a new analysis.
           </p>
         </Card>
       )}

@@ -17,7 +17,7 @@ export interface RealtimeEventJobData {
 }
 
 export interface SystemMaintenanceJobData {
-  task: 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions';
+  task: 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions' | 'check_contest_starting_soon';
   requestId?: string;
 }
 
@@ -111,6 +111,7 @@ export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMainten
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
+  CONTEST_REFRESH: 'contest-refresh',
   SYSTEM_MAINTENANCE: 'system-maintenance',
   XP_PROCESSING: 'xp-processing',
   STREAK_RECALC: 'streak-recalc',

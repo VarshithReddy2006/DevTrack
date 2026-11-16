@@ -23,6 +23,7 @@ export interface IUserSettings extends Document {
     streakReminder: boolean;
     missionAlerts: boolean;
     projectUpdates: boolean;
+    contestAlerts: boolean;
   };
   appearance: {
     theme: 'light' | 'dark' | 'system';
@@ -73,6 +74,7 @@ const userSettingsSchema = new Schema<IUserSettings>(
       streakReminder: { type: Boolean, default: true },
       missionAlerts: { type: Boolean, default: true },
       projectUpdates: { type: Boolean, default: true },
+      contestAlerts: { type: Boolean, default: true },
     },
     appearance: {
       theme: { type: String, enum: ['light', 'dark', 'system'], default: 'system' },
