@@ -11,7 +11,7 @@ import { XpTransaction } from '../../db/models/xpTransaction.model.js';
 import { VerifiedProject } from '../../db/models/verifiedProject.model.js';
 import { UserXp } from '../../db/models/userXp.model.js';
 import { ProfileView } from '../../db/models/profileView.model.js';
-import { VerificationEngine } from './verification.engine.js';
+import { SUSPICION_FLAG_THRESHOLD, VerificationEngine } from './verification.engine.js';
 import mongoose from 'mongoose';
 import { calculateStreaks, formatISODate, getStartOfDay, getStartOfYear, subtractDays } from '../../shared/date.js';
 import { getAchievements } from '../dashboard/dashboard.service.js';
@@ -218,7 +218,7 @@ export class PublicProfileService {
       snapshot: computedSnapshot,
       'antiGaming.suspicionScore': verificationScore.suspicionScore,
       'antiGaming.flags': verificationScore.flags,
-      'antiGaming.isFlagged': verificationScore.suspicionScore > 70,
+      'antiGaming.isFlagged': verificationScore.suspicionScore > SUSPICION_FLAG_THRESHOLD,
       seo: {
         ogTitle: `${user.username} | Verified Engineering Profile`,
         ogDescription: `View ${user.username}'s verified engineering metrics, projects, and proof of work on DevTrack.`,
