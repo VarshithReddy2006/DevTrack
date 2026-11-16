@@ -21,6 +21,7 @@
     "build": "tsc -p tsconfig.json && node fix-esm-imports.mjs",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "migrate:evidence-ledger": "tsx src/db/migrations/run-evidence-ledger.ts",
     "migrate:daily-challenge-tiers": "tsx src/db/migrations/run-daily-challenge-tiers.ts",
     "test:safety": "vitest run -c vitest.safety.config.ts",
     "test:unit": "npm run test:safety && vitest run",
