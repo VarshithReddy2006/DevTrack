@@ -23,7 +23,7 @@ vi.mock('../../lib/queryClient', () => ({
 // ---------------------------------------------------------------------------
 // EventSource test double (jsdom does not implement EventSource)
 // ---------------------------------------------------------------------------
-class MockEventSource {
+class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = [];
 
   url: string;
@@ -33,6 +33,7 @@ class MockEventSource {
   onerror: ((ev: Event) => void) | null = null;
 
   constructor(url: string) {
+    super();
     this.url = url;
     MockEventSource.instances.push(this);
   }
@@ -127,6 +128,20 @@ describe('computeBackoffDelay', () => {
 });
 
 describe('reconnection backoff', () => {
+  it('uses the server shutdown delay before requesting a fresh ticket', async () => {
+    await connect();
+    const source = latest();
+    source.dispatchEvent(new MessageEvent('server_shutdown', {
+      data: JSON.stringify({ reconnectDelayMs: 3500 }),
+    }));
+    source.fail();
+    expect(source.closed).toBe(true);
+    await advance(3499);
+    expect(getSSEHandshakeTicket).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(getSSEHandshakeTicket).toHaveBeenCalledTimes(2);
+  });
+
   it('waits a jittered exponential delay between consecutive failures', async () => {
     await connect();
     expect(MockEventSource.instances).toHaveLength(1);

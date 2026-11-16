@@ -101,7 +101,25 @@ type AuditLogInput = Omit<AuditLogEntry, 'logId' | 'timestamp' | 'prompt' | 'sys
   & Partial<Pick<AuditLogEntry, 'prompt' | 'systemPrompt' | 'response'>>;
 
 export class AIResponseAuditLogClass {
+  private readonly pendingWrites = new Set<Promise<AuditLogEntry | undefined>>();
+
   async log(entry: AuditLogInput): Promise<AuditLogEntry | undefined> {
+    const write = this.persist(entry);
+    this.pendingWrites.add(write);
+    try {
+      return await write;
+    } finally {
+      this.pendingWrites.delete(write);
+    }
+  }
+
+  async flushPendingWrites(): Promise<void> {
+    while (this.pendingWrites.size) {
+      await Promise.all(this.pendingWrites);
+    }
+  }
+
+  private async persist(entry: AuditLogInput): Promise<AuditLogEntry | undefined> {
     try {
       // Persist metadata only. Prompts, generated text and provider errors can contain user data.
       const record = await AuditLogModel.create({
