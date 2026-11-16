@@ -63,6 +63,10 @@ The `readiness` role runs all six Readiness consumers. The `xp` role also runs
 streak recalculation and notifications. The Resume role includes both legacy
 feature queues and session-based upload, ATS, embedding, semantic and recommendation
 queues. Start all seven roles in production with API `ENABLE_WORKERS=false`.
+Recurring work (mission generation, platform sync sweeps, cleanups) runs as BullMQ
+repeatable jobs registered by the maintenance role, not as timers inside the API, so any number of
+API replicas produce each scheduled job exactly once. Keep at least one `maintenance` worker (or an
+`all` process) running, otherwise nothing triggers the schedules.
 Shutdown allows nine seconds for startup/drain/disconnect, then exits nonzero on a
 deadline failure; unfinished work is recovered through BullMQ stalled-job handling.
 
@@ -92,6 +96,37 @@ docker compose -f docker-compose.prod.yml logs -f
 
 ---
 
+## Database Migrations
+
+Build the backend and explicitly export the target database's `MONGODB_URI`
+before running these commands from `backend/`:
+
+```bash
+npm run build
+pnpm migrate:status
+pnpm migrate:up
+pnpm migrate:down --step=1
+```
+
+The npm equivalents are `npm run migrate:status`, `npm run migrate:up`, and
+`npm run migrate:down -- --step=1`. Run `up` as a release step before starting
+the new API or rolling out workers. The production API checks the ledger before
+listening and exits if migrations are pending, changed, or locked. Rollback
+reverses the latest applied batch by default. Roll back the application with the
+schema, since the newer API requires its migrations to be applied.
+
+Replica sets and sharded clusters commit each migration's writes and ledger entry
+together. Rollback uses one transaction per batch. On standalone MongoDB,
+take a backup first. A failed or interrupted operation can leave partial writes
+and a `recovery` marker in `schema_migrations`. Resolve the partial writes using the
+migration's `up` and `down` definitions and your backup, then reconcile the ledger
+with the verified database state before retrying. If the runner crashed or a
+transaction's commit outcome is unknown, confirm it has stopped and verify the
+database and ledger before clearing the `runner` record in
+`schema_migration_locks`. The lock has no automatic expiry.
+
+---
+
 ## Environment Variables
 
 ### Backend (required in production)
@@ -114,8 +149,8 @@ docker compose -f docker-compose.prod.yml logs -f
 | `GITHUB_TOKEN` | No | - | Raises GitHub API rate limits |
 | `ENABLE_WORKERS` | No | - | Set `false` on API-only containers |
 | `WORKER_TYPE` | No | `all` | Worker process selector |
-| `SYNC_ENABLED` | No | `true` | Platform sync scheduler |
-| `SYNC_INTERVAL_MINUTES` | No | `15` (prod) | Sync cron interval |
+| `SYNC_ENABLED` | No | `true` | Platform sync sweep (BullMQ repeatable on the maintenance worker; `false` removes it) |
+| `SYNC_INTERVAL_MINUTES` | No | `15` (prod) | Sync sweep interval in minutes, applied by the maintenance worker at startup |
 | `CLOSED_BETA` | No | `false` | Restrict access to beta users |
 | `RATE_LIMIT_WINDOW_MS` | No | `900000` | Global rate limit window |
 | `RATE_LIMIT_MAX_REQUESTS` | No | `100` | Max requests per window |

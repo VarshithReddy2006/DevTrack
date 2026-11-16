@@ -27,6 +27,8 @@ import { dlqRoutes } from './routes/dlq.routes.js';
 import { registerPublicProfileShell } from './modules/profile/ogShell.routes.js';
 import { mountApiRoutes } from './routes/mount.js';
 import { sanitizeMongoError } from './db/connection.js';
+import { discoverMigrations } from './db/migrations/discover.js';
+import { createMigrationRunner } from './db/migrations/runner.js';
 
 const require = createRequire(import.meta.url);
 const { version: APP_VERSION } = require('../package.json') as { version: string };
@@ -119,6 +121,23 @@ async function bootstrap() {
   } else if (aiAction === 'warn') {
     logger.warn('WARNING: No AI API keys set. Intelligence features will operate in degraded mode (deterministic fallbacks).');
     logger.warn('Set OPENAI_API_KEY or GEMINI_API_KEY for full intelligence capabilities.');
+  }
+
+  if (env.IS_PROD) {
+    const migrations = await discoverMigrations();
+    const connection = mongoose.createConnection(env.MONGODB_URI, {
+      autoCreate: false,
+      autoIndex: false,
+      serverSelectionTimeoutMS: 10000,
+    });
+    try {
+      await connection.asPromise();
+      await createMigrationRunner(connection, migrations).check();
+    } catch (error) {
+      throw new Error(sanitizeMongoError(error instanceof Error ? error.message : String(error)));
+    } finally {
+      await connection.close();
+    }
   }
 
   const app = await createApp();

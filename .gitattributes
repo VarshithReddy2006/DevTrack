@@ -1,1 +1,2 @@
 frontend/e2e/fixtures/*.pdf binary
+backend/src/db/migrations/versioned/*.mjs text eol=lf
