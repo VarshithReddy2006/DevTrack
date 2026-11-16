@@ -30,6 +30,7 @@ const DSAIntelligencePage = lazy(() => import('../pages/readiness/DSAIntelligenc
 const RoadmapIntelligencePage = lazy(() => import('../pages/readiness/RoadmapIntelligencePage'));
 const EvolutionIntelligencePage = lazy(() => import('../pages/readiness/EvolutionIntelligencePage'));
 const AIGuidancePage = lazy(() => import('../pages/readiness/AIGuidancePage'));
+const EvidenceLedgerPage = lazy(() => import('../pages/readiness/EvidenceLedgerPage'));
 const BetaDashboardPage = lazy(() => import('../pages/admin/BetaDashboardPage'));
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'));
 
@@ -292,6 +293,16 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="AI Guidance">
               <Suspense fallback={<PageFallback />}>
                 <AIGuidancePage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/readiness/evidence"
+          element={
+            <ErrorBoundary pageName="Evidence Ledger">
+              <Suspense fallback={<PageFallback />}>
+                <EvidenceLedgerPage />
               </Suspense>
             </ErrorBoundary>
           }
