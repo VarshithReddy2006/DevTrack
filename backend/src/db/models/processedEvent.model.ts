@@ -1,14 +1,15 @@
 // src/db/models/processedEvent.model.ts — Global event idempotency layer
-// Prevents duplicate processing across all workers
+// Prevents duplicate processing across all workers via inbox pattern
 
 import mongoose, { Schema, type Document } from 'mongoose';
 
 export interface IProcessedEvent extends Document {
+  consumer: string;
   eventId: string;
-  eventType: string;
-  userId: Schema.Types.ObjectId;
+  eventType?: string;
+  userId?: Schema.Types.ObjectId;
   processedAt: Date;
-  ttlExpiresAt: Date;
+  ttlExpiresAt?: Date;
   result?: {
     success: boolean;
     details?: string;
@@ -17,26 +18,27 @@ export interface IProcessedEvent extends Document {
 
 const processedEventSchema = new Schema<IProcessedEvent>(
   {
+    consumer: { type: String, required: true },
     eventId: { type: String, required: true },
-    eventType: { type: String, required: true },
-    userId: { type: Schema.Types.ObjectId, required: true, index: true },
+    eventType: { type: String, required: false },
+    userId: { type: Schema.Types.ObjectId, required: false },
     processedAt: { type: Date, required: true, default: Date.now },
-    ttlExpiresAt: { type: Date, required: true },
+    ttlExpiresAt: { type: Date, required: false },
     result: {
-      success: { type: Boolean, required: true },
+      success: { type: Boolean, required: false },
       details: { type: String },
     },
   },
   {
     timestamps: false,
-    optimisticConcurrency: true,
+    optimisticConcurrency: false,
   }
 );
 
-// Compound unique index for fast deduplication checks
+// Compound unique index for consumer inbox deduplication
 processedEventSchema.index(
-  { eventId: 1, eventType: 1 },
-  { unique: true }
+  { consumer: 1, eventId: 1 },
+  { unique: true, name: 'uq_processedevents_consumer_event' }
 );
 
 // TTL index for automatic cleanup (events expire after 7 days)
@@ -46,6 +48,7 @@ processedEventSchema.index(
 );
 
 // Query indexes
+processedEventSchema.index({ eventId: 1, eventType: 1 });
 processedEventSchema.index({ userId: 1, processedAt: -1 });
 processedEventSchema.index({ eventType: 1, processedAt: -1 });
 
@@ -54,12 +57,13 @@ processedEventSchema.statics.checkAndMark = async function (
   eventId: string,
   eventType: string,
   userId: string | mongoose.Types.ObjectId,
-  ttlDays = 7
+  ttlDays = 7,
+  consumer = 'default'
 ): Promise<{ alreadyProcessed: boolean; existingEvent?: IProcessedEvent }> {
   const userObjId = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
 
   // Try to find existing event
-  const existing = await this.findOne({ eventId, eventType });
+  const existing = await this.findOne({ consumer, eventId });
 
   if (existing) {
     return { alreadyProcessed: true, existingEvent: existing };
@@ -71,6 +75,7 @@ processedEventSchema.statics.checkAndMark = async function (
 
   try {
     await this.create({
+      consumer,
       eventId,
       eventType,
       userId: userObjId,
@@ -82,7 +87,7 @@ processedEventSchema.statics.checkAndMark = async function (
   } catch (err: unknown) {
     // Duplicate key error means another worker already processed this
     if ((err as { code?: number })?.code === 11000) {
-      const concurrentEvent = await this.findOne({ eventId, eventType });
+      const concurrentEvent = await this.findOne({ consumer, eventId });
       return { alreadyProcessed: true, existingEvent: concurrentEvent };
     }
     throw err;
@@ -93,7 +98,8 @@ processedEventSchema.statics.markFailed = async function (
   eventId: string,
   eventType: string,
   userId: string | mongoose.Types.ObjectId,
-  errorDetails: string
+  errorDetails: string,
+  consumer = 'default'
 ): Promise<void> {
   const userObjId = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
 
@@ -102,9 +108,10 @@ processedEventSchema.statics.markFailed = async function (
 
   try {
     await this.findOneAndUpdate(
-      { eventId, eventType },
+      { consumer, eventId },
       {
         $setOnInsert: {
+          consumer,
           eventId,
           eventType,
           userId: userObjId,
@@ -119,7 +126,7 @@ processedEventSchema.statics.markFailed = async function (
     );
   } catch (err) {
     const { logger } = await import('../../shared/logger.js');
-    logger.warn('[ProcessedEvent] Failed to mark event as failed', { eventId, eventType, error: err instanceof Error ? err.message : String(err) });
+    logger.warn('[ProcessedEvent] Failed to mark event as failed', { consumer, eventId, eventType, error: err instanceof Error ? err.message : String(err) });
   }
 };
 

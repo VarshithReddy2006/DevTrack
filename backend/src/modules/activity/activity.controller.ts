@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import type { AuthenticatedRequest } from '../../middleware/auth.js';
 import * as service from './activity.service.js';
 import { focusEngine, type FocusHistoryOptions } from './focusEngine.service.js';
+import { computeActiveSec, decideFocusXp } from './focusXpDecision.js';
 import { successResponse, commonErrors, deleteResponse, mutationResponse } from '../../shared/response.js';
 
 /**
@@ -166,7 +167,6 @@ export async function stopFocusSession(req: AuthenticatedRequest, res: Response)
     userId: req.user!.id,
     sourceType: 'focus_session',
     sourceId,
-    metadata: { duration: state.sessionContext.duration },
   });
 
   // Fetch user's timezone from DB
@@ -182,6 +182,17 @@ export async function stopFocusSession(req: AuthenticatedRequest, res: Response)
     source: sourceId,
     timezone,
   });
+
+  // The winning stop records mission progress based on qualification even when
+  // the asynchronous XP award is capped.
+  if (decideFocusXp({
+    plannedSec: completed.plannedDurationMinutes * 60,
+    activeSec: computeActiveSec(completed.activeDurationMs),
+    coveredHeartbeatIntervals: completed.coveredHeartbeatIntervals,
+  }, []).qualified) {
+    const { updateMissionProgress } = await import('../missions/missionProgress.service.js');
+    await updateMissionProgress(req.user!.id, 'streak_day');
+  }
 
   successResponse(res, state.sessionContext, 'Focus session stopped and recorded');
 }

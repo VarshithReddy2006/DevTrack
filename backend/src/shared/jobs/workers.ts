@@ -14,10 +14,10 @@ export async function startAllWorkers(): Promise<void> {
   catch (error) { await stopAllWorkers().catch(() => undefined); throw error; }
 }
 
-export async function stopAllWorkers(): Promise<void> {
+export async function stopAllWorkers(timeoutMs?: number): Promise<void> {
   const current = runtime;
   if (!current) return;
-  try { await current.stop(); }
+  try { await current.stop(timeoutMs); }
   finally { if (runtime === current) runtime = undefined; }
 }
 

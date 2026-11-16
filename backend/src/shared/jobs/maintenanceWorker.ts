@@ -204,6 +204,63 @@ export async function runStreakAtRiskCheck(): Promise<void> {
   logger.info('[maintenance] Streak at risk check completed', { enqueueRequests });
 }
 
+export async function runCheckContestStartingSoon(): Promise<number> {
+  logger.info('[maintenance] Checking for contests starting in 30 minutes');
+  const now = Date.now();
+  const windowStart = new Date(now + 29 * 60 * 1000);
+  const windowEnd = new Date(now + 31 * 60 * 1000);
+
+  const { DsaContest } = await import('../../db/models/dsaContest.model.js');
+  const { handleContestStartingSoon } = await import('../../modules/notifications/consumers/contestStartingSoon.consumer.js');
+
+  const contests = await DsaContest.find({
+    kind: 'scheduled',
+    startTime: { $gte: windowStart, $lte: windowEnd },
+    alertEmitted: { $ne: true },
+  });
+
+  let emitted = 0;
+  const redis = getRedisClient();
+
+  for (const contest of contests) {
+    const contestId = contest._id.toString();
+    const eventId = `contest:alert:${contestId}`;
+
+    let lockAcquired = true;
+    if (redis && redis.status === 'ready') {
+      try {
+        const acquired = await redis.set(`devtrack:alert:lock:${eventId}`, '1', 'EX', 86400, 'NX');
+        if (!acquired) {
+          lockAcquired = false;
+        }
+      } catch (err) {
+        logger.warn('[maintenance] Redis lock failed for contest alert, proceeding with DB guard', { err });
+      }
+    }
+
+    if (!lockAcquired) continue;
+
+    await DsaContest.updateOne({ _id: contest._id }, { $set: { alertEmitted: true } });
+
+    await handleContestStartingSoon({
+      eventId,
+      contestId,
+      externalId: contest.externalId ?? undefined,
+      contestName: contest.contestName,
+      platform: contest.platform,
+      startTime: contest.startTime ? contest.startTime.toISOString() : new Date().toISOString(),
+      endTime: contest.endTime ? contest.endTime.toISOString() : undefined,
+      durationSeconds: contest.durationSeconds ?? undefined,
+      url: contest.url || `https://${contest.platform}.com`,
+    });
+
+    emitted++;
+  }
+
+  logger.info('[maintenance] Contest alert sweep completed', { emitted, contestsFound: contests.length });
+  return emitted;
+}
+
 // ---------------------------------------------------------------------------
 // Worker
 // ---------------------------------------------------------------------------
@@ -244,6 +301,9 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
           break;
         case 'streak_at_risk_check':
           await runStreakAtRiskCheck();
+          break;
+        case 'check_contest_starting_soon':
+          await runCheckContestStartingSoon();
           break;
         case 'generate_daily_challenge':
           await seedDailyChallengeWindow();
@@ -400,6 +460,17 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
       jobId: 'maintenance-audit-public-profiles',
       attempts: 3,
       backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
+    }
+  );
+
+  await _queue.add(
+    'check-contest-starting-soon',
+    { task: 'check_contest_starting_soon' },
+    {
+      repeat: { every: 60 * 1000 },
+      jobId: 'maintenance-contest-starting-soon',
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 10 },
     }

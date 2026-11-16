@@ -12,7 +12,8 @@ export type XpSourceType =
   | 'challenge_completed'
   | 'focus_session'
   | 'milestone'
-  | 'manual';
+  | 'manual'
+  | 'revision_review';
 
 export interface IXpTransaction extends Document {
   userId: Schema.Types.ObjectId;
@@ -42,6 +43,7 @@ const xpTransactionSchema = new Schema<IXpTransaction>(
         'focus_session',
         'milestone',
         'manual',
+        'revision_review',
       ],
     },
     sourceId: { type: String, required: true },

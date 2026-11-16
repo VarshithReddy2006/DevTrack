@@ -201,6 +201,11 @@ export const circuitBreakers = {
     failureThreshold: 3,
     resetTimeoutMs: 120_000, // 2 min — scraper-based, fragile
   }),
+  atcoder: new CircuitBreaker({
+    name: 'atcoder-scraper',
+    failureThreshold: 3,
+    resetTimeoutMs: 120_000, // 2 min — scraping AtCoder
+  }),
   redis: new CircuitBreaker({
     name: 'redis',
     failureThreshold: 10,

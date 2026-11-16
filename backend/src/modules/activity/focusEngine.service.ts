@@ -7,11 +7,14 @@
 import { Types } from 'mongoose';
 import { FocusSession, UnifiedRuntimeState } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
+import { FOCUS_HEARTBEAT_SECONDS } from './focusXpDecision.js';
 
 export interface FocusSessionResult {
   sessionId: string;
   qualityScore: number;
   actualDuration: number;
+  plannedDurationMinutes: number;
+  coveredHeartbeatIntervals: number;
   activeDurationMs: number;
 }
 
@@ -63,11 +66,42 @@ export const PAUSED_STALE_MS = 12 * 60 * 60 * 1000;
 
 export class FocusSessionConflictError extends Error {
   statusCode = 409;
-  code = 'FOCUS_SESSION_ACTIVE';
-  constructor() {
-    super('A focus session is already active. Stop or cancel it before starting a new one.');
+  code = 'FOCUS_SESSION_ALREADY_OPEN';
+  data?: any;
+  constructor(existingSession?: any) {
+    super('A focus session is already open');
     this.name = 'FocusSessionConflictError';
+    this.code = 'FOCUS_SESSION_ALREADY_OPEN';
+    this.data = existingSession;
   }
+}
+
+export function computeActiveDuration(session: {
+  startedAt: Date;
+  status?: string;
+  pauses?: Array<{ startedAt: Date; endedAt?: Date | null }>;
+  now?: Date;
+}): { activeSec: number; activeDurationMs: number } {
+  const now = session.now ?? new Date();
+  const startedAtMs = new Date(session.startedAt).getTime();
+  const totalWallClockSec = Math.max(0, Math.floor((now.getTime() - startedAtMs) / 1000));
+
+  let totalPausedSec = 0;
+  if (Array.isArray(session.pauses)) {
+    for (const pause of session.pauses) {
+      const pStart = new Date(pause.startedAt).getTime();
+      const pEnd = pause.endedAt ? new Date(pause.endedAt).getTime() : now.getTime();
+      if (pEnd > pStart) {
+        totalPausedSec += Math.floor((pEnd - pStart) / 1000);
+      }
+    }
+  }
+
+  const activeSec = Math.max(0, totalWallClockSec - totalPausedSec);
+  return {
+    activeSec,
+    activeDurationMs: activeSec * 1000,
+  };
 }
 
 function isDuplicateKeyError(err: unknown): boolean {
@@ -97,24 +131,58 @@ export class FocusEngine {
    * first so an abandoned session never locks them out.
    * Throws FocusSessionConflictError (409) when another session is still live.
    */
-  async startSession(userId: string, mode: string, durationMinutes: number): Promise<{ sessionId: string; startedAt: Date }> {
+  async startSession(
+    userId: string,
+    modeOrOptions?: string | { mode?: string; plannedDurationMinutes?: number; plannedSec?: number },
+    durationMinutes?: number
+  ): Promise<{ sessionId: string; startedAt: Date; session?: any }> {
     const userObjId = new Types.ObjectId(userId);
     await this.reapStaleSessions({ userId });
+
+    let mode = 'deep_work';
+    let plannedMin = 25;
+    let plannedSec = 1500;
+
+    if (typeof modeOrOptions === 'object' && modeOrOptions !== null) {
+      mode = modeOrOptions.mode || 'deep_work';
+      if (modeOrOptions.plannedSec) {
+        plannedSec = modeOrOptions.plannedSec;
+        plannedMin = Math.round(plannedSec / 60);
+      } else if (modeOrOptions.plannedDurationMinutes) {
+        plannedMin = modeOrOptions.plannedDurationMinutes;
+        plannedSec = plannedMin * 60;
+      }
+    } else if (typeof modeOrOptions === 'string') {
+      mode = modeOrOptions;
+      plannedMin = durationMinutes ?? 25;
+      plannedSec = plannedMin * 60;
+    }
+
     const startedAt = new Date();
     try {
       const session = await FocusSession.create({
         userId: userObjId,
         mode,
         status: 'running',
+        isOpen: true,
         startedAt,
         lastResumedAt: startedAt,
         lastHeartbeatAt: startedAt,
         activeDurationMs: 0,
-        plannedDurationMinutes: durationMinutes,
+        activeSec: 0,
+        plannedDurationMinutes: plannedMin,
+        plannedSec,
+        pauses: [],
       });
-      return { sessionId: session._id.toString(), startedAt };
+      return { sessionId: session._id.toString(), startedAt, session };
     } catch (err) {
-      if (isDuplicateKeyError(err)) throw new FocusSessionConflictError();
+      if (isDuplicateKeyError(err)) {
+        const active = await FocusSession.findOne({
+          userId: userObjId,
+          isOpen: true,
+        }).lean();
+        throw new FocusSessionConflictError(active);
+      }
       throw err;
     }
   }
@@ -140,7 +208,7 @@ export class FocusEngine {
       // the scan makes the filter miss and the session survives.
       const done = await FocusSession.findOneAndUpdate(
         { _id, ...filter },
-        { $set: { status: 'abandoned', completedAt: now, lastResumedAt: null } },
+        { $set: { status: 'abandoned', isOpen: false, completedAt: now, lastResumedAt: null } },
         { new: true }
       );
       if (done) reaped.push(done._id);
@@ -156,23 +224,46 @@ export class FocusEngine {
   }
 
   async pauseSession(sessionId: string, userId: string): Promise<FocusTiming | null> {
-    const session = await FocusSession.findOne({ _id: sessionId, userId: new Types.ObjectId(userId) });
-    if (!session || session.status !== 'running') return null;
+    const session = await FocusSession.findOne({ _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId) });
+    if (!session || (session.status !== 'running' && session.status !== 'active')) return null;
     const now = new Date();
-    const activeDurationMs = (session.activeDurationMs ?? 0) + Math.max(0, now.getTime() - (session.lastResumedAt ?? session.startedAt).getTime());
+    const pauses = Array.isArray(session.pauses) ? [...session.pauses] : [];
+    pauses.push({ startedAt: now, endedAt: null });
+
+    const { activeSec, activeDurationMs } = computeActiveDuration({
+      startedAt: session.startedAt,
+      status: 'paused',
+      pauses,
+      now,
+    });
+
     const paused = await FocusSession.findOneAndUpdate(
-      { _id: session._id, userId: session.userId, status: 'running' },
-      { $set: { status: 'paused', activeDurationMs, lastResumedAt: null, lastHeartbeatAt: now } },
+      { _id: session._id, userId: session.userId, status: session.status },
+      { $set: { status: 'paused', pauses, activeSec, activeDurationMs, lastResumedAt: null, lastHeartbeatAt: now } },
       { new: true }
     );
     return paused ? { activeDurationMs, lastResumedAt: null } : null;
   }
 
   async resumeSession(sessionId: string, userId: string): Promise<FocusTiming | null> {
+    const session = await FocusSession.findOne({ _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId) });
+    if (!session || session.status !== 'paused') return null;
     const now = new Date();
+    const pauses = Array.isArray(session.pauses) ? [...session.pauses] : [];
+    for (const p of pauses) {
+      if (!p.endedAt) p.endedAt = now;
+    }
+
+    const { activeSec, activeDurationMs } = computeActiveDuration({
+      startedAt: session.startedAt,
+      status: 'running',
+      pauses,
+      now,
+    });
+
     const resumed = await FocusSession.findOneAndUpdate(
-      { _id: sessionId, userId: new Types.ObjectId(userId), status: 'paused' },
-      { $set: { status: 'running', lastResumedAt: now, lastHeartbeatAt: now } },
+      { _id: session._id, userId: session.userId, status: 'paused' },
+      { $set: { status: 'running', pauses, activeSec, activeDurationMs, lastResumedAt: now, lastHeartbeatAt: now } },
       { new: true }
     );
     return resumed ? { activeDurationMs: resumed.activeDurationMs ?? 0, lastResumedAt: now } : null;
@@ -181,11 +272,116 @@ export class FocusEngine {
   /**
    * Records a heartbeat to verify active focus.
    */
-  async recordHeartbeat(sessionId: string, userId: string): Promise<void> {
-    await FocusSession.updateOne(
+  async recordHeartbeat(
+    sessionId: string,
+    userId: string,
+    enforceThrottle = false
+  ): Promise<{ success: boolean; throttled?: boolean; session?: any; notFound?: boolean }> {
+    const session = await FocusSession.findOne({
+      _id: new Types.ObjectId(sessionId),
+      userId: new Types.ObjectId(userId),
+    });
+    if (!session) return { success: false, notFound: true };
+    if (!session.isOpen) return { success: false, throttled: false, session };
+
+    const now = new Date();
+    if (enforceThrottle && session.lastHeartbeatAt) {
+      const elapsedMs = now.getTime() - new Date(session.lastHeartbeatAt).getTime();
+      if (elapsedMs < 45_000) {
+        return { success: false, throttled: true, session };
+      }
+    }
+
+    const activeMs = { $add: [
+      { $ifNull: ['$activeDurationMs', 0] },
+      { $max: [0, { $subtract: [now, { $ifNull: ['$lastResumedAt', '$startedAt'] }] }] },
+    ] };
+    const interval = { $ceil: { $divide: [activeMs, FOCUS_HEARTBEAT_SECONDS * 1000] } };
+    const coversNewInterval = { $and: [
+      { $eq: ['$status', 'running'] },
+      { $gt: [interval, { $ifNull: ['$lastCoveredHeartbeatInterval', 0] }] },
+    ] };
+
+    const updated = await FocusSession.findOneAndUpdate(
       { _id: new Types.ObjectId(sessionId), userId: new Types.ObjectId(userId), status: { $in: ['running', 'paused'] } },
-      { $inc: { heartbeatCount: 1 }, $set: { lastHeartbeatAt: new Date() } }
+      [{ $set: {
+        heartbeatCount: { $add: [{ $ifNull: ['$heartbeatCount', 0] }, 1] },
+        heartbeatsCount: { $add: [{ $ifNull: ['$heartbeatsCount', 0] }, 1] },
+        lastHeartbeatAt: { $max: [now, '$lastHeartbeatAt'] },
+        coveredHeartbeatIntervals: { $add: [
+          { $ifNull: ['$coveredHeartbeatIntervals', 0] },
+          { $cond: [coversNewInterval, 1, 0] },
+        ] },
+        lastCoveredHeartbeatInterval: { $cond: [
+          coversNewInterval, interval, '$lastCoveredHeartbeatInterval',
+        ] },
+      } }],
+      { new: true }
     );
+
+    return { success: true, throttled: false, session: updated };
+  }
+
+  /**
+   * Abandons an active/paused focus session.
+   */
+  async abandonSession(sessionId: string, userId: string): Promise<any | null> {
+    const session = await FocusSession.findOne({
+      _id: new Types.ObjectId(sessionId),
+      userId: new Types.ObjectId(userId),
+    });
+    if (!session) return null;
+
+    const now = new Date();
+    const pauses = Array.isArray(session.pauses) ? [...session.pauses] : [];
+    for (const p of pauses) {
+      if (!p.endedAt) p.endedAt = now;
+    }
+
+    const { activeSec, activeDurationMs } = computeActiveDuration({
+      startedAt: session.startedAt,
+      status: 'abandoned',
+      pauses,
+      now,
+    });
+
+    const abandoned = await FocusSession.findOneAndUpdate(
+      { _id: session._id, userId: session.userId },
+      {
+        $set: {
+          status: 'abandoned',
+          isOpen: false,
+          completedAt: now,
+          pauses,
+          activeSec,
+          activeDurationMs,
+          actualDurationMinutes: Math.round(activeSec / 60),
+          lastResumedAt: null,
+        },
+      },
+      { new: true }
+    );
+    return abandoned;
+  }
+
+  /**
+   * Returns current active/open focus session for user.
+   */
+  async getActiveSession(userId: string): Promise<any | null> {
+    const session = await FocusSession.findOne({
+      userId: new Types.ObjectId(userId),
+      isOpen: true,
+    });
+    if (!session) return null;
+
+    const { activeSec, activeDurationMs } = computeActiveDuration({
+      startedAt: session.startedAt,
+      status: session.status,
+      pauses: session.pauses,
+    });
+
+    const obj = session.toObject ? session.toObject() : session;
+    return { ...obj, activeSec, activeDurationMs };
   }
 
   /**
@@ -193,23 +389,29 @@ export class FocusEngine {
    */
   async completeSession(sessionId: string, userId: string): Promise<FocusSessionResult | null> {
     const session = await FocusSession.findOne({ _id: sessionId, userId: new Types.ObjectId(userId) });
-    if (!session || !['running', 'paused'].includes(session.status)) return null;
+    if (!session || !['running', 'paused', 'active'].includes(session.status)) return null;
 
     const completedAt = new Date();
+    const pauses = Array.isArray(session.pauses) ? [...session.pauses] : [];
+    for (const p of pauses) {
+      if (!p.endedAt) p.endedAt = completedAt;
+    }
+
     const activeDurationMs = (session.activeDurationMs ?? 0) + (session.status === 'running'
       ? Math.max(0, completedAt.getTime() - (session.lastResumedAt ?? session.startedAt).getTime()) : 0);
+    const activeSec = Math.round(activeDurationMs / 1000);
     const actualDurationMinutes = Math.round(activeDurationMs / 60000);
     
     // Quality Score Heuristics
     // 1. Completion Rate (0-50 pts)
-    const completionRate = Math.min(1, actualDurationMinutes / session.plannedDurationMinutes);
+    const completionRate = Math.min(1, actualDurationMinutes / (session.plannedDurationMinutes || 25));
     let score = completionRate * 50;
 
     // 2. Heartbeat Consistency (0-30 pts)
     // Expected 1 heartbeat every 30s. Buffer allowed.
     const expectedHeartbeats = actualDurationMinutes * 2;
     if (expectedHeartbeats > 0) {
-      const heartbeatConsistency = Math.min(1, session.heartbeatCount / expectedHeartbeats);
+      const heartbeatConsistency = Math.min(1, (session.heartbeatCount || session.heartbeatsCount || 0) / expectedHeartbeats);
       score += heartbeatConsistency * 30;
     } else {
       score += 30; // Short session fallback
@@ -229,7 +431,10 @@ export class FocusEngine {
       {
         $set: {
           status: 'completed',
+          isOpen: false,
           completedAt,
+          pauses,
+          activeSec,
           actualDurationMinutes,
           activeDurationMs,
           lastResumedAt: null,
@@ -244,8 +449,11 @@ export class FocusEngine {
       sessionId: completed._id.toString(),
       qualityScore,
       actualDuration: actualDurationMinutes,
+      plannedDurationMinutes: completed.plannedDurationMinutes,
+      coveredHeartbeatIntervals: completed.coveredHeartbeatIntervals ?? 0,
       activeDurationMs,
-    };
+      session: completed,
+    } as any;
   }
 
   /**

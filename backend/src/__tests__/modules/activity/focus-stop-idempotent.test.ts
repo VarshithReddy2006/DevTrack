@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { Types } from 'mongoose';
 import {
-  User, UserXp, XpTransaction, FocusSession, ActivityEvent, UserStreakLog,
+  User, UserXp, XpTransaction, FocusSession, ActivityEvent, UserStreakLog, Mission,
 } from '../../../db/models/index.js';
 import activityRoutes from '../../../modules/activity/activity.routes.js';
 import { errorHandler } from '../../../middleware/error.js';
@@ -20,7 +20,7 @@ vi.mock('../../../services/auth/ClerkUserSyncService.js', () => ({ syncClerkUser
 vi.mock('../../../shared/sse/index.js', () => ({
   eventBus: {
     emitXpUpdated: vi.fn(), emitLevelUp: vi.fn(), emitStreakMilestone: vi.fn(), emitStreakAtRisk: vi.fn(),
-    emitRuntimeStatePatch: vi.fn(),
+    emitRuntimeStatePatch: vi.fn(), emitMissionProgress: vi.fn(), emitNotificationCreated: vi.fn(),
   },
 }));
 vi.mock('../../../shared/cache/cacheManager.js', () => ({
@@ -86,6 +86,12 @@ async function post(path: string, body?: unknown) {
   return { status: response.status, body: await response.json() as { message?: string; data?: Record<string, unknown> } };
 }
 
+async function seedQualifyingTimer(sessionId: string) {
+  await FocusSession.updateOne({ _id: sessionId }, {
+    $set: { lastResumedAt: new Date(Date.now() - 25 * 60_000), coveredHeartbeatIntervals: 24 },
+  });
+}
+
 async function expectNoAward() {
   expect(fixture.queued).toHaveLength(0);
   expect(await XpTransaction.countDocuments({ userId, sourceType: 'focus_session' })).toBe(0);
@@ -107,6 +113,7 @@ describe('POST /activity/focus/stop', () => {
     expect((await post('/focus/start', { duration: 25, mode: 'deep_work' })).status).toBe(200);
     const sessionId = (await FocusSession.findOne({ userId }))!._id.toString();
 
+    await seedQualifyingTimer(sessionId);
     const first = await post('/focus/stop');
     expect(first.status).toBe(200);
     expect(first.body.message).toBe('Focus session stopped and recorded');
@@ -139,6 +146,8 @@ describe('POST /activity/focus/stop', () => {
   it('awards each of two separate sessions once', async () => {
     for (let i = 0; i < 2; i++) {
       await post('/focus/start', { duration: 25, mode: 'deep_work' });
+      const live = await FocusSession.findOne({ userId, status: 'running' });
+      await seedQualifyingTimer(live!._id.toString());
       await post('/focus/stop');
       await post('/focus/stop');
     }
@@ -146,8 +155,60 @@ describe('POST /activity/focus/stop', () => {
     expect((await UserXp.findOne({ userId }))!.totalXp).toBe(100);
   });
 
+  it('records a quick stop without awarding XP', async () => {
+    await post('/focus/start', { duration: 25, mode: 'deep_work' });
+    expect((await post('/focus/stop')).status).toBe(200);
+    expect(await XpTransaction.countDocuments({ userId, sourceType: 'focus_session' })).toBe(0);
+    expect(await ActivityEvent.countDocuments({ userId, type: 'focus_session' })).toBe(1);
+    expect(await UserStreakLog.countDocuments({ userId, streakType: 'focus' })).toBe(1);
+  });
+
+  it('keeps recording focus streak and mission progress after the cap', async () => {
+    for (let i = 0; i < 4; i++) {
+      await post('/focus/start', { duration: 25, mode: 'deep_work' });
+      const live = await FocusSession.findOne({ userId, status: 'running' });
+      await seedQualifyingTimer(live!._id.toString());
+      expect((await post('/focus/stop')).status).toBe(200);
+    }
+    const mission = await Mission.create({
+      userId, title: 'Maintain your streak', description: 'Complete an activity', type: 'daily',
+      category: 'consistency', targetCount: 1, xpReward: 20, expiresAt: new Date(Date.now() + 60_000),
+    });
+    await post('/focus/start', { duration: 25, mode: 'deep_work' });
+    const live = await FocusSession.findOne({ userId, status: 'running' });
+    await seedQualifyingTimer(live!._id.toString());
+    expect((await post('/focus/stop')).status).toBe(200);
+
+    expect(await XpTransaction.countDocuments({ userId, sourceType: 'focus_session' })).toBe(4);
+    expect((await UserXp.findOne({ userId }))!.totalXp).toBe(220);
+    expect(await Mission.findById(mission._id)).toMatchObject({ currentCount: 1, status: 'completed' });
+    expect(await UserStreakLog.findOne({ userId, streakType: 'focus' })).toMatchObject({ activityCount: 5 });
+  });
+
+  it('enforces the UTC completion-day cap for concurrent delayed jobs', async () => {
+    const { processXpEvent } = await import('../../../modules/xp/processor.js');
+    const createCompleted = (completedAt: string) => FocusSession.create({
+      userId, mode: 'deep_work', status: 'completed', plannedDurationMinutes: 25,
+      completedAt: new Date(completedAt), startedAt: new Date(Date.parse(completedAt) - 1_500_000),
+      activeDurationMs: 1_500_000, coveredHeartbeatIntervals: 25,
+    });
+    const sessions = await Promise.all(Array.from({ length: 5 }, () => createCompleted('2026-01-01T23:59:59Z')));
+    const nextDay = await createCompleted('2026-01-02T00:00:00Z');
+    const award = (sessionId: string) => processXpEvent({
+      userId, sourceType: 'focus_session', sourceId: `focus_${sessionId}`, metadata: { xpReward: 500 },
+    });
+
+    const results = await Promise.all(sessions.map(focus => award(focus._id.toString())));
+    expect(results.map(result => result.xpAwarded).sort()).toEqual([0, 50, 50, 50, 50]);
+    expect((await award(nextDay._id.toString())).xpAwarded).toBe(50);
+    expect((await award(new Types.ObjectId().toString())).awarded).toBe(false);
+    expect((await UserXp.findOne({ userId }))!.totalXp).toBe(250);
+  });
+
   it('lets only one of several overlapping stops award', async () => {
     await post('/focus/start', { duration: 25, mode: 'deep_work' });
+    const live = await FocusSession.findOne({ userId, status: 'running' });
+    await seedQualifyingTimer(live!._id.toString());
     const results = await Promise.all([post('/focus/stop'), post('/focus/stop'), post('/focus/stop')]);
     expect(results.every(r => r.status === 200)).toBe(true);
     expect(await XpTransaction.countDocuments({ userId, sourceType: 'focus_session' })).toBe(1);
@@ -157,6 +218,23 @@ describe('POST /activity/focus/stop', () => {
 });
 
 describe('FocusEngine.completeSession', () => {
+  it('counts distinct active heartbeat intervals and excludes paused heartbeats', async () => {
+    const engine = new FocusEngine();
+    const { sessionId } = await engine.startSession(userId, 'deep_work', 25);
+    await FocusSession.updateOne({ _id: sessionId }, { $set: { lastResumedAt: new Date(Date.now() - 30_000) } });
+    await Promise.all([engine.recordHeartbeat(sessionId, userId), engine.recordHeartbeat(sessionId, userId)]);
+    expect(await FocusSession.findById(sessionId)).toMatchObject({ heartbeatCount: 2, coveredHeartbeatIntervals: 1 });
+
+    await engine.pauseSession(sessionId, userId);
+    await engine.recordHeartbeat(sessionId, userId);
+    expect(await FocusSession.findById(sessionId)).toMatchObject({ heartbeatCount: 3, coveredHeartbeatIntervals: 1 });
+
+    await engine.resumeSession(sessionId, userId);
+    await FocusSession.updateOne({ _id: sessionId }, { $set: { lastResumedAt: new Date(Date.now() - 60_000) } });
+    await engine.recordHeartbeat(sessionId, userId);
+    expect(await FocusSession.findById(sessionId)).toMatchObject({ heartbeatCount: 4, coveredHeartbeatIntervals: 2 });
+  });
+
   it('returns a result for only one of two concurrent completions', async () => {
     const engine = new FocusEngine();
     const owner = new Types.ObjectId().toString();

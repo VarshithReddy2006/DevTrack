@@ -168,7 +168,7 @@ it('leaves historical completed zero-XP mission transactions unchanged', async (
 
 const sourceAwards: Array<[XpSourceType, number]> = [
   ['dsa_accepted', 10], ['dsa_contest', 40], ['daily_streak', 15], ['sync_completed', 5],
-  ['challenge_completed', 35], ['focus_session', 50], ['milestone', 0], ['manual', 0],
+  ['challenge_completed', 35], ['milestone', 0], ['manual', 0],
 ];
 it.each(sourceAwards)('preserves the existing %s award of %i XP', async (sourceType, amount) => {
   const result = await processXpEvent({ userId, sourceType, sourceId: sourceType, difficulty: 'easy' });

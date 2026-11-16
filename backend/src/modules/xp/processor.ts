@@ -3,7 +3,7 @@
 // All XP awards MUST flow through this module — no direct UserXp writes elsewhere.
 
 import { Types } from 'mongoose';
-import { UserXp, XpTransaction, UserAnalytics, Mission, type IUserXp } from '../../db/models/index.js';
+import { UserXp, XpTransaction, UserAnalytics, Mission, FocusSession, type IUserXp } from '../../db/models/index.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { logger } from '../../shared/logger.js';
 import {
@@ -17,6 +17,7 @@ import type { XpSourceType } from '../../db/models/index.js';
 import { updateMissionProgress } from '../missions/missionProgress.service.js';
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { unifiedRuntimeStateService } from '../runtime-state/unifiedRuntimeState.service.js';
+import { computeActiveSec, decideFocusXp } from '../activity/focusXpDecision.js';
 
 export interface XpEventPayload {
   userId: string;
@@ -99,9 +100,8 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
   }
 
   // ── Step 2: Calculate XP award ───────────────────────────────────────────
-  const xpAwarded = missionReward ?? calculateXpAward(sourceType, difficulty, metadata);
-
-  if (!Number.isSafeInteger(xpAwarded) || xpAwarded < 0) throw new Error('XP award must be a nonnegative safe integer');
+  const baseAward = missionReward ?? calculateXpAward(sourceType, difficulty, metadata);
+  if (!Number.isSafeInteger(baseAward) || baseAward < 0) throw new Error('XP award must be a nonnegative safe integer');
 
   // Establish the unique aggregate outside the transaction. Concurrent first
   // awards may race on this upsert; only the userId duplicate is recoverable.
@@ -110,19 +110,16 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
   } catch (error) {
     if ((error as { code?: number }).code !== 11000 || !await UserXp.exists({ userId: userObjId })) throw error;
   }
-  const incSet: Record<string, number> = {
-    totalXp: xpAwarded,
-    'lifetimeStats.totalXpEarned': xpAwarded,
-  };
+  const activityIncrements: Record<string, number> = {};
   if (sourceType === 'dsa_accepted' && difficulty) {
-    incSet['lifetimeStats.totalProblemsSolved'] = 1;
-    if (difficulty === 'easy') incSet['lifetimeStats.easySolved'] = 1;
-    if (difficulty === 'medium') incSet['lifetimeStats.mediumSolved'] = 1;
-    if (difficulty === 'hard') incSet['lifetimeStats.hardSolved'] = 1;
+    activityIncrements['lifetimeStats.totalProblemsSolved'] = 1;
+    if (difficulty === 'easy') activityIncrements['lifetimeStats.easySolved'] = 1;
+    if (difficulty === 'medium') activityIncrements['lifetimeStats.mediumSolved'] = 1;
+    if (difficulty === 'hard') activityIncrements['lifetimeStats.hardSolved'] = 1;
   }
-  if (sourceType === 'dsa_contest') incSet['lifetimeStats.totalContests'] = 1;
-  if (sourceType === 'daily_streak') incSet['lifetimeStats.dailyStreaks'] = 1;
-  if (sourceType === 'sync_completed') incSet['lifetimeStats.totalSyncs'] = 1;
+  if (sourceType === 'dsa_contest') activityIncrements['lifetimeStats.totalContests'] = 1;
+  if (sourceType === 'daily_streak') activityIncrements['lifetimeStats.dailyStreaks'] = 1;
+  if (sourceType === 'sync_completed') activityIncrements['lifetimeStats.totalSyncs'] = 1;
 
   let transition: XpProcessingResult;
   try {
@@ -134,17 +131,52 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
       const userXp = await UserXp.findOne({ userId: userObjId }).session(session);
       if (!userXp) throw new Error('XP aggregate missing');
       const previousTotalXp = userXp.totalXp;
+      const levelBefore = calculateLevel(previousTotalXp);
+      let xpAwarded = baseAward;
+      let ledgerMetadata = metadata;
+      if (sourceType === 'focus_session') {
+        const sessionId = /^focus_([a-f0-9]{24})$/.exec(sourceId)?.[1];
+        const focus = sessionId && await FocusSession.findOne({
+          _id: new Types.ObjectId(sessionId), userId: userObjId, status: 'completed',
+        }).session(session).lean();
+
+        xpAwarded = 0;
+        if (focus && focus.completedAt) {
+          const completionDay = focus.completedAt.toISOString().slice(0, 10);
+          const dayStart = new Date(completionDay);
+          const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+          // This read and the shared per-user XP aggregate write use the same
+          // transaction. A concurrent award forces a retry against the new ledger.
+          const prior = await XpTransaction.find({
+            userId: userObjId, sourceType, xpAwarded: { $gt: 0 },
+            $or: [
+              { 'metadata.focusCompletionDay': completionDay },
+              { 'metadata.focusCompletionDay': { $exists: false }, createdAt: { $gte: dayStart, $lt: dayEnd } },
+            ],
+          }).select('xpAwarded').session(session).lean();
+          xpAwarded = decideFocusXp({
+            plannedSec: focus.plannedDurationMinutes * 60,
+            activeSec: computeActiveSec(focus.activeDurationMs),
+            coveredHeartbeatIntervals: focus.coveredHeartbeatIntervals ?? 0,
+          }, prior).xpAmount;
+          ledgerMetadata = { focusCompletionDay: completionDay };
+        }
+        if (xpAwarded === 0) {
+          return { awarded: false, xpAwarded: 0, duplicate: false, levelBefore, levelAfter: levelBefore,
+            leveledUp: false, newTotalXp: previousTotalXp };
+        }
+      }
+
       const newTotalXp = previousTotalXp + xpAwarded;
       if (!Number.isSafeInteger(newTotalXp)) throw new Error('XP award would produce an unsafe XP total');
-      const levelBefore = calculateLevel(previousTotalXp);
       const levelAfter = calculateLevel(newTotalXp);
       await UserXp.updateOne({ _id: userXp._id }, {
-        $inc: incSet,
+        $inc: { ...activityIncrements, totalXp: xpAwarded, 'lifetimeStats.totalXpEarned': xpAwarded },
         $set: { currentLevel: levelAfter, xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter), lastXpGainedAt: new Date() },
       }, { session });
       await XpTransaction.create([{
         userId: userObjId, sourceType, sourceId, xpAwarded,
-        previousTotalXp, newTotalXp, levelBefore, levelAfter, metadata: metadata ?? {},
+        previousTotalXp, newTotalXp, levelBefore, levelAfter, metadata: ledgerMetadata ?? {},
       }], { session });
       return { awarded: true, xpAwarded, duplicate: false, levelBefore, levelAfter,
         leveledUp: levelAfter > levelBefore, newTotalXp };
@@ -164,7 +196,8 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
     }
     return transition;
   }
-  const { levelBefore, levelAfter, leveledUp, newTotalXp } = transition;
+  if (!transition.awarded) return transition;
+  const { xpAwarded, levelBefore, levelAfter, leveledUp, newTotalXp } = transition;
 
   // ── Step 7: Sync to UserAnalytics ────────────────────────────────────────
   await syncUserAnalytics(userId, newTotalXp, xpAwarded, levelAfter, sourceType);
@@ -257,8 +290,8 @@ function calculateXpAward(
       }
       return XP_REWARDS.syncCompleted;
     }
-    case 'focus_session': return 50; // Pomodoro/Focus session reward
     case 'challenge_completed': return typeof metadata?.xpReward === 'number' ? metadata.xpReward : 35;
+    case 'revision_review': return XP_REWARDS.revisionReview;
     case 'milestone': return 0;
     case 'manual': return 0;
     default: return 0;
