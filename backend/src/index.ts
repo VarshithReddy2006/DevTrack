@@ -3,12 +3,12 @@ import { aiCredentialAction } from './config/aiCredentials.js';
 import { createRequire } from 'node:module';
 import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
 import morgan from 'morgan';
 import mongoose from 'mongoose';
 import { env, API_BASE_PATH } from './config/index.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import { requestContextMiddleware } from './middleware/requestContext.js';
+import { securityHeaders } from './middleware/securityHeaders.js';
 import { authMiddleware, adminMiddleware, type AuthenticatedRequest } from './middleware/auth.js';
 import { requestMetricsMiddleware, getMetricsSnapshot, getEndpointLatencies } from './shared/requestMetrics.js';
 import { sanitizeRequest } from './middleware/validation.js';
@@ -48,26 +48,7 @@ export async function createApp(): Promise<express.Express> {
   app.use(requestContextMiddleware);
   app.use(requestMetricsMiddleware);
 
-  app.use(helmet({
-    contentSecurityPolicy: env.IS_PROD ? {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:', 'https:'],
-        connectSrc: ["'self'"],
-        fontSrc: ["'self'"],
-        objectSrc: ["'none'"],
-        mediaSrc: ["'self'"],
-        frameSrc: ["'none'"],
-      },
-    } : undefined,
-    hsts: env.IS_PROD ? {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true,
-    } : undefined,
-  }));
+  app.use(securityHeaders({ isProd: env.IS_PROD }));
 
   app.use(cors({
     origin: env.CORS_ORIGIN,
