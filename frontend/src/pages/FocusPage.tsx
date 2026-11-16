@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion as framerMotion } from 'framer-motion';
 import { useRuntimeState } from '../hooks/useRuntimeState';
 import { useCoachingStore } from '../store/coachingStore';
@@ -10,12 +10,25 @@ import { FocusAnalytics } from '../components/focus/FocusAnalytics';
 import { RecoveryIntelligence } from '../components/focus/RecoveryIntelligence';
 import { MissionControlSection } from '../components/focus/MissionControlSection';
 import { RuntimeIntelligenceSection } from '../components/focus/RuntimeIntelligenceSection';
+import { FocusTodayCompact } from '../features/focus/components/FocusTodayCompact';
+import { FocusResultDialog } from '../features/focus/components/FocusResultDialog';
+import { FocusHistoryDrawer } from '../features/focus/components/FocusHistoryDrawer';
+import type { FocusSessionModel } from '../features/focus/services/focusService';
 
 const FocusPage: React.FC = () => {
   console.log('[FocusPage] mounted and rendering.');
   const { data: runtimeState } = useRuntimeState();
   const { momentum } = useCoachingStore();
   const streak = runtimeState?.streak ?? 0;
+
+  const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
+  const [completedResult, setCompletedResult] = useState<FocusSessionModel | null>(null);
+  const [isResultDialogOpen, setIsResultDialogOpen] = useState(false);
+
+  const handleSessionComplete = (result: any) => {
+    setCompletedResult(result);
+    setIsResultDialogOpen(true);
+  };
 
   // Ambient State Logic
   const isBurnoutRisk = momentum?.momentumScore?.trend === 'critical' || momentum?.momentumScore?.trend === 'declining';
@@ -73,6 +86,11 @@ const FocusPage: React.FC = () => {
             <MomentumHero streak={streak} />
           </framerMotion.section>
 
+          {/* Today's Focus Overview & History Quick Launcher */}
+          <framerMotion.section variants={itemVariants} className="w-full">
+            <FocusTodayCompact onOpenHistory={() => setIsHistoryDrawerOpen(true)} />
+          </framerMotion.section>
+
           {/* Execution Core: RIE + Focus Engine + Mission Control grouped tighter */}
           <div className="flex flex-col gap-6 w-full">
 
@@ -83,7 +101,10 @@ const FocusPage: React.FC = () => {
 
             {/* Focus Engine (Full Width Row) */}
             <framerMotion.section variants={itemVariants} className="w-full">
-              <PomodoroTimer showAmbientSound />
+              <PomodoroTimer
+                showAmbientSound
+                onSessionComplete={handleSessionComplete}
+              />
             </framerMotion.section>
 
             {/* Mission Control (Full Width Row) */}
@@ -110,6 +131,19 @@ const FocusPage: React.FC = () => {
             <RecoveryIntelligence />
           </framerMotion.section>
         </div>
+
+        {/* Server-Authoritative Focus Result Dialog */}
+        <FocusResultDialog
+          isOpen={isResultDialogOpen}
+          onClose={() => setIsResultDialogOpen(false)}
+          result={completedResult}
+        />
+
+        {/* Sliding Focus History Drawer */}
+        <FocusHistoryDrawer
+          isOpen={isHistoryDrawerOpen}
+          onClose={() => setIsHistoryDrawerOpen(false)}
+        />
       </framerMotion.div>
     </ErrorBoundary>
   );
