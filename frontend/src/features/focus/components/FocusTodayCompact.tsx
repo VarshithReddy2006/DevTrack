@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { History, Target, Flame, CheckCircle, ChevronRight, Award } from 'lucide-react';
+import { History, Flame, CheckCircle, ChevronRight } from 'lucide-react';
 import { focusService, type FocusSummary } from '../services/focusService';
 
 interface FocusTodayCompactProps {

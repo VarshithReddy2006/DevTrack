@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Clock, Award, CheckCircle2, AlertCircle, Calendar, Sparkles, Filter } from 'lucide-react';
+import { X, Clock, Award, Calendar } from 'lucide-react';
 import { focusService, type FocusHistoryItem } from '../services/focusService';
 
 interface FocusHistoryDrawerProps {

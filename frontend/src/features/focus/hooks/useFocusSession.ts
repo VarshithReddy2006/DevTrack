@@ -35,7 +35,7 @@ export function useFocusSession(): UseFocusSessionReturn {
   const [completedResult, setCompletedResult] = useState<FocusSessionModel | null>(null);
   const [isResultDialogOpen, setIsResultDialogOpen] = useState<boolean>(false);
 
-  const heartbeatTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Helper to compute server-recovered countdown
   const calculateRemainingSeconds = useCallback((s: FocusSessionModel): number => {
