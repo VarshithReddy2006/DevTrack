@@ -67,7 +67,11 @@ it('serves canonical metrics and immediately applies changes to public visibilit
   ]);
 
   // A persisted v1 snapshot should be recomputed on the next read.
-  await PublicProfile.create({ userId, username: owner.username, slug: owner.username, snapshot: { version: 1 } });
+  await PublicProfile.create({
+    userId, username: owner.username, slug: owner.username, snapshot: { version: 1 },
+    published: true, visibility: 'public',
+    sections: { streak: true, dsa: true, github: true, projects: true, activity: true },
+  });
   const status = vi.fn().mockReturnThis();
   const json = vi.fn();
   const request = { params: { username: owner.username }, ip: '127.0.0.1' } as unknown as Parameters<typeof getPublicProfile>[0];

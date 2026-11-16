@@ -51,6 +51,7 @@ export { FocusSession, type IFocusSession } from './focusSession.model.js';
 
 // Verified Proof-of-Work Models
 export { PublicProfile, type IPublicProfile } from './publicProfile.model.js';
+export { UsernameReservation, type IUsernameReservation } from './usernameReservation.model.js';
 export { VerifiedProject, type IVerifiedProject } from './verifiedProject.model.js';
 export { ProfileAuditLog, type IProfileAuditLog } from './profileAuditLog.model.js';
 export { ProfileView, type IProfileView } from './profileView.model.js';

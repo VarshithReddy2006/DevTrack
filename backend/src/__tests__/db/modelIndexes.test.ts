@@ -85,6 +85,7 @@ import '../../db/models/userSettings.model.js';
 import '../../db/models/userSkillProgress.model.js';
 import '../../db/models/userStreakLog.model.js';
 import '../../db/models/userXp.model.js';
+import '../../db/models/usernameReservation.model.js';
 import '../../db/models/verifiedProject.model.js';
 import '../../db/models/xpTransaction.model.js';
 
