@@ -89,6 +89,8 @@ interface UseSseResult {
   connectionStatus: ConnectionStatus;
   lastEvent: SseEvent | null;
   reconnectAttempt: number;
+  /** Epoch ms of the next scheduled reconnect attempt, or null when none is pending. */
+  nextReconnectAt: number | null;
   diagnostics: SseDiagnostics;
   eventHistory: SseEvent[];
 }
@@ -134,6 +136,7 @@ interface StoreState {
   connectionStatus: ConnectionStatus;
   lastEvent: SseEvent | null;
   reconnectAttempt: number;
+  nextReconnectAt: number | null;
   connectedAt: number | null;
   lastEventAt: number | null;
   totalEventsReceived: number;
@@ -148,6 +151,7 @@ const store: StoreState = {
   connectionStatus: 'disconnected',
   lastEvent: null,
   reconnectAttempt: 0,
+  nextReconnectAt: null,
   connectedAt: null,
   lastEventAt: null,
   totalEventsReceived: 0,
@@ -177,12 +181,17 @@ function rememberEnvelopeId(id: string): void {
 type Listener = () => void;
 const listeners = new Set<Listener>();
 
+// useSyncExternalStore only re-renders when the snapshot identity changes, and `store` is
+// mutated in place, so hand React a fresh copy on every change.
+let snapshot: StoreState = { ...store };
+
 function emitChange() {
+  snapshot = { ...store };
   for (const l of listeners) l();
 }
 
 function getSnapshot(): StoreState {
-  return store;
+  return snapshot;
 }
 
 interface HookCallbackRegistry {
@@ -308,6 +317,7 @@ export async function connectGlobalSse(
     store.connectedAt = now;
     store.totalReconnects = store.reconnectAttempt > 0 ? store.totalReconnects + 1 : store.totalReconnects;
     store.consecutiveFailures = 0;
+    store.nextReconnectAt = null;
     store.connectionStatus = 'connected';
     emitChange();
     updateStatus('connected');
@@ -455,6 +465,7 @@ export function disconnectGlobalSse(
   }
   store.connectionStatus = 'disconnected';
   store.reconnectAttempt = 0;
+  store.nextReconnectAt = null;
   store.lastEvent = null;
   store.eventHistory = [];
   store.lastEventId = null;
@@ -477,14 +488,43 @@ function scheduleReconnect(
   );
 
   store.reconnectAttempt = attempt + 1;
+  store.nextReconnectAt = Date.now() + delay;
   store.connectionStatus = 'reconnecting';
   emitChange();
   setSseStatus('reconnecting');
 
   globalReconnectTimeout = setTimeout(() => {
     globalReconnectTimeout = null;
+    store.nextReconnectAt = null;
     connectGlobalSse(setSseStatus, setInfrastructureDegraded);
   }, delay);
+}
+
+/**
+ * Skip the backoff wait and try to connect right away. Works while a retry is
+ * scheduled and after the hook gave up (`disconnected` once the failure cap is
+ * hit); it is a no-op while a connection attempt is already running or open, so
+ * a double click cannot open two streams.
+ */
+export function reconnectNow(): void {
+  if (store.connectionStatus === 'connected' || store.connectionStatus === 'connecting') return;
+  if (globalEventSource !== null) return;
+
+  if (globalReconnectTimeout !== null) {
+    clearTimeout(globalReconnectTimeout);
+    globalReconnectTimeout = null;
+  }
+  // A manual retry gets a fresh failure budget, otherwise one more error would
+  // hit the cap again straight away after the hook had already given up.
+  if (store.connectionStatus === 'disconnected') {
+    globalConsecutiveFailures = 0;
+    store.consecutiveFailures = 0;
+    useUIStore.getState().setInfrastructureDegraded(false);
+  }
+  store.nextReconnectAt = null;
+  store.connectionStatus = 'connecting';
+  emitChange();
+  void connectGlobalSse();
 }
 
 export function useSse(options: UseSseOptions = {}): UseSseResult {
@@ -495,7 +535,7 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
   const setSseStatus = (status: any) => useUIStore.getState().setSseStatus(status);
   const setInfrastructureDegraded = (degraded: boolean) => useUIStore.getState().setInfrastructureDegraded(degraded);
 
-  const { connectionStatus, lastEvent, reconnectAttempt } = useSyncExternalStore(
+  const { connectionStatus, lastEvent, reconnectAttempt, nextReconnectAt } = useSyncExternalStore(
     (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -540,6 +580,7 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
     connectionStatus,
     lastEvent,
     reconnectAttempt,
+    nextReconnectAt,
     diagnostics: {
       connectedAt: store.connectedAt,
       lastEventAt: store.lastEventAt,
@@ -561,6 +602,7 @@ export function __resetSseForTests(): void {
   store.connectionStatus = 'disconnected';
   store.lastEvent = null;
   store.reconnectAttempt = 0;
+  store.nextReconnectAt = null;
   store.connectedAt = null;
   store.lastEventAt = null;
   store.totalEventsReceived = 0;
@@ -569,6 +611,7 @@ export function __resetSseForTests(): void {
   store.eventHistory = [];
   store.lastEventId = null;
   activeCallbacks.clear();
+  snapshot = { ...store };
 }
 
 export const useXpUpdates = () => {
