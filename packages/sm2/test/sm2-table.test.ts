@@ -7,6 +7,8 @@ import {
   ratingToQuality,
   MIN_EASE_FACTOR,
   INITIAL_EASE_FACTOR,
+  DAY_IN_MS,
+  type Sm2Rating,
   type Sm2State,
 } from '../src/index.js';
 
@@ -158,5 +160,87 @@ describe('SuperMemo-2 (SM-2) Pure Engine (@devtrack/sm2)', () => {
       expect(state.easeFactor).toBe(1.94);
       expect(state.intervalDays).toBe(14);
     });
+  });
+});
+
+describe('SM-2 boundary and long-running contracts', () => {
+  const start = new Date('2024-02-28T12:34:56.789Z');
+
+  it('matches an explicit multi-year easy sequence using the updated EF', () => {
+    const golden = [
+      [1, 2.6, 1], [2, 2.7, 3], [3, 2.8, 7], [4, 2.9, 20],
+      [5, 3.0, 60], [6, 3.1, 186], [7, 3.2, 595], [8, 3.3, 1964],
+    ];
+    let state = createInitialSm2State(start);
+    for (const [repetitions, easeFactor, intervalDays] of golden) {
+      const now = state.dueAt;
+      state = nextState(state, 'easy', now);
+      expect([state.repetitions, state.easeFactor, state.intervalDays])
+        .toEqual([repetitions, easeFactor, intervalDays]);
+      expect(state.dueAt.getTime() - now.getTime()).toBe(intervalDays * DAY_IN_MS);
+    }
+    expect(state.dueAt.getUTCFullYear()).toBeGreaterThanOrEqual(2031);
+  });
+
+  it('reaches the EF floor on hard reviews and recovers through a lapse', () => {
+    const ratings: Sm2Rating[] = [
+      'hard', 'hard', 'hard', 'hard', 'hard', 'hard', 'hard', 'hard', 'hard',
+      'failed', 'failed', 'easy', 'hard', 'easy', 'easy',
+    ];
+    const golden = [
+      [1, 2.36, 1], [2, 2.22, 3], [3, 2.08, 7], [4, 1.94, 14],
+      [5, 1.8, 25], [6, 1.66, 42], [7, 1.52, 64], [8, 1.38, 88],
+      [9, 1.3, 114], [0, 1.3, 1], [0, 1.3, 1], [1, 1.4, 1],
+      [2, 1.3, 3], [3, 1.4, 7], [4, 1.5, 11],
+    ];
+    let state = createInitialSm2State(start);
+    ratings.forEach((rating, index) => {
+      state = nextState(state, rating, state.dueAt);
+      expect([state.repetitions, state.easeFactor, state.intervalDays]).toEqual(golden[index]);
+    });
+  });
+
+  it('does not mutate inputs or retain caller-owned Date references', () => {
+    const now = new Date(start);
+    const initial = createInitialSm2State(now);
+    const before = structuredClone(initial);
+    Object.freeze(initial);
+    const next = nextState(initial, 'easy', now);
+    expect(initial).toEqual(before);
+    now.setTime(0);
+    expect(initial.lastReviewedAt).toEqual(start);
+    expect(next.lastReviewedAt).toEqual(start);
+    next.lastReviewedAt.setTime(1);
+    expect(initial.lastReviewedAt).toEqual(start);
+  });
+
+  it.each([
+    '2024-02-28T23:30:00.000Z', // leap day
+    '2026-03-08T06:30:00.000Z', // US spring DST boundary
+    '2026-11-01T05:30:00.000Z', // US autumn DST boundary
+    '2026-12-31T23:59:59.999Z', // year boundary
+  ])('uses exactly 24 hours per day at %s', (iso) => {
+    const now = new Date(iso);
+    const next = nextState(createInitialSm2State(now), 'failed', now);
+    expect(next.dueAt.getTime()).toBe(now.getTime() + DAY_IN_MS);
+  });
+
+  it.each([
+    { repetitions: -1 }, { repetitions: 0.5 }, { repetitions: Number.MAX_SAFE_INTEGER },
+    { easeFactor: NaN }, { easeFactor: Infinity }, { easeFactor: 1.29 },
+    { intervalDays: -1 }, { intervalDays: 1.5 }, { intervalDays: Infinity },
+  ])('rejects invalid persisted scheduling fields %j', (invalid) => {
+    expect(() => nextState({ ...createInitialSm2State(start), ...invalid }, 'easy', start))
+      .toThrow(RangeError);
+  });
+
+  it('rejects invalid dates, ratings and schedules outside the Date range', () => {
+    const state = createInitialSm2State(start);
+    expect(() => createInitialSm2State(new Date(NaN))).toThrow(RangeError);
+    expect(() => nextState(state, 'easy', new Date(NaN))).toThrow(RangeError);
+    expect(() => nextState(state, 'unknown' as Sm2Rating, start)).toThrow(RangeError);
+    expect(() => createInitialSm2State(new Date(8.64e15))).toThrow(RangeError);
+    expect(() => nextState({ ...state, repetitions: 4, intervalDays: 100_000_000 }, 'easy', start))
+      .toThrow(RangeError);
   });
 });
