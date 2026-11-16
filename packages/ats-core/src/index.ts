@@ -7,3 +7,6 @@ export { calculateAtsScore, calculateExtractionConfidence, generateRecommendatio
 export { validateSections } from './sections.js';
 export { analyzeActionVerbs } from './verbs.js';
 export type { FormattingWarning, KeywordCoverage, ParserWarning, SectionIntegrity } from './types.js';
+export { SKILL_TAXONOMY_VERSION } from './taxonomy/index.js';
+export { extractRequirements, type ExperienceRequirement, type ExtractedRequirements, type RequirementContext, type RequirementPriority, type SkillRequirement } from './jd/extractRequirements.js';
+export { matchScore, type CandidateEvidence, type CandidateSkill, type MatchScoreResult } from './jd/matchScore.js';
