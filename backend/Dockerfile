@@ -45,6 +45,9 @@ RUN npm install --omit=dev && npm cache clean --force
 # Copy compiled output from the builder stage
 COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 
+# Fonts for the render worker (read at runtime from ../../../../assets/fonts relative to dist/modules/profile/og)
+COPY --chown=nodejs:nodejs backend/assets ./assets
+
 # Change ownership of the app directory to the non-root user
 RUN mkdir -m 700 /app/uploads && chown -R nodejs:nodejs /app
 

@@ -80,6 +80,10 @@ export const env = {
   // CORS
   CORS_ORIGIN: getCorsOrigin(),
 
+  // Public origin of this API, used for absolute og:image links in shared portfolio previews.
+  // Unset in production means previews keep the static image.
+  PUBLIC_API_URL: getEnvVar('PUBLIC_API_URL', IS_PROD ? '' : `http://localhost:${getEnvVarNumber('PORT', 3001)}`),
+
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: getEnvVarNumber('RATE_LIMIT_WINDOW_MS', 900000), // 15 minutes
   RATE_LIMIT_MAX_REQUESTS: getEnvVarNumber('RATE_LIMIT_MAX_REQUESTS', 100),

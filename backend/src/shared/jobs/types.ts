@@ -123,7 +123,12 @@ export interface LeagueRolloverJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData;
+export interface OgRenderJobData {
+  userId: string;
+  requestId?: string;
+}
+
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -138,6 +143,9 @@ export const QueueNames = {
   LEAGUE_SCORE: 'league-score',
   LEAGUE_ROLLOVER: 'league-rollover',
   
+  // Render pool (WORKER_TYPE=render)
+  OG_RENDER: 'domain-og-render',
+
   // Readiness Decoupled Pipelines
   READINESS_DSA: 'readiness-dsa',
   READINESS_PROJECTS: 'readiness-projects',

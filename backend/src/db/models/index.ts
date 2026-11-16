@@ -31,6 +31,7 @@ export { SyncJob, type ISyncJob } from './syncJob.model.js';
 export { UserXp, type IUserXp } from './userXp.model.js';
 export { XpTransaction, type IXpTransaction, type XpSourceType } from './xpTransaction.model.js';
 export { LeagueStanding, LEAGUE_DIVISIONS, type ILeagueStanding, type LeagueDivision, type LeagueOutcome, type LeagueStandingStatus } from './leagueStanding.model.js';
+export { RenderArtifact, RENDER_ARTIFACT_TYPES, RENDER_ARTIFACT_STATUSES, type IRenderArtifact, type RenderArtifactType, type RenderArtifactStatus } from './renderArtifact.model.js';
 export { UserStreakLog, type IUserStreakLog, type StreakType } from './userStreakLog.model.js';
 export { UserAnalytics, type IUserAnalytics } from './userAnalytics.model.js';
 export { ProcessedEvent, type IProcessedEvent } from './processedEvent.model.js';

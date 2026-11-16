@@ -70,12 +70,17 @@ function renderShell(shell: Shell): string {
 </html>`;
 }
 
-export function registerPublicProfileShell(app: Express, frontendUrl: string): void {
+/**
+ * `apiUrl` is the public origin of this API. With it, published profiles advertise their
+ * generated card as og:image; without it the shell keeps the static preview image.
+ */
+export function registerPublicProfileShell(app: Express, frontendUrl: string, apiUrl?: string): void {
   // Use the configured frontend origin for canonical URLs and browser navigation.
   const frontend = URL.canParse(frontendUrl) ? new URL(frontendUrl) : undefined;
   const origin = frontend && /^https?:$/.test(frontend.protocol)
     ? frontend.origin
     : 'http://localhost:5173';
+  const api = apiUrl && URL.canParse(apiUrl) && /^https?:$/.test(new URL(apiUrl).protocol) ? new URL(apiUrl).origin : undefined;
   const templates = new Map<string, { html: string; expiresAt: number }>();
 
   app.get(REDIRECT_SCRIPT_PATH, (_req, res) => {
@@ -110,7 +115,7 @@ export function registerPublicProfileShell(app: Express, frontendUrl: string): v
       description: profile.description,
       canonical,
       destination: origin + '/portfolio/' + slug,
-      image: httpsImage(profile.imageUrl) ?? origin + '/portfolio-preview.png',
+      image: httpsImage(profile.imageUrl) ?? (api ? api + profile.ogImagePath : origin + '/portfolio-preview.png'),
       isIndexable: profile.isIndexable,
     };
 

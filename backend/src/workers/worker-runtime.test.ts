@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createWorkerRuntime, parseWorkerType, WORKER_TYPES, workerDefinitions } from './worker-runtime.js';
 
 const mocks = vi.hoisted(() => {
-  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover'];
+  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'ogRender'];
   return {
     workers: Object.fromEntries(names.map(name => [name, { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }])),
     schedule: vi.fn().mockResolvedValue(undefined),
@@ -32,6 +32,7 @@ vi.mock('./worker-dataset-ingestion.js', () => ({ startDatasetIngestionWorker: m
 vi.mock('../shared/jobs/streakRecalcWorker.js', () => ({ startStreakRecalcWorker: mocks.workers.streak.start, stopStreakRecalcWorker: mocks.workers.streak.stop }));
 vi.mock('../modules/leagues/workers/leagueScore.worker.js', () => ({ startLeagueScoreWorker: mocks.workers.leagueScore.start, stopLeagueScoreWorker: mocks.workers.leagueScore.stop }));
 vi.mock('../modules/leagues/workers/weeklyRollover.worker.js', () => ({ startWeeklyRolloverWorker: mocks.workers.leagueRollover.start, stopWeeklyRolloverWorker: mocks.workers.leagueRollover.stop, scheduleWeeklyRollover: mocks.scheduleRollover }));
+vi.mock('../modules/profile/workers/ogRender.worker.js', () => ({ startOgRenderWorker: mocks.workers.ogRender.start, stopOgRenderWorker: mocks.workers.ogRender.stop }));
 vi.mock('../shared/jobs/notificationWorker.js', () => ({ startNotificationWorker: mocks.workers.notifications.start, stopNotificationWorker: mocks.workers.notifications.stop }));
 vi.mock('./worker-resume-ats.js', () => ({ startResumeATSWorker: mocks.workers.sessionAts.start, stopResumeATSWorker: mocks.workers.sessionAts.stop }));
 vi.mock('./worker-resume-embedding.js', () => ({ startResumeEmbeddingWorker: mocks.workers.sessionEmbedding.start, stopResumeEmbeddingWorker: mocks.workers.sessionEmbedding.stop }));
@@ -59,7 +60,7 @@ describe('standalone worker selection and lifecycle', () => {
   const cases: [string | undefined, string[]][] = [
     ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications', 'leagueScore']], ['maintenance', ['maintenance', 'leagueRollover']],
     ['readiness', ['dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
-    ['resume-intelligence', resume], ['dataset', ['dataset']],
+    ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender']],
     ['all', Object.keys(mocks.workers)], [undefined, Object.keys(mocks.workers)], ['', Object.keys(mocks.workers)],
   ];
   it.each(cases)('starts and drains only consumers for %s', async (selector, expected) => {
@@ -193,7 +194,7 @@ describe('standalone worker selection and lifecycle', () => {
   it('keeps production Compose, deployment tables and package commands within the supported contract', () => {
     const compose = readFileSync('../docker-compose.prod.yml', 'utf8');
     const selectors = [...compose.matchAll(/- WORKER_TYPE=([^\s]+)/g)].map(match => match[1]);
-    expect(selectors.sort()).toEqual(['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset'].sort());
+    expect(selectors.sort()).toEqual(['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset', 'render'].sort());
     selectors.forEach(value => expect(parseWorkerType(value)).toBe(value));
     const deployment = readFileSync('../DEPLOYMENT.md', 'utf8');
     for (const match of deployment.matchAll(/WORKER_TYPE=([^`\s]+)/g)) expect(() => parseWorkerType(match[1])).not.toThrow();

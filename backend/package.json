@@ -16,6 +16,7 @@
     "worker:maintenance": "tsx src/worker-entrypoint.ts maintenance",
     "worker:resume-intelligence": "tsx src/worker-entrypoint.ts resume-intelligence",
     "worker:dataset": "tsx src/worker-entrypoint.ts dataset",
+    "worker:render": "tsx src/worker-entrypoint.ts render",
     "postinstall": "node build-ats-core.mjs",
     "prebuild": "node build-ats-core.mjs",
     "build": "tsc -p tsconfig.json && node fix-esm-imports.mjs",
@@ -36,6 +37,7 @@
     "@clerk/express": "^2.1.22",
     "@devtrack/ats-core": "file:../packages/ats-core",
     "@google/generative-ai": "^0.24.1",
+    "@resvg/resvg-js": "^2.6.2",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.76.7",
     "cheerio": "^1.0.0",
@@ -56,6 +58,7 @@
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "5.4.296",
     "puppeteer": "^24.43.1",
+    "satori": "^0.63.2",
     "zod": "^3.24.3"
   },
   "devDependencies": {
