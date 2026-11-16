@@ -70,13 +70,21 @@ API replicas produce each scheduled job exactly once. Keep at least one `mainten
 Shutdown allows nine seconds for startup/drain/disconnect, then exits nonzero on a
 deadline failure; unfinished work is recovered through BullMQ stalled-job handling.
 
-The render role (`domain-og-render` queue) draws the 1200x630 share cards served at
+The render role (`domain-og-render` and `dossier-render` queues) draws the 1200x630 share cards served at
 `GET /api/v1/profile/public/:username/og.png` with satori and resvg. The API only queues a job and
 waits up to eight seconds for the stored card; if no render worker is running it answers `503` with
 `Retry-After`, so deploy at least one `render` service wherever the API serves public profiles. Set
 `PUBLIC_API_URL` on the API to its public origin so the `/u/:username` share page can emit an absolute
 `og:image`; without it (production default) the static preview image stays in place. The Docker image
 ships the bundled Inter font under `assets/fonts` (SIL OFL 1.1).
+
+The same role renders the Verified Developer Dossier PDF (`POST /api/v1/profile/dossier`) in headless
+Chromium with JavaScript off and every network request aborted. The PDF is written to the local-disk
+object store under `$UPLOAD_DIR/render`, so the API and the render service must mount the same volume
+(as with resume uploads). `GET /api/v1/profile/dossier` returns a signed download link that expires after
+15 minutes; the links are HMAC-SHA256 signed with `OBJECT_STORAGE_SIGNING_SECRET`, which both services
+must share and which is required in production. The render image needs a working Chromium for
+Puppeteer, the same requirement the resume PDF export already has.
 
 The dataset role runs dataset ingestion independently. Backend `npm run worker:*`
 commands use the same dispatcher; their positional role overrides `WORKER_TYPE`.
@@ -146,6 +154,7 @@ database and ledger before clearing the `runner` record in
 | `PORT` | No | `3001` | HTTP listen port |
 | `MONGODB_URI` | Yes | `mongodb://localhost:27017/devtrack` | MongoDB connection string |
 | `CORS_ORIGIN` | Yes | `http://localhost:5173` | Frontend origin - **must be HTTPS in production** |
+| `OBJECT_STORAGE_SIGNING_SECRET` | Yes in prod | dev-only default | HMAC key (16+ characters) for signed dossier download links; share it between the API and the render service |
 | `PUBLIC_API_URL` | No | `http://localhost:<PORT>` in dev, unset in prod | Public origin of the API, used for the absolute `og:image` link in `/u/:username` previews |
 | `CLERK_SECRET_KEY` | Yes | - | Clerk backend secret |
 | `REDIS_URL` | Recommended | - | Full Redis URL (overrides host/port) |
