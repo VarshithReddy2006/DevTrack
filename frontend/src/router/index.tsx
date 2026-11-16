@@ -15,6 +15,7 @@ const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const DsaPage = lazy(() => import('../pages/DsaPage'));
 const RevisionPage = lazy(() => import('../pages/RevisionPage'));
 const ContestsPage = lazy(() => import('../features/contests/ContestsPage'));
+const LeaguesPage = lazy(() => import('../features/leagues/LeaguesPage'));
 const ProjectsPage = lazy(() => import('../pages/ProjectsPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
 const ProfilePage = lazy(() => import('../pages/ProfilePage'));
@@ -170,6 +171,16 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="Contest Hub">
               <Suspense fallback={<PageFallback />}>
                 <ContestsPage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/leagues"
+          element={
+            <ErrorBoundary pageName="Weekly League">
+              <Suspense fallback={<PageFallback />}>
+                <LeaguesPage />
               </Suspense>
             </ErrorBoundary>
           }
