@@ -35,6 +35,7 @@ import '../../db/models/dsaSubmission.model.js';
 import '../../db/models/dsaTopicProgress.model.js';
 import '../../db/models/embedding.model.js';
 import '../../db/models/evidenceChainRecord.model.js';
+import '../../db/models/featureFlag.model.js';
 import '../../db/models/featureUsageAnalytics.model.js';
 import '../../db/models/feedbackReport.model.js';
 import '../../db/models/fineTuneRun.model.js';
