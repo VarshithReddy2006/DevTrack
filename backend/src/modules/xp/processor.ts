@@ -18,6 +18,7 @@ import { updateMissionProgress } from '../missions/missionProgress.service.js';
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { unifiedRuntimeStateService } from '../runtime-state/unifiedRuntimeState.service.js';
 import { computeActiveSec, decideFocusXp } from '../activity/focusXpDecision.js';
+import { enqueueLeagueScore } from '../leagues/workers/leagueScore.worker.js';
 
 export interface XpEventPayload {
   userId: string;
@@ -214,6 +215,15 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
   for (let level = levelBefore + 1; level <= levelAfter; level++) {
     eventBus.emitLevelUp(userId, level, newTotalXp);
   }
+  // ── Weekly leagues: hand the committed award to the league score worker ──
+  if (xpAwarded > 0) {
+    try {
+      await enqueueLeagueScore({ userId, sourceType, sourceId, xpAwarded, occurredAt: new Date().toISOString(), requestId });
+    } catch (err) {
+      logger.warn('[xp] League score enqueue failed (non-fatal)', { error: err });
+    }
+  }
+
   // ── Step 9: Runtime state sync ──────────────────────────────────────────
   try {
     await unifiedRuntimeStateService.updateFromEvent({

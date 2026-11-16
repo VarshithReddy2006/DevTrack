@@ -67,6 +67,7 @@ export type DomainEventType =
   | 'dsa.problem.solved'
   | 'revision.reviewed'
   | 'contest.starting-soon'
+  | 'league.week.finalized'
   // Public profile integrity
   | 'profile.flagged';
 
