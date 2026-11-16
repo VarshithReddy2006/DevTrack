@@ -239,9 +239,9 @@ export async function handleSseRequest(req: Request, res: Response): Promise<voi
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
+  // The stream stays open until drained. Close its socket when the response ends.
+  res.setHeader('Connection', 'close');
   res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Keep-Alive', 'timeout=120');
   res.setHeader('X-Request-ID', requestId);
 
   res.flushHeaders();
@@ -256,9 +256,11 @@ export async function handleSseRequest(req: Request, res: Response): Promise<voi
         res.write(chunk);
       },
       close() {
+        res.end();
         eventBus.unregister(clientId);
       },
       abort(err) {
+        res.end();
         logger.warn('[sse] Stream aborted', {
           event: 'sse_stream_aborted',
           clientId,

@@ -68,9 +68,7 @@ describe('Security: SSE Handshake Ticket Protocol', () => {
   });
 
   afterAll(async () => {
-    server.closeAllConnections?.();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await orchestrator.shutdown();
+    await orchestrator.shutdown(server);
   });
 
   it('should have successfully obtained a test access token', () => {
@@ -140,5 +138,19 @@ describe('Security: SSE Handshake Ticket Protocol', () => {
     const fakeTicket = '00000000-0000-0000-0000-000000000000';
     const status = await testSseConnection(fakeTicket);
     expect(status).toBe(401);
+  });
+
+  it('delivers the shutdown event before ending the HTTP stream', async () => {
+    const ticketResponse = await fetch(`${API_BASE}/api/auth/sse-handshake`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const { data } = await ticketResponse.json() as { data: { ticket: string } };
+    const response = await fetch(`${API_BASE}/api/events?ticket=${data.ticket}`);
+    expect(response.status).toBe(200);
+
+    const [body] = await Promise.all([response.text(), orchestrator.shutdown(server)]);
+    expect(body).toMatch(/event: server_shutdown\nretry: \d+\ndata: {"reconnectDelayMs":\d+}/);
+    expect(server.listening).toBe(false);
   });
 });

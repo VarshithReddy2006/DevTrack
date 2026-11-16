@@ -176,9 +176,17 @@ export function getRedisClient(): Redis {
 }
 
 export async function disconnectRedis(): Promise<void> {
-  if (!_client) return;
-  await _client.quit();
-  _client = null;
+  const client = _client;
+  if (!client) return;
+  try {
+    if (client.status === 'ready') await client.quit();
+  } finally {
+    client.disconnect();
+    if (_client === client) {
+      _client = null;
+      _connecting = false;
+    }
+  }
   logger.info('[redis] Disconnected', { event: 'redis_disconnected' });
 }
 
