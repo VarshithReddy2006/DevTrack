@@ -66,7 +66,8 @@ export type DomainEventType =
   | 'focus.session.completed'
   | 'dsa.problem.solved'
   | 'revision.reviewed'
-  | 'contest.starting-soon';
+  | 'contest.starting-soon'
+  | 'league.week.finalized';
 
 // ---------------------------------------------------------------------------
 // Typed Event Payloads

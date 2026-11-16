@@ -30,6 +30,7 @@ import { evidenceRoutes } from '../modules/resume/routes/evidence.routes.js';
 import { resumeIntelligenceRoutes } from '../modules/resume/index.js';
 import analyticsRoutes from '../modules/analytics/analytics.routes.js';
 import { revisionRoutes } from '../modules/revision/index.js';
+import { leaguesRoutes } from '../modules/leagues/index.js';
 import { aiQuotaRoutes } from '../modules/ai/quota.routes.js';
 import { rateLimiters } from '../middleware/rateLimitAdvanced.js';
 
@@ -87,6 +88,7 @@ router.use('/evidence', evidenceRoutes);
 router.use('/recommendations', rateLimiters.ai, recommendationRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/revision', revisionRoutes);
+router.use('/leagues', leaguesRoutes);
 router.use('/ai', rateLimiters.ai, aiQuotaRoutes);
 
 export default router;
