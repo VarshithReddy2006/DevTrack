@@ -18,6 +18,8 @@ export function ratingToQuality(rating: Sm2Rating): number {
       return 3;
     case 'easy':
       return 5;
+    default:
+      throw new RangeError('rating must be failed, hard, or easy');
   }
 }
 
