@@ -81,7 +81,7 @@ DevTrack uses **Clerk** for authentication — not custom JWT.
 | Frontend | `@clerk/clerk-react` — sign-in/sign-up UI |
 | Backend | `@clerk/express` middleware + `CLERK_SECRET_KEY` |
 | User sync | `ClerkUserSyncService` creates/updates MongoDB user records on first request |
-| SSE | `POST /api/v1/auth/sse-handshake` issues a short-lived token; `GET /api/v1/events?token=` |
+| SSE | `POST /api/v1/auth/sse-handshake` issues a single-use ticket (10s TTL); `GET /api/v1/events?ticket=` consumes it. A raw `?token=` JWT is rejected with 401 `INVALID_OR_MISSING_TICKET`, and the route sits behind `rateLimiters.sse` (5 connection attempts per minute per IP) |
 
 Protected routes use `authMiddleware`. Admin and ops routes use `adminMiddleware` / `opsAuditorMiddleware`.
 

@@ -1,7 +1,8 @@
 // src/__tests__/integration/sseHandshake.test.ts — Secure SSE Handshake Ticket Protocol Integration Test
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createApp } from '../../index.js';
 import { orchestrator } from '../../shared/runtime/index.js';
+import { getRedisClient } from '../../shared/redis/index.js';
 import { User } from '../../db/models/index.js';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
@@ -71,6 +72,14 @@ describe('Security: SSE Handshake Ticket Protocol', () => {
     await orchestrator.shutdown(server);
   });
 
+  // GET /events allows 5 connection attempts per minute per IP, and this file makes more
+  // than that. Start every test with a clean SSE limiter state (only the rl:sse:* keys).
+  beforeEach(async () => {
+    const redis = getRedisClient();
+    const keys = await redis.keys('rl:sse:*');
+    if (keys.length > 0) await redis.del(...keys);
+  });
+
   it('should have successfully obtained a test access token', () => {
     expect(accessToken).toBeTruthy();
   });
@@ -132,6 +141,20 @@ describe('Security: SSE Handshake Ticket Protocol', () => {
     // Step 3: Connect second time with same ticket (should fail immediately with 401)
     const status2 = await testSseConnection(ticket);
     expect(status2).toBe(401);
+  });
+
+  it('should reject a raw access token in ?token= even though it is valid', async () => {
+    const res = await fetch(`${API_BASE}/api/events?token=${encodeURIComponent(accessToken)}`);
+    expect(res.status).toBe(401);
+    const body = await res.json() as { code: string };
+    expect(body.code).toBe('INVALID_OR_MISSING_TICKET');
+  });
+
+  it('should answer 429 once a client exceeds 5 SSE connection attempts per minute', async () => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      expect(await testSseConnection('00000000-0000-0000-0000-000000000000')).toBe(401);
+    }
+    expect(await testSseConnection('00000000-0000-0000-0000-000000000000')).toBe(429);
   });
 
   it('should reject invalid or forged tickets with 401', async () => {

@@ -12,6 +12,9 @@ import { trackSseConnectionSuccess, trackSseConnectionFailure, trackSseDisconnec
 
 const encoder = new TextEncoder();
 
+/** Error code returned when the handshake ticket is missing, expired, already used or unknown. */
+export const SSE_TICKET_ERROR_CODE = 'INVALID_OR_MISSING_TICKET';
+
 /** A Redis Stream ID is `<ms>-<seq>`, both unsigned integers. Anything else is not a stream position. */
 export function parseStreamId(lastEventId: string | undefined | null): string | null {
   const match = /^(\d+)-(\d+)$/.exec((lastEventId || '').trim());
@@ -168,70 +171,44 @@ export async function handleSseRequest(req: Request, res: Response): Promise<voi
   const requestId = req.context?.requestId ?? `sse-${Date.now()}`;
   const lastEventId = (req.headers['last-event-id'] || req.headers['Last-Event-ID'] || req.query.lastEventId) as string | undefined;
 
-  let userId: string;
-  const ticket = req.query.ticket as string | undefined;
-  const token = req.query.token as string | undefined;
+  // Ticket-only handshake: the client first exchanges its auth token for a short-lived,
+  // single-use ticket (POST /auth/sse-handshake). A raw JWT in the query string is never
+  // accepted, since query strings end up in access logs, proxies and browser history.
+  const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : undefined;
 
-  if (ticket) {
-    try {
-      const { consumeHandshakeTicket } = await import('./ticketStore.js');
-      const ticketUserId = await consumeHandshakeTicket(ticket);
-      
-      if (!ticketUserId) {
-        logger.warn('[sse] Ticket handshake failed — expired or invalid ticket', { ticket, requestId });
-        trackSseConnectionFailure('unknown', 'invalid_ticket');
-        res.status(401).json({ error: 'Invalid or expired handshake ticket' });
-        return;
-      }
-
-      userId = ticketUserId;
-      logger.info('[sse] Handshake authenticated successfully via ticket', { userId, ticket, requestId });
-      trackSseConnectionSuccess(userId);
-    } catch (err) {
-      logger.error('[sse] Ticket handshake error', err as Error, { ticket, requestId });
-      res.status(500).json({ error: 'Internal Server Error' });
-      return;
-    }
-  } else if (token) {
-    try {
-      const { verifyToken } = await import('@clerk/express');
-      const verifiedToken = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY });
-      const clerkUserId = verifiedToken.sub;
-      
-      if (!clerkUserId) {
-        logger.warn('[sse] Token verification failed — no sub in payload', { token, requestId });
-        trackSseConnectionFailure('unknown', 'invalid_token');
-        res.status(401).json({ error: 'Invalid token payload' });
-        return;
-      }
-      
-      const { User } = await import('../../db/models/index.js');
-      const { syncClerkUser } = await import('../../services/auth/ClerkUserSyncService.js');
-      
-      let dbUser = await User.findOne({ clerkId: clerkUserId });
-      if (!dbUser) {
-        logger.info('[sse] User not found locally for verified token, syncing...', { clerkUserId, requestId });
-        const synced = await syncClerkUser(clerkUserId);
-        userId = synced.id;
-      } else {
-        userId = dbUser._id.toString();
-      }
-
-      logger.info('[sse] Handshake authenticated successfully via fallback token', { userId, clerkUserId, requestId });
-      trackSseConnectionSuccess(userId);
-    } catch (err) {
-      logger.error('[sse] Token verification fallback error', err as Error, { token, requestId });
-      trackSseConnectionFailure('unknown', 'token_verification_failed');
-      res.status(401).json({ error: 'Token verification failed' });
-      return;
-    }
-  } else {
-    logger.warn('[sse] Auth required — Handshake ticket and token missing', {
-      event: 'sse_auth_required',
+  if (!ticket) {
+    logger.warn('[sse] Handshake rejected: ticket missing', {
+      event: 'sse_ticket_required',
       requestId,
       ip: req.ip,
+      legacyTokenParam: req.query.token !== undefined,
     });
-    res.status(401).json({ error: 'Authentication required. SSE ticket or token must be provided.' });
+    trackSseConnectionFailure('unknown', 'ticket_required');
+    res.status(401).json({
+      error: 'A handshake ticket is required. Request one from POST /auth/sse-handshake.',
+      code: SSE_TICKET_ERROR_CODE,
+    });
+    return;
+  }
+
+  let userId: string;
+  try {
+    const { consumeHandshakeTicket } = await import('./ticketStore.js');
+    const ticketUserId = await consumeHandshakeTicket(ticket);
+
+    if (!ticketUserId) {
+      logger.warn('[sse] Ticket handshake failed: expired, used or invalid ticket', { requestId });
+      trackSseConnectionFailure('unknown', 'invalid_ticket');
+      res.status(401).json({ error: 'Invalid or expired handshake ticket', code: SSE_TICKET_ERROR_CODE });
+      return;
+    }
+
+    userId = ticketUserId;
+    logger.info('[sse] Handshake authenticated successfully via ticket', { userId, requestId });
+    trackSseConnectionSuccess(userId);
+  } catch (err) {
+    logger.error('[sse] Ticket handshake error', err as Error, { requestId });
+    res.status(500).json({ error: 'Internal Server Error' });
     return;
   }
 
