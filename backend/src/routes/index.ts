@@ -57,8 +57,10 @@ router.use((req, res, next) => {
 // Auth routes (no auth required for login/register)
 router.use('/auth', authRoutes);
 
-// SSE endpoint — auth via ?token= query param (EventSource limitation)
-router.get('/events', handleSseRequest);
+// SSE endpoint. EventSource cannot send an Authorization header, so the handshake is a
+// single-use ticket (POST /auth/sse-handshake). The limiter runs first so a client cannot
+// open connections (and burn ticket lookups) without bound.
+router.get('/events', rateLimiters.sse, handleSseRequest);
 
 // Protected routes
 router.use('/dashboard', dashboardRoutes);
