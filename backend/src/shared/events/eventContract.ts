@@ -66,7 +66,9 @@ export type DomainEventType =
   | 'focus.session.completed'
   | 'dsa.problem.solved'
   | 'revision.reviewed'
-  | 'contest.starting-soon';
+  | 'contest.starting-soon'
+  // Public profile integrity
+  | 'profile.flagged';
 
 // ---------------------------------------------------------------------------
 // Typed Event Payloads
@@ -99,6 +101,12 @@ export interface AchievementUnlockedPayload {
   tier: string;
 }
 
+export interface ProfileFlaggedPayload {
+  suspicionScore: number;
+  previousSuspicionScore: number | null;
+  flags: string[];
+}
+
 export interface OrchestrationStageFailedPayload {
   stage: string;
   error: string;
@@ -122,6 +130,7 @@ export type SyncCompletedEvent = DomainEventEnvelope<'sync.completed', SyncCompl
 export type XpAwardedEvent = DomainEventEnvelope<'xp.awarded', XpAwardedPayload>;
 export type StreakUpdatedEvent = DomainEventEnvelope<'streak.updated', StreakUpdatedPayload>;
 export type AchievementUnlockedEvent = DomainEventEnvelope<'achievement.unlocked', AchievementUnlockedPayload>;
+export type ProfileFlaggedEvent = DomainEventEnvelope<'profile.flagged', ProfileFlaggedPayload>;
 export type OrchestrationStageFailedEvent = DomainEventEnvelope<'orchestration.stage_failed', OrchestrationStageFailedPayload>;
 export type WorkerPoisonedEvent = DomainEventEnvelope<'worker.poisoned', WorkerPoisonedPayload>;
 
