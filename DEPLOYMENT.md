@@ -87,6 +87,37 @@ docker compose -f docker-compose.prod.yml logs -f
 
 ---
 
+## Database Migrations
+
+Build the backend and explicitly export the target database's `MONGODB_URI`
+before running these commands from `backend/`:
+
+```bash
+npm run build
+pnpm migrate:status
+pnpm migrate:up
+pnpm migrate:down --step=1
+```
+
+The npm equivalents are `npm run migrate:status`, `npm run migrate:up`, and
+`npm run migrate:down -- --step=1`. Run `up` as a release step before starting
+the new API or rolling out workers. The production API checks the ledger before
+listening and exits if migrations are pending, changed, or locked. Rollback
+reverses the latest applied batch by default. Roll back the application with the
+schema, since the newer API requires its migrations to be applied.
+
+Replica sets and sharded clusters commit each migration's writes and ledger entry
+together. Rollback uses one transaction per batch. On standalone MongoDB,
+take a backup first. A failed or interrupted operation can leave partial writes
+and a `recovery` marker in `schema_migrations`. Resolve the partial writes using the
+migration's `up` and `down` definitions and your backup, then reconcile the ledger
+with the verified database state before retrying. If the runner crashed or a
+transaction's commit outcome is unknown, confirm it has stopped and verify the
+database and ledger before clearing the `runner` record in
+`schema_migration_locks`. The lock has no automatic expiry.
+
+---
+
 ## Environment Variables
 
 ### Backend (required in production)
