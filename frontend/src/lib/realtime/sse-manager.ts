@@ -207,7 +207,7 @@ function enterOfflineState(): void {
   setConnectionState({ connected: false, reconnecting: false, offline: true, error: null });
 }
 
-function scheduleReconnect(): void {
+function scheduleReconnect(serverDelayMs?: number): void {
   if (!shouldConnect) return;
   clearReconnectTimer();
 
@@ -221,7 +221,7 @@ function scheduleReconnect(): void {
     return;
   }
 
-  const delay = computeBackoffDelay(reconnectAttempts);
+  const delay = serverDelayMs ?? computeBackoffDelay(reconnectAttempts);
   reconnectAttempts++;
   setConnectionState({
     connected: false,
@@ -433,6 +433,22 @@ export const useSseStore = create<SseStore>((set, get) => ({
         console.error('[SSE] Failed to parse event:', err);
       }
     };
+
+    source.addEventListener('server_shutdown', (event) => {
+      if (source !== eventSource || !(event instanceof MessageEvent)) return;
+      let delay: unknown;
+      try {
+        delay = JSON.parse(event.data)?.reconnectDelayMs;
+      } catch {
+        // Use the normal reconnect backoff if the control frame is malformed.
+      }
+      closeEventSource();
+      scheduleReconnect(
+        typeof delay === 'number' && Number.isInteger(delay) && delay >= 2000 && delay <= 5000
+          ? delay
+          : undefined
+      );
+    });
 
     source.onerror = () => {
       if (source !== eventSource) return;

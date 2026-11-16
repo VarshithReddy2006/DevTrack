@@ -19,5 +19,14 @@ export const credibilityOutputSchema = z.object({
   summary: z.string()
 });
 
+// What the model is allowed to return. Everything else in CredibilityOutput is
+// computed from the deterministic engines, so extra keys from the model are dropped.
+export const credibilityLlmOutputSchema = z.object({
+  consistencyScore: z.number().min(0).max(100),
+  verifiedClaims: z.array(z.string().max(500)).max(25),
+  suspiciousClaims: z.array(z.string().max(500)).max(25),
+  summary: z.string().max(2000),
+});
+
 export type CredibilitySignal = z.infer<typeof credibilitySignalSchema>;
 export type CredibilityOutput = z.infer<typeof credibilityOutputSchema>;

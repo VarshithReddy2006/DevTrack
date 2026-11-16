@@ -3,6 +3,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod';
 import { authMiddleware, type AuthenticatedRequest } from '../../middleware/auth.js';
 import { RecommendationIntelligenceService } from './recommendation.service.js';
+import { rateLimiters } from '../../middleware/rateLimitAdvanced.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -19,12 +20,26 @@ router.get('/report', async (req: AuthenticatedRequest, res: Response, next: Nex
   }
 });
 
-// Generate and Fetch Intelligence Recommendations
+// Reading recommendations never regenerates or mutates stored findings.
 router.get('/intelligence/:resumeReference', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const reference = resumeReference.parse(req.params.resumeReference);
-    const recommendations = await RecommendationIntelligenceService.refreshOwnedRecommendations(req.user!.id, reference);
+    const recommendations = await RecommendationIntelligenceService.getActiveRecommendationsByReference(req.user!.id, reference);
 
+    res.status(200).json({
+      success: true,
+      data: recommendations.map(row => ({ ...row, id: String(row._id) }))
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Regeneration is an explicit, authenticated, rate-limited command.
+router.post('/intelligence/:resumeReference/refresh', rateLimiters.expensiveAction, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const reference = resumeReference.parse(req.params.resumeReference);
+    const recommendations = await RecommendationIntelligenceService.refreshOwnedRecommendations(req.user!.id, reference);
     res.status(200).json({
       success: true,
       data: recommendations.map(row => ({ ...row, id: String(row._id) }))

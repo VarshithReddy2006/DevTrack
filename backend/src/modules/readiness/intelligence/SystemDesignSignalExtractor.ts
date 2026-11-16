@@ -1,4 +1,19 @@
 import { logger } from '../../../shared/logger.js';
+import {
+  ComposeTopology,
+  MAX_MANIFEST_BYTES,
+  baseName,
+  isComposeFileName,
+  isDockerfileName,
+  normalizePath,
+  parseCargoToml,
+  parseComposeTopology,
+  parseGoMod,
+  parsePackageJson,
+  parsePomXml,
+  parseRequirementsTxt,
+  parsePyproject,
+} from './manifestParsers.js';
 
 export interface SystemDesignSignals {
   // Caching Systems
@@ -23,6 +38,10 @@ export interface SystemDesignSignals {
   hasKubernetes: boolean;
   hasDeploymentPipelines: boolean;
   hasInfraOrchestration: boolean;
+  /** Distinct services declared across the repositories' docker-compose files (largest repo). */
+  composeServiceCount: number;
+  /** True when a docker-compose file declares two or more services. */
+  hasMultiServiceTopology: boolean;
   
   // Monitoring & Observability
   hasMonitoring: boolean;
@@ -50,6 +69,55 @@ export interface SystemDesignSignals {
   hasRateLimiting: boolean;
   hasEncryption: boolean;
 }
+
+type BooleanSignal = {
+  [K in keyof SystemDesignSignals]: SystemDesignSignals[K] extends boolean ? K : never;
+}[keyof SystemDesignSignals];
+
+/**
+ * Dependency names from Python, Go, Java and Rust manifests (lower-cased; Go module paths,
+ * Maven "group:artifact", crate names) mapped to the same signals the npm detectors set.
+ */
+const MANIFEST_SIGNAL_RULES: Array<[RegExp, BooleanSignal[]]> = [
+  // Caching
+  [/redis|jedis|lettuce|rueidis|valkey/, ['hasRedis', 'hasCaching']],
+  [/memcache/, ['hasMemcached', 'hasCaching']],
+  [/cachetools|caffeine|ehcache|bigcache|ristretto|go-cache|groupcache|dogpile|^moka$/, ['hasCaching']],
+  // Queues
+  [/^(celery|rq|dramatiq|huey|arq|taskiq|kombu)$|asynq|riverqueue|machinery|activemq|artemis/, ['hasQueueSystems']],
+  [/rabbitmq|amqp|lapin|^(pika|aio-pika|aiormq)$/, ['hasRabbitMQ', 'hasQueueSystems']],
+  [/kafka|sarama|redpanda/, ['hasKafka', 'hasQueueSystems']],
+  [/sqs|elasticmq/, ['hasSQS', 'hasQueueSystems']],
+  // Databases
+  [/postgres|psycopg|asyncpg|pg8000|pgx|lib\/pq$|go-pg/, ['hasPostgreSQL']],
+  [/mongo|^(motor|beanie|odmantic)$/, ['hasMongoDB']],
+  [/mysql|mariadb|asyncmy/, ['hasMySQL']],
+  [/elasticsearch|opensearch/, ['hasElasticsearch']],
+  // Observability
+  [/prometheus|micrometer|statsd|datadog|ddtrace|newrelic/, ['hasMonitoring', 'hasMetrics']],
+  [/sentry|bugsnag|rollbar|honeybadger/, ['hasMonitoring']],
+  [/opentelemetry|jaeger|zipkin|otel/, ['hasTracing', 'hasMonitoring']],
+  [/^(structlog|loguru|python-json-logger|tracing|tracing-subscriber|tracing-appender|env-logger|flexi-logger)$|logrus|zerolog|go\.uber\.org\/zap|logback|log4j|slf4j/, ['hasLogging']],
+];
+
+/** Image (or service name) fragments in a docker-compose file mapped to signals. */
+const COMPOSE_SIGNAL_RULES: Array<[RegExp, BooleanSignal[]]> = [
+  [/(?:^|[/_.{:-])(redis|valkey|keydb|dragonfly)/, ['hasRedis', 'hasCaching']],
+  [/(?:^|[/_.{:-])memcached/, ['hasMemcached', 'hasCaching']],
+  [/(?:^|[/_.{:-])(postgres|postgis|timescaledb|pgvector)/, ['hasPostgreSQL']],
+  [/(?:^|[/_.{:-])mongo/, ['hasMongoDB']],
+  [/(?:^|[/_.{:-])(mysql|mariadb|percona)/, ['hasMySQL']],
+  [/(?:^|[/_.{:-])(elasticsearch|opensearch)/, ['hasElasticsearch']],
+  [/(?:^|[/_.{:-])rabbitmq/, ['hasRabbitMQ', 'hasQueueSystems']],
+  [/(?:^|[/_.{:-])(kafka|redpanda)/, ['hasKafka', 'hasQueueSystems']],
+  [/(?:^|[/_.{:-])elasticmq/, ['hasSQS', 'hasQueueSystems']],
+  [/(?:^|[/_.{:-])nats/, ['hasQueueSystems']],
+  [/(?:^|[/_.{:-])(prometheus|grafana|victoriametrics)/, ['hasMonitoring', 'hasMetrics']],
+  [/(?:^|[/_.{:-])(jaeger|jaegertracing|zipkin|opentelemetry|otel)/, ['hasTracing', 'hasMonitoring']],
+];
+
+/** Admin UIs and exporters share an infra name but do not mean the service itself is used. */
+const COMPOSE_IGNORED = /commander|insight|exporter|express|admin|gui|webui/;
 
 export const SystemDesignSignalExtractor = {
   /**
@@ -80,6 +148,8 @@ export const SystemDesignSignalExtractor = {
       hasKubernetes: false,
       hasDeploymentPipelines: false,
       hasInfraOrchestration: false,
+      composeServiceCount: 0,
+      hasMultiServiceTopology: false,
       
       // Monitoring & Observability
       hasMonitoring: false,
@@ -109,9 +179,10 @@ export const SystemDesignSignalExtractor = {
     };
 
     repositories.forEach(repo => {
-      const deps = repo.dependencies || [];
-      const files = repo.files || [];
-      const devDeps = repo.devDependencies || [];
+      const manifests = this.readManifests(repo);
+      const files = manifests.files;
+      const deps = [...(repo.dependencies || []), ...manifests.npmDependencies];
+      const devDeps = [...(repo.devDependencies || []), ...manifests.npmDevDependencies];
       const scripts = repo.scripts || {};
       
       // Detect Caching Systems
@@ -140,9 +211,137 @@ export const SystemDesignSignalExtractor = {
       
       // Detect Security Patterns
       this.detectSecuritySignals(deps, files, signals);
+
+      // Detect signals from non-npm manifests and docker-compose service topology
+      this.detectManifestSignals(manifests.foreignDependencies, signals);
+      this.detectComposeSignals(manifests.compose, signals);
     });
 
     return signals;
+  },
+
+  /**
+   * True when a file with this exact name exists at any depth in the repo.
+   */
+  hasFileNamed(files: string[], name: string): boolean {
+    return files.some(file => baseName(file) === name);
+  },
+
+  /**
+   * Normalises the repo's file list (monorepo paths included) and reads the optional
+   * `fileContents` map (path -> text) for compose files and dependency manifests.
+   * Contents are optional: with only paths, just the file-name signals apply.
+   */
+  readManifests(repo: any): {
+    files: string[];
+    compose: ComposeTopology;
+    npmDependencies: string[];
+    npmDevDependencies: string[];
+    foreignDependencies: string[];
+  } {
+    const contents = new Map<string, string>();
+    const rawContents = repo?.fileContents;
+    if (rawContents && typeof rawContents === 'object') {
+      for (const [path, text] of Object.entries(rawContents)) {
+        if (typeof text === 'string' && text.length <= MAX_MANIFEST_BYTES) {
+          contents.set(normalizePath(path), text);
+        }
+      }
+    }
+
+    const files = Array.from(new Set([
+      ...(Array.isArray(repo?.files) ? repo.files : [])
+        .filter((file: unknown): file is string => typeof file === 'string')
+        .map(normalizePath),
+      ...contents.keys(),
+    ]));
+
+    const serviceByName = new Map<string, ComposeTopology['services'][number]>();
+    const npmDependencies: string[] = [];
+    const npmDevDependencies: string[] = [];
+    const foreignDependencies: string[] = [];
+
+    for (const [path, text] of contents) {
+      const name = baseName(path);
+      if (isComposeFileName(name)) {
+        parseComposeTopology(text).services.forEach(service => {
+          const known = serviceByName.get(service.name);
+          // override files repeat service names, so merge instead of double counting
+          serviceByName.set(service.name, known
+            ? {
+                name: service.name,
+                image: service.image ?? known.image,
+                dependsOn: Array.from(new Set([...known.dependsOn, ...service.dependsOn])),
+              }
+            : service);
+        });
+      } else if (name === 'package.json') {
+        const parsed = parsePackageJson(text);
+        npmDependencies.push(...parsed.dependencies);
+        npmDevDependencies.push(...parsed.devDependencies);
+      } else if (name === 'requirements.txt' || /^requirements[-.\w]*\.txt$/.test(name)) {
+        foreignDependencies.push(...parseRequirementsTxt(text));
+      } else if (name === 'pyproject.toml') {
+        foreignDependencies.push(...parsePyproject(text));
+      } else if (name === 'go.mod') {
+        foreignDependencies.push(...parseGoMod(text));
+      } else if (name === 'Cargo.toml') {
+        foreignDependencies.push(...parseCargoToml(text));
+      } else if (name === 'pom.xml') {
+        foreignDependencies.push(...parsePomXml(text));
+      }
+    }
+
+    return {
+      files,
+      compose: { services: Array.from(serviceByName.values()) },
+      npmDependencies,
+      npmDevDependencies,
+      foreignDependencies,
+    };
+  },
+
+  /**
+   * Signals from Python, Go, Java and Rust dependency names (caching, queues, databases,
+   * observability).
+   */
+  detectManifestSignals(dependencyNames: string[], signals: SystemDesignSignals): void {
+    dependencyNames.forEach(dep => {
+      const normalized = dep.toLowerCase();
+      MANIFEST_SIGNAL_RULES.forEach(([pattern, flags]) => {
+        if (pattern.test(normalized)) flags.forEach(flag => { signals[flag] = true; });
+      });
+    });
+  },
+
+  /**
+   * Signals from a parsed docker-compose topology: infra images (redis, postgres, rabbitmq,
+   * kafka, ...) and the number of declared services.
+   */
+  detectComposeSignals(compose: ComposeTopology, signals: SystemDesignSignals): void {
+    const { services } = compose;
+    if (services.length === 0) return;
+
+    signals.hasDocker = true;
+    signals.composeServiceCount = Math.max(signals.composeServiceCount, services.length);
+    if (services.length >= 2) signals.hasMultiServiceTopology = true;
+
+    const defined = new Set(services.map(service => service.name));
+    const refs: string[] = [];
+    services.forEach(service => {
+      // The image says what a service runs; fall back to the name for build-only services
+      refs.push(service.image ?? service.name);
+      // depends_on can point at an infra service that is declared elsewhere (extends/override)
+      service.dependsOn.filter(name => !defined.has(name)).forEach(name => refs.push(name));
+    });
+
+    refs.forEach(ref => {
+      const normalized = ref.toLowerCase().replace(/@.*$/, '').replace(/:[^/:]*$/, '');
+      if (COMPOSE_IGNORED.test(normalized)) return;
+      COMPOSE_SIGNAL_RULES.forEach(([pattern, flags]) => {
+        if (pattern.test(normalized)) flags.forEach(flag => { signals[flag] = true; });
+      });
+    });
   },
 
   /**
@@ -216,9 +415,11 @@ export const SystemDesignSignalExtractor = {
    * Detect deployment and containerization signals
    */
   detectDeploymentSignals(files: string[], deps: string[], scripts: any, signals: SystemDesignSignals): void {
-    // Docker detection
-    const dockerFiles = ['Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', '.dockerignore'];
-    if (dockerFiles.some(file => files.includes(file))) {
+    // Docker detection (any directory, so services/api/Dockerfile counts in a monorepo)
+    if (files.some(file => {
+      const name = baseName(file);
+      return isDockerfileName(name) || isComposeFileName(name) || name === '.dockerignore';
+    })) {
       signals.hasDocker = true;
     }
     
@@ -286,7 +487,7 @@ export const SystemDesignSignalExtractor = {
     
     // Check for monitoring configuration files
     const monitoringFiles = ['prometheus.yml', 'datadog.json', 'sentry.js'];
-    if (monitoringFiles.some(file => files.includes(file))) {
+    if (monitoringFiles.some(file => this.hasFileNamed(files, file))) {
       signals.hasMonitoring = true;
     }
   },
@@ -310,7 +511,7 @@ export const SystemDesignSignalExtractor = {
     
     // Check for CDN configuration
     const cdnFiles = ['vercel.json', 'netlify.toml', '_redirects'];
-    if (cdnFiles.some(file => files.includes(file))) {
+    if (cdnFiles.some(file => this.hasFileNamed(files, file))) {
       signals.hasCDN = true;
     }
   },
@@ -360,7 +561,7 @@ export const SystemDesignSignalExtractor = {
     
     // Check for API definition files
     const apiFiles = ['openapi.yaml', 'swagger.yaml', 'graphql.schema'];
-    if (apiFiles.some(file => files.includes(file))) {
+    if (apiFiles.some(file => this.hasFileNamed(files, file))) {
       signals.hasREST = true;
     }
   },
@@ -393,7 +594,7 @@ export const SystemDesignSignalExtractor = {
     
     // Check for security configuration files
     const securityFiles = ['.env.example', 'security.md', 'auth.config.js'];
-    if (securityFiles.some(file => files.includes(file))) {
+    if (securityFiles.some(file => this.hasFileNamed(files, file))) {
       signals.hasAuthSystem = true;
     }
   },

@@ -17,7 +17,7 @@ export interface RealtimeEventJobData {
 }
 
 export interface SystemMaintenanceJobData {
-  task: 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions' | 'check_contest_starting_soon';
+  task: 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions' | 'check_contest_starting_soon' | 'platform_sync_sweep';
   requestId?: string;
 }
 
@@ -107,7 +107,23 @@ export interface DatasetValidationJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData;
+export interface LeagueScoreJobData {
+  userId: string;
+  sourceType: string;
+  sourceId: string;
+  xpAwarded: number;
+  /** ISO timestamp of the XP ledger write; picks the league week the points belong to. */
+  occurredAt: string;
+  requestId?: string;
+}
+
+export interface LeagueRolloverJobData {
+  /** Week to finalize. Omit on the repeatable schedule: the worker finalizes the week before the current one. */
+  weekKey?: string;
+  requestId?: string;
+}
+
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -117,6 +133,10 @@ export const QueueNames = {
   STREAK_RECALC: 'streak-recalc',
   NOTIFICATIONS: 'notifications',
   PROFILE_REBUILD: 'profile-rebuild',
+
+  // Weekly Leagues
+  LEAGUE_SCORE: 'league-score',
+  LEAGUE_ROLLOVER: 'league-rollover',
   
   // Readiness Decoupled Pipelines
   READINESS_DSA: 'readiness-dsa',

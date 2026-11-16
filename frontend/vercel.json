@@ -4,6 +4,10 @@
   "outputDirectory": "dist",
   "routes": [
     {
+      "src": "/u/(.*)",
+      "dest": "https://devtrack-backend-la3j.onrender.com/u/$1"
+    },
+    {
       "src": "/api/(.*)",
       "dest": "https://devtrack-backend-la3j.onrender.com/api/$1",
       "headers": {

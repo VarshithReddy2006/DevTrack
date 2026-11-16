@@ -66,7 +66,13 @@ export function focusRemainingSeconds(session: FocusSessionState, now = Date.now
   return Math.max(0, Math.ceil((totalMs - activeMs - (Number.isFinite(runningMs) ? runningMs : 0)) / 1000));
 }
 
-export const PomodoroTimer = ({ showAmbientSound = false }: { showAmbientSound?: boolean }) => {
+export const PomodoroTimer = ({
+  showAmbientSound = false,
+  onSessionComplete,
+}: {
+  showAmbientSound?: boolean;
+  onSessionComplete?: (session: any) => void;
+}) => {
   const { data: runtimeState } = useRuntimeState();
   const queryClient = useQueryClient();
   const getActiveMission = useMissionStore(state => state.getActiveMission);
@@ -126,11 +132,21 @@ export const PomodoroTimer = ({ showAmbientSound = false }: { showAmbientSound?:
 
   const handleStopFocus = async () => {
     try {
-      await activityService.stopFocusSession();
+      const res = await activityService.stopFocusSession();
       setStatus('idle');
       setTimeLeft(selectedDuration * 60);
       void queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      if (onSessionComplete) {
+        onSessionComplete({
+          plannedSec: selectedDuration * 60,
+          mode: activeMode.id,
+          xpAwarded: 25,
+          xpReason: 'qualified',
+          status: 'completed',
+          ...(res?.data || {}),
+        });
+      }
     } catch (err) {
       console.error('Failed to stop focus session', err);
     }

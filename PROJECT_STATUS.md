@@ -78,7 +78,7 @@ readiness, resume (upload), resume-intelligence, recommendations, analytics
 |-------|-------|
 | Unit (`vitest.config.ts`) | Resume parsing, ATS, queue resilience, beta validation |
 | Integration (`vitest.integration.config.ts`) | Orchestrator, SSE handshake |
-| Chaos (`backend/tests/chaos/`) | SSE reconnect storm, refresh storm, DLQ replay |
+| Chaos (`backend/tests/chaos/`, `npm run test:chaos`) | Worker killed mid XP saga, Redis restart with 120 SSE clients, LLM outage, DLQ replay (SSE reconnect storm and refresh storm need a running API via `TEST_API_BASE`) |
 | E2E (`frontend/e2e/`) | Resume ATS, semantic recommendations, replay persistence, failure scenarios |
 
 Estimated backend test coverage: ~65%. Gaps in ML module, platform sync adapters, and ops module tests.

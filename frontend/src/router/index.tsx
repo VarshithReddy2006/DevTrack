@@ -13,6 +13,7 @@ import FocusPage from '../pages/FocusPage';
 
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const DsaPage = lazy(() => import('../pages/DsaPage'));
+const RevisionPage = lazy(() => import('../pages/RevisionPage'));
 const ContestsPage = lazy(() => import('../features/contests/ContestsPage'));
 const ProjectsPage = lazy(() => import('../pages/ProjectsPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
@@ -108,16 +109,19 @@ export const AppRouter: React.FC = () => {
       />
 
       {/* Public profile: reachable without signing in, so it lives outside ProtectedLayout */}
-      <Route
-        path="/u/:username"
-        element={
-          <ErrorBoundary pageName="Public Profile">
-            <Suspense fallback={<PageFallback />}>
-              <ProfilePage isPublicView={true} />
-            </Suspense>
-          </ErrorBoundary>
-        }
-      />
+      {['/u/:username', '/portfolio/:username'].map(path => (
+        <Route
+          key={path}
+          path={path}
+          element={
+            <ErrorBoundary pageName="Public Profile">
+              <Suspense fallback={<PageFallback />}>
+                <ProfilePage isPublicView={true} />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+      ))}
 
       {/* Protected Routes Layout */}
       <Route element={<ProtectedLayout />}>
@@ -146,6 +150,16 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="DSA Workspace">
               <Suspense fallback={<PageFallback />}>
                 <DsaPage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/dsa/revision"
+          element={
+            <ErrorBoundary pageName="Revision Radar">
+              <Suspense fallback={<PageFallback />}>
+                <RevisionPage />
               </Suspense>
             </ErrorBoundary>
           }
