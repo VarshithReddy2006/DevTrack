@@ -8,6 +8,8 @@ import { logger } from '../logger.js';
 import { createDlqWorker, dlqService, DLQ_QUEUE_NAMES } from './dlq.service.js';
 import { QueueNames, SystemMaintenanceJobData } from './types.js';
 import { runScheduledMissionSweep } from '../scheduler/missionScheduler.js';
+import { runScheduledSync } from '../syncScheduler.js';
+import { env } from '../../config/env.js';
 import { cleanupStaleLocks } from '../redis/syncLock.service.js';
 import { User, UserAnalytics, UserStreakLog } from '../../db/models/index.js';
 import { focusEngine } from '../../modules/activity/focusEngine.service.js';
@@ -204,6 +206,63 @@ export async function runStreakAtRiskCheck(): Promise<void> {
   logger.info('[maintenance] Streak at risk check completed', { enqueueRequests });
 }
 
+export async function runCheckContestStartingSoon(): Promise<number> {
+  logger.info('[maintenance] Checking for contests starting in 30 minutes');
+  const now = Date.now();
+  const windowStart = new Date(now + 29 * 60 * 1000);
+  const windowEnd = new Date(now + 31 * 60 * 1000);
+
+  const { DsaContest } = await import('../../db/models/dsaContest.model.js');
+  const { handleContestStartingSoon } = await import('../../modules/notifications/consumers/contestStartingSoon.consumer.js');
+
+  const contests = await DsaContest.find({
+    kind: 'scheduled',
+    startTime: { $gte: windowStart, $lte: windowEnd },
+    alertEmitted: { $ne: true },
+  });
+
+  let emitted = 0;
+  const redis = getRedisClient();
+
+  for (const contest of contests) {
+    const contestId = contest._id.toString();
+    const eventId = `contest:alert:${contestId}`;
+
+    let lockAcquired = true;
+    if (redis && redis.status === 'ready') {
+      try {
+        const acquired = await redis.set(`devtrack:alert:lock:${eventId}`, '1', 'EX', 86400, 'NX');
+        if (!acquired) {
+          lockAcquired = false;
+        }
+      } catch (err) {
+        logger.warn('[maintenance] Redis lock failed for contest alert, proceeding with DB guard', { err });
+      }
+    }
+
+    if (!lockAcquired) continue;
+
+    await DsaContest.updateOne({ _id: contest._id }, { $set: { alertEmitted: true } });
+
+    await handleContestStartingSoon({
+      eventId,
+      contestId,
+      externalId: contest.externalId ?? undefined,
+      contestName: contest.contestName,
+      platform: contest.platform,
+      startTime: contest.startTime ? contest.startTime.toISOString() : new Date().toISOString(),
+      endTime: contest.endTime ? contest.endTime.toISOString() : undefined,
+      durationSeconds: contest.durationSeconds ?? undefined,
+      url: contest.url || `https://${contest.platform}.com`,
+    });
+
+    emitted++;
+  }
+
+  logger.info('[maintenance] Contest alert sweep completed', { emitted, contestsFound: contests.length });
+  return emitted;
+}
+
 // ---------------------------------------------------------------------------
 // Worker
 // ---------------------------------------------------------------------------
@@ -245,6 +304,12 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
         case 'streak_at_risk_check':
           await runStreakAtRiskCheck();
           break;
+        case 'check_contest_starting_soon':
+          await runCheckContestStartingSoon();
+          break;
+        case 'platform_sync_sweep':
+          await runScheduledSync();
+          break;
         case 'generate_daily_challenge':
           await seedDailyChallengeWindow();
           break;
@@ -270,6 +335,62 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
 
   logger.info('[maintenance] Maintenance worker started');
   return _worker;
+}
+
+/** Stable scheduler id: every instance upserts the same schedule, so Redis holds exactly one. */
+export const PLATFORM_SYNC_SCHEDULER_ID = 'maintenance-platform-sync-sweep';
+const PLATFORM_SYNC_STARTUP_DELAY_MS = 10_000;
+
+type PlatformSyncScheduleQueue = Pick<
+  Queue<SystemMaintenanceJobData>,
+  'add' | 'upsertJobScheduler' | 'removeJobScheduler'
+>;
+
+/**
+ * Register the platform sync sweep (previously a node-cron task in every API process).
+ * The tick is a BullMQ job scheduler, so one job is produced per interval no matter how many
+ * instances register it. The upsert also replaces the schedule when SYNC_INTERVAL_MINUTES
+ * changes between deploys, and SYNC_ENABLED=false removes it.
+ */
+export async function schedulePlatformSyncSweep(queue: PlatformSyncScheduleQueue): Promise<void> {
+  if (!env.SYNC_ENABLED) {
+    await queue.removeJobScheduler(PLATFORM_SYNC_SCHEDULER_ID);
+    logger.info('[maintenance] Platform sync sweep disabled via SYNC_ENABLED=false', { job: 'platform-sync' });
+    return;
+  }
+
+  const intervalMinutes = env.SYNC_INTERVAL_MINUTES;
+  await queue.upsertJobScheduler(
+    PLATFORM_SYNC_SCHEDULER_ID,
+    { pattern: `*/${intervalMinutes} * * * *` },
+    {
+      name: 'platform-sync-sweep',
+      data: { task: 'platform_sync_sweep' },
+      opts: {
+        removeOnComplete: { count: 5 },
+        removeOnFail: { count: 10 },
+      },
+    }
+  );
+
+  // One sweep shortly after boot, as the API used to do. Deduplicated for one interval so
+  // several instances (or a rolling deploy) enqueue it once.
+  await queue.add(
+    'platform-sync-sweep-startup',
+    { task: 'platform_sync_sweep' },
+    {
+      delay: PLATFORM_SYNC_STARTUP_DELAY_MS,
+      deduplication: { id: 'maintenance-platform-sync-startup', ttl: intervalMinutes * 60 * 1000 },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
+    }
+  );
+
+  logger.info('[maintenance] Platform sync sweep scheduled', {
+    job: 'platform-sync',
+    intervalMinutes,
+    cooldownMs: env.SYNC_COOLDOWN_MS,
+  });
 }
 
 /**
@@ -404,6 +525,19 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
       removeOnFail: { count: 10 },
     }
   );
+
+  await _queue.add(
+    'check-contest-starting-soon',
+    { task: 'check_contest_starting_soon' },
+    {
+      repeat: { every: 60 * 1000 },
+      jobId: 'maintenance-contest-starting-soon',
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
+    }
+  );
+
+  await schedulePlatformSyncSweep(_queue);
 
   logger.info('[maintenance] Scheduled recurring maintenance tasks');
 }

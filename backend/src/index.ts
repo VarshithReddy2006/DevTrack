@@ -19,13 +19,16 @@ import { getRedisHealth } from './shared/redis/index.js';
 import { validateStartup } from './shared/startup-validation.js';
 import { getOrCreateQueue, QueueNames } from './shared/jobs/index.js';
 import { getWorkerStatus, getXpWorkerStatus } from './shared/jobs/index.js';
-import { orchestrator } from './shared/runtime/index.js';
+import { orchestrator, registerShutdownSignals } from './shared/runtime/index.js';
 import { getInfrastructureState, setApiStatus, type InfrastructureState } from './shared/runtime/infrastructureRegistry.js';
 import routes from './routes/index.js';
 import { getRegisteredWorkerStatuses } from './shared/jobs/workers.js';
 import { dlqRoutes } from './routes/dlq.routes.js';
+import { registerPublicProfileShell } from './modules/profile/ogShell.routes.js';
 import { mountApiRoutes } from './routes/mount.js';
 import { sanitizeMongoError } from './db/connection.js';
+import { discoverMigrations } from './db/migrations/discover.js';
+import { createMigrationRunner } from './db/migrations/runner.js';
 
 const require = createRequire(import.meta.url);
 const { version: APP_VERSION } = require('../package.json') as { version: string };
@@ -72,8 +75,8 @@ export async function createApp(): Promise<express.Express> {
     origin: env.CORS_ORIGIN,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    exposedHeaders: ['Content-Length', 'X-Request-ID', 'Retry-After'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+    exposedHeaders: ['Content-Length', 'X-Request-ID', 'Retry-After', 'Idempotent-Replayed'],
   }));
 
   app.use(morgan(env.IS_DEV ? 'dev' : 'combined'));
@@ -83,6 +86,8 @@ export async function createApp(): Promise<express.Express> {
 
   // Phase 2: Health & observability endpoints (before routes)
   setupHealthEndpoints(app, getRedisHealth, getWorkerStatus, getXpWorkerStatus, getOrCreateQueue, QueueNames, eventBus, syncState, getInfrastructureState);
+
+  registerPublicProfileShell(app, env.CORS_ORIGIN);
 
   // Phase 3: API routes
   app.use('/api/system/dlq', dlqRoutes);
@@ -118,6 +123,23 @@ async function bootstrap() {
     logger.warn('Set OPENAI_API_KEY or GEMINI_API_KEY for full intelligence capabilities.');
   }
 
+  if (env.IS_PROD) {
+    const migrations = await discoverMigrations();
+    const connection = mongoose.createConnection(env.MONGODB_URI, {
+      autoCreate: false,
+      autoIndex: false,
+      serverSelectionTimeoutMS: 10000,
+    });
+    try {
+      await connection.asPromise();
+      await createMigrationRunner(connection, migrations).check();
+    } catch (error) {
+      throw new Error(sanitizeMongoError(error instanceof Error ? error.message : String(error)));
+    } finally {
+      await connection.close();
+    }
+  }
+
   const app = await createApp();
 
   // Phase 6: HTTP server start (bind explicitly to 0.0.0.0 and env.PORT before orchestrator)
@@ -134,41 +156,13 @@ async function bootstrap() {
     process.exit(1);
   });
 
+  registerShutdownSignals(server);
+
   // Phase 6.5: Start orchestrator in background (non-blocking)
   orchestrator.startup(app).catch((err) => {
     logger.error('Orchestrator startup failed (server still running in degraded mode)', err);
     setApiStatus('failed', err instanceof Error ? err.message : String(err));
   });
-
-  // Phase 7: Graceful shutdown — drain infrastructure before exiting
-  let shuttingDown = false;
-  const shutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info('Shutting down... stopping infrastructure');
-
-    // Stop consumers immediately rather than waiting for lingering HTTP clients.
-    const timeout = setTimeout(() => {
-      logger.error('Forced shutdown after timeout');
-      process.exit(1);
-    }, 10_000);
-    try {
-      await Promise.all([
-        new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
-        orchestrator.shutdown(),
-      ]);
-      clearTimeout(timeout);
-      logger.info('Shutdown complete');
-      process.exit(0);
-    } catch (error) {
-      clearTimeout(timeout);
-      logger.error('Shutdown failed', error);
-      process.exit(1);
-    }
-  };
-
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
 }
 
 // ---------------------------------------------------------------------------

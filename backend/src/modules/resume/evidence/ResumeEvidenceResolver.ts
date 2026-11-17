@@ -1,6 +1,9 @@
 // src/modules/resume-intelligence/evidence/ResumeEvidenceResolver.ts
+import { createHash } from 'node:crypto';
 import type { Types } from 'mongoose';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope, type ProvenanceType } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
+import { upsertClaim } from './evidenceLedger.service.js';
 import { Project } from '../../../db/models/project.model.js';
 import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
 import { logger } from '../../../shared/logger.js';
@@ -151,15 +154,45 @@ export class ResumeEvidenceResolver {
    * Create or update an evidence claim in DB
    */
   async syncClaimToDB(userId: Types.ObjectId, claimText: string, evidence: IEvidenceSource[]): Promise<void> {
-    await ResumeEvidenceClaim.findOneAndUpdate(
-      { userId, claimText },
-      {
-        evidenceSources: evidence,
-        verificationStatus: evidence.length > 0 ? 'verified' : 'unverified',
-        confidence: evidence.length > 0 ? Math.max(...evidence.map(e => e.confidence)) : 0,
-        provenance: 'ResumeEvidenceResolver',
-      },
-      { upsert: true }
+    const cleanText = claimText.trim();
+    const evidenceSources = evidence.map(source => {
+      const type: ProvenanceType = source.type === 'github' ? 'github'
+        : source.type === 'roadmap' ? 'project' : 'infra';
+      return {
+        type,
+        referenceId: source.link || source.description,
+        referenceType: source.type,
+        metadata: { description: source.description, confidence: source.confidence },
+      };
+    });
+    const update = {
+      evidenceSources,
+      verificationStatus: evidence.length ? 'verified' as const : 'unverified' as const,
+      confidence: evidence.length ? Math.max(...evidence.map(item => item.confidence)) : 0,
+      provenance: [...new Set(evidenceSources.map(source => source.type))],
+    };
+    const existing = await ResumeEvidenceClaim.findOneAndUpdate(
+      { userId, claimText: cleanText, ...resumeClaimScope },
+      { $set: update },
+      { runValidators: true },
     );
+    if (existing) return;
+
+    await ResumeProfile.init();
+    const profile = await ResumeProfile.findOneAndUpdate(
+      { userId },
+      { $setOnInsert: { userId } },
+      { upsert: true, new: true },
+    ).orFail();
+    const textHash = createHash('sha256').update(cleanText).digest('hex');
+    await upsertClaim(userId, {
+      subjectType: 'resume_claim',
+      subjectKey: 'resolved:' + textHash,
+      resumeProfileId: profile._id as Types.ObjectId,
+      claimText: cleanText,
+      source: update.provenance.includes('github') ? 'github' : 'user',
+      fetchedAt: new Date(),
+      ...update,
+    });
   }
 }

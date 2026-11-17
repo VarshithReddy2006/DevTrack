@@ -21,9 +21,10 @@ export const MONGO_OPTIONS: mongoose.ConnectOptions = {
 };
 
 let reconnectTimer: NodeJS.Timeout | null = null;
+let disconnecting = false;
 
 export function scheduleMongoReconnect(delayMs = 5000): void {
-  if (reconnectTimer) return;
+  if (reconnectTimer || disconnecting) return;
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     if (mongoose.connection.readyState === 0) {
@@ -41,6 +42,7 @@ export function scheduleMongoReconnect(delayMs = 5000): void {
 }
 
 export async function connectDatabase(): Promise<void> {
+  disconnecting = false;
   try {
     logger.info('Attempting MongoDB connection...', {
       readyState: mongoose.connection.readyState,
@@ -61,6 +63,7 @@ export async function connectDatabase(): Promise<void> {
 }
 
 export async function disconnectDatabase(): Promise<void> {
+  disconnecting = true;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -98,9 +101,4 @@ mongoose.connection.on('disconnected', () => {
   setMongoStatus('failed', 'MongoDB disconnected');
   logger.warn('MongoDB disconnected event received', { readyState: mongoose.connection.readyState });
   scheduleMongoReconnect();
-});
-
-process.on('SIGINT', async () => {
-  await disconnectDatabase();
-  process.exit(0);
 });

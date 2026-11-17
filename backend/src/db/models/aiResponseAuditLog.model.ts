@@ -16,12 +16,16 @@ export interface IAIResponseAuditLog {
   userId: string;
   requestType?: string;
   prompt?: string;
+  promptHash?: string;
   response?: string;
   model?: string;
   provider: string;
   latencyMs: number;
   tokensUsed: number;
   cached?: boolean;
+  cacheHit?: boolean;
+  cost?: number;
+  fallbackTriggered?: boolean;
   contextVersion?: string;
   responseConfidence?: number;
   moderationFlags: string[];
@@ -38,12 +42,16 @@ const AIResponseAuditLogSchema = new Schema<IAIResponseAuditLog>(
     requestType: String,
     // Optional fields retained for reading records written by older deployments.
     prompt: String,
+    promptHash: String,
     response: String,
     model: String,
     provider: { type: String, required: true },
     latencyMs: { type: Number, required: true },
     tokensUsed: { type: Number, default: 0 },
     cached: { type: Boolean, default: false },
+    cacheHit: { type: Boolean, default: false },
+    cost: { type: Number, default: 0 },
+    fallbackTriggered: { type: Boolean, default: false },
     contextVersion: String,
     responseConfidence: Number,
     moderationFlags: [{ type: String }],
@@ -57,5 +65,7 @@ const AIResponseAuditLogSchema = new Schema<IAIResponseAuditLog>(
 
 AIResponseAuditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: AI_AUDIT_RETENTION_SECONDS });
 AIResponseAuditLogSchema.index({ userId: 1, createdAt: -1, _id: -1 });
+AIResponseAuditLogSchema.index({ promptHash: 1 });
+AIResponseAuditLogSchema.index({ userId: 1, promptHash: 1 });
 
 export const AIResponseAuditLog = mongoose.model<IAIResponseAuditLog>('AIResponseAuditLog', AIResponseAuditLogSchema);

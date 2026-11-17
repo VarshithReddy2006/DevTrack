@@ -2,11 +2,14 @@
 import { Router } from 'express';
 import { authMiddleware, adminMiddleware, opsAuditorMiddleware } from '../../middleware/auth.js';
 import opsController from './ops.controller.js';
+import { opsFlagRoutes } from '../flags/flags.routes.js';
 
 const router = Router();
 
 // Health check remains public for load balancers
 router.get('/health', opsController.health);
+
+router.use('/flags', opsFlagRoutes);
 
 // Metrics and ops require ops auditor or admin
 router.get('/metrics', authMiddleware, opsAuditorMiddleware, opsController.metrics);
@@ -34,6 +37,7 @@ router.get('/trust/verifications', authMiddleware, opsAuditorMiddleware, opsCont
 router.post('/recovery/rebuild-all', authMiddleware, adminMiddleware, opsController.rebuildAll);
 router.post('/recovery/invalidate-cache', authMiddleware, adminMiddleware, opsController.invalidateL2Cache);
 router.post('/trust/:userId/recalculate', authMiddleware, adminMiddleware, opsController.recalculateTrust);
+router.post('/contests/refresh', authMiddleware, adminMiddleware, opsController.refreshContests);
   router.get('/ai/audits', authMiddleware, opsAuditorMiddleware, opsController.getAIAuditLogs);
   router.get('/providers/health', authMiddleware, opsAuditorMiddleware, opsController.getProviderHealth);
   

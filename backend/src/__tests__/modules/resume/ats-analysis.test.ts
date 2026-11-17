@@ -1,4 +1,5 @@
 // src/__tests__/modules/resume/ats-analysis.test.ts
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ATSCompatibilityEngine } from '../../../modules/resume/ats/ATSCompatibilityEngine.js';
 import { ATSAnalysis } from '../../../db/models/atsAnalysis.model.js';
@@ -7,6 +8,13 @@ import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { Types } from 'mongoose';
 import { AnalyzeATSSchema } from '../../../modules/resume/dto/index.js';
+
+const goldenFixtures = JSON.parse(readFileSync(new URL(
+  '../../../../../packages/ats-core/test/legacy-score-fixtures.json', import.meta.url,
+), 'utf8')) as Array<{
+  input: { name: string; content: string; keywords: string[]; targetRole?: string; credibilityPenalty?: number };
+  expected: { wordCount: number; atsScore: number; extractionConfidence: number };
+}>;
 
 vi.mock('../../../db/models/atsAnalysis.model.js');
 vi.mock('../../../db/models/resumeProfile.model.js');
@@ -26,6 +34,17 @@ describe('ATSCompatibilityEngine', () => {
     (ResumeEvidenceClaim.find as any).mockResolvedValue([]);
     (ATSAnalysis.create as any).mockImplementation((data: any) => Promise.resolve(data));
     engine = new ATSCompatibilityEngine();
+  });
+
+  it.each(goldenFixtures)('matches the legacy result for $input.name', async ({ input, expected }) => {
+    vi.mocked(ResumeProfile.findById).mockResolvedValue({ targetRole: input.targetRole });
+    vi.mocked(ResumeEvidenceClaim.find).mockResolvedValue(Array.from(
+      { length: (input.credibilityPenalty ?? 0) / 5 },
+      () => ({ claimText: 'Docker experience', verificationStatus: 'unverified', provenance: [] }),
+    ));
+    const result = await engine.analyze({ userId, resumeProfileId, content: input.content, targetKeywords: input.keywords });
+    const { wordCount, ...dimensions } = expected;
+    expect(result).toMatchObject({ ...dimensions, parsingMetadata: { wordCount } });
   });
 
   it('should analyze ATS compatibility and return a calibrated score', async () => {

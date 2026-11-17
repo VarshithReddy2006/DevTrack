@@ -15,9 +15,10 @@ export function getAllQueues(): Queue[] {
 }
 
 export async function closeAllQueues(): Promise<void> {
-  const { dlqService } = await import('./dlq.service.js');
-  await dlqService.close();
-  await QueueRegistry.closeAllQueues();
+  const dlqClose = import('./dlq.service.js').then(({ dlqService }) => dlqService.close());
+  const results = await Promise.allSettled([dlqClose, QueueRegistry.closeAllQueues()]);
+  const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+  if (errors.length) throw new AggregateError(errors, 'Queue cleanup failed');
 }
 
 // Pre-registered queue getters

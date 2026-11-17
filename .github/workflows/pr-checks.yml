@@ -102,6 +102,10 @@ jobs:
         working-directory: ./backend
         run: npm run test:unit --if-present
 
+      - name: Run Backend Chaos Tests
+        working-directory: ./backend
+        run: npm run test:chaos
+
       - name: Run Frontend Unit Tests
         working-directory: ./frontend
         run: npm run test:unit --if-present

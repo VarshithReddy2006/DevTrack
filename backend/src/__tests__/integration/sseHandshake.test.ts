@@ -1,7 +1,8 @@
 // src/__tests__/integration/sseHandshake.test.ts — Secure SSE Handshake Ticket Protocol Integration Test
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createApp } from '../../index.js';
 import { orchestrator } from '../../shared/runtime/index.js';
+import { getRedisClient } from '../../shared/redis/index.js';
 import { User } from '../../db/models/index.js';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
@@ -68,9 +69,15 @@ describe('Security: SSE Handshake Ticket Protocol', () => {
   });
 
   afterAll(async () => {
-    server.closeAllConnections?.();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await orchestrator.shutdown();
+    await orchestrator.shutdown(server);
+  });
+
+  // GET /events allows 5 connection attempts per minute per IP, and this file makes more
+  // than that. Start every test with a clean SSE limiter state (only the rl:sse:* keys).
+  beforeEach(async () => {
+    const redis = getRedisClient();
+    const keys = await redis.keys('rl:sse:*');
+    if (keys.length > 0) await redis.del(...keys);
   });
 
   it('should have successfully obtained a test access token', () => {
@@ -136,9 +143,37 @@ describe('Security: SSE Handshake Ticket Protocol', () => {
     expect(status2).toBe(401);
   });
 
+  it('should reject a raw access token in ?token= even though it is valid', async () => {
+    const res = await fetch(`${API_BASE}/api/events?token=${encodeURIComponent(accessToken)}`);
+    expect(res.status).toBe(401);
+    const body = await res.json() as { code: string };
+    expect(body.code).toBe('INVALID_OR_MISSING_TICKET');
+  });
+
+  it('should answer 429 once a client exceeds 5 SSE connection attempts per minute', async () => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      expect(await testSseConnection('00000000-0000-0000-0000-000000000000')).toBe(401);
+    }
+    expect(await testSseConnection('00000000-0000-0000-0000-000000000000')).toBe(429);
+  });
+
   it('should reject invalid or forged tickets with 401', async () => {
     const fakeTicket = '00000000-0000-0000-0000-000000000000';
     const status = await testSseConnection(fakeTicket);
     expect(status).toBe(401);
+  });
+
+  it('delivers the shutdown event before ending the HTTP stream', async () => {
+    const ticketResponse = await fetch(`${API_BASE}/api/auth/sse-handshake`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const { data } = await ticketResponse.json() as { data: { ticket: string } };
+    const response = await fetch(`${API_BASE}/api/events?ticket=${data.ticket}`);
+    expect(response.status).toBe(200);
+
+    const [body] = await Promise.all([response.text(), orchestrator.shutdown(server)]);
+    expect(body).toMatch(/event: server_shutdown\nretry: \d+\ndata: {"reconnectDelayMs":\d+}/);
+    expect(server.listening).toBe(false);
   });
 });

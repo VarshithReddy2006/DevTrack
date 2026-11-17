@@ -26,6 +26,20 @@ const auditEntry = {
 };
 
 describe('AI audit persistence', () => {
+  it('waits for an audit write that the caller did not await', async () => {
+    const audit = new AIResponseAuditLogClass();
+    let completed = false;
+    const write = audit.log(auditEntry).then(entry => {
+      completed = true;
+      return entry;
+    });
+
+    await audit.flushPendingWrites();
+
+    expect(completed).toBe(true);
+    expect(await write).toMatchObject({ userId: auditEntry.userId });
+  });
+
   it('persists metadata for a fresh service instance and excludes raw content', async () => {
     const writer = new AIResponseAuditLogClass();
     const entry = await writer.log(auditEntry);

@@ -1,13 +1,13 @@
 // src/modules/recommendations/engines/credibilityReasoner.ts
 import { Schema, type Types } from 'mongoose';
 import { saveGeneratedRecommendation } from '../../../db/models/intelligenceRecommendation.model.js';
-import { ResumeEvidenceClaim } from '../../../db/models/resumeEvidenceClaim.model.js';
+import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 
 export class CredibilityReasoner {
   
   static async analyze(userId: string | Schema.Types.ObjectId, resumeProfileId: string | Schema.Types.ObjectId): Promise<Types.ObjectId[]> {
     const ids: Types.ObjectId[] = [];
-    const claims = await ResumeEvidenceClaim.find({ userId, resumeProfileId });
+    const claims = await ResumeEvidenceClaim.find({ userId, resumeProfileId, ...resumeClaimScope });
     if (claims.length === 0) return ids;
 
     let hasDistributedSystems = false;

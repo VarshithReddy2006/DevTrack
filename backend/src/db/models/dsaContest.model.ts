@@ -2,8 +2,8 @@
 import { Schema, model, type Document } from 'mongoose';
 
 export interface IDsaContest extends Document {
-  userId: Schema.Types.ObjectId;
-  platform: 'leetcode' | 'codeforces' | 'codechef' | 'other';
+  userId?: Schema.Types.ObjectId;
+  platform: 'leetcode' | 'codeforces' | 'codechef' | 'atcoder' | 'other';
   contestName: string;
   rank: number | null;
   totalParticipants: number | null;
@@ -12,6 +12,16 @@ export interface IDsaContest extends Document {
   ratingAfter: number | null;
   ratingChange: number | null;
   participatedAt: Date;
+  kind: 'participated' | 'scheduled';
+  externalId?: string | null;
+  startTime?: Date | null;
+  endTime?: Date | null;
+  durationSeconds?: number | null;
+  url?: string | null;
+  phase?: string | null;
+  stale?: boolean;
+  alertEmitted?: boolean;
+  fetchedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -20,17 +30,59 @@ const dsaContestSchema = new Schema<IDsaContest>(
     userId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: false,
       index: true,
     },
     platform: {
       type: String,
-      enum: ['leetcode', 'codeforces', 'codechef', 'other'],
+      enum: ['leetcode', 'codeforces', 'codechef', 'atcoder', 'other'],
       required: true,
     },
     contestName: {
       type: String,
       required: true,
+    },
+    kind: {
+      type: String,
+      enum: ['participated', 'scheduled'],
+      default: 'participated',
+      required: true,
+    },
+    externalId: {
+      type: String,
+      default: null,
+    },
+    startTime: {
+      type: Date,
+      default: null,
+    },
+    endTime: {
+      type: Date,
+      default: null,
+    },
+    durationSeconds: {
+      type: Number,
+      default: null,
+    },
+    url: {
+      type: String,
+      default: null,
+    },
+    phase: {
+      type: String,
+      default: null,
+    },
+    stale: {
+      type: Boolean,
+      default: false,
+    },
+    alertEmitted: {
+      type: Boolean,
+      default: false,
+    },
+    fetchedAt: {
+      type: Date,
+      default: null,
     },
     rank: {
       type: Number,
@@ -58,7 +110,7 @@ const dsaContestSchema = new Schema<IDsaContest>(
     },
     participatedAt: {
       type: Date,
-      required: true,
+      default: Date.now,
       index: true,
     },
   },
@@ -78,5 +130,17 @@ const dsaContestSchema = new Schema<IDsaContest>(
 // Indexes
 dsaContestSchema.index({ userId: 1, participatedAt: -1 });
 dsaContestSchema.index({ userId: 1, platform: 1 });
+dsaContestSchema.index({ platform: 1, startTime: 1, kind: 1 });
+dsaContestSchema.index(
+  { platform: 1, externalId: 1, kind: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      kind: 'scheduled',
+      externalId: { $type: 'string' },
+    },
+  }
+);
+dsaContestSchema.index({ kind: 1, startTime: 1, alertEmitted: 1 });
 
 export const DsaContest = model<IDsaContest>('DsaContest', dsaContestSchema);

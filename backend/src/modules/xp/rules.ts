@@ -47,6 +47,9 @@ export const XP_REWARDS = {
   syncCompleted: 5,
   firstPlatformSync: 50,
 
+  // Spaced repetition review rewards
+  revisionReview: 5,
+
   // Milestone bonuses (problem counts)
   milestone: {
     10: 25,   // 10 problems solved

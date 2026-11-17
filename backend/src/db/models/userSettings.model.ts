@@ -23,6 +23,7 @@ export interface IUserSettings extends Document {
     streakReminder: boolean;
     missionAlerts: boolean;
     projectUpdates: boolean;
+    contestAlerts: boolean;
   };
   appearance: {
     theme: 'light' | 'dark' | 'system';
@@ -40,6 +41,9 @@ export interface IUserSettings extends Document {
     showDsaProgress: boolean;
     showGithub: boolean;
     showTimeline: boolean;
+  };
+  leagues: {
+    participate: boolean;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -73,6 +77,7 @@ const userSettingsSchema = new Schema<IUserSettings>(
       streakReminder: { type: Boolean, default: true },
       missionAlerts: { type: Boolean, default: true },
       projectUpdates: { type: Boolean, default: true },
+      contestAlerts: { type: Boolean, default: true },
     },
     appearance: {
       theme: { type: String, enum: ['light', 'dark', 'system'], default: 'system' },
@@ -90,6 +95,10 @@ const userSettingsSchema = new Schema<IUserSettings>(
       showDsaProgress: { type: Boolean, default: true },
       showGithub: { type: Boolean, default: true },
       showTimeline: { type: Boolean, default: true },
+    },
+    // Weekly leagues are opt-in: standings show username and avatar to other participants.
+    leagues: {
+      participate: { type: Boolean, default: false },
     },
   },
   {

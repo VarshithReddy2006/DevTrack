@@ -1,7 +1,18 @@
 // src/db/models/resumeEvidenceClaim.model.ts
-import { Schema, model, type Document } from 'mongoose';
+import { Schema, model, type Document, type Types } from 'mongoose';
+import { EVIDENCE_LEDGER_INDEX } from './evidenceLedgerIndex.js';
 
-export type VerificationStatus = 'verified' | 'partial' | 'unverified' | 'flagged';
+export const VERIFICATION_STATUSES = ['verified', 'partial', 'unverified', 'flagged'] as const;
+export const EVIDENCE_SUBJECT_TYPES = ['resume_claim', 'repo', 'dsa_rating', 'focus_consistency', 'certification'] as const;
+export const EVIDENCE_SOURCES = ['github', 'leetcode', 'codeforces', 'devtrack_focus', 'user'] as const;
+
+// A missing subject type identifies claims written by legacy versions.
+export const resumeClaimScope = { subjectType: { $in: ['resume_claim', null] } };
+
+export type EvidenceSubjectType = typeof EVIDENCE_SUBJECT_TYPES[number];
+export type EvidenceSource = typeof EVIDENCE_SOURCES[number];
+
+export type VerificationStatus = typeof VERIFICATION_STATUSES[number];
 export type ProvenanceType = 'github' | 'project' | 'dsa' | 'infra' | 'manual' | 'ai_assisted';
 
 export interface IEvidenceSource {
@@ -13,7 +24,13 @@ export interface IEvidenceSource {
 
 export interface IResumeEvidenceClaim extends Document {
   userId: Schema.Types.ObjectId;
-  resumeProfileId: Schema.Types.ObjectId;
+  resumeProfileId?: Types.ObjectId;
+  subjectType: EvidenceSubjectType;
+  subjectKey?: string;
+  source: EvidenceSource;
+  sourceUrl?: string;
+  fetchedAt?: Date;
+  staleAfter?: Date;
   variantId: string | null;
   claimText: string;
   evidenceSources: IEvidenceSource[];
@@ -64,8 +81,25 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
     resumeProfileId: {
       type: Schema.Types.ObjectId,
       ref: 'ResumeProfile',
-      required: true,
+      required: function (this: IResumeEvidenceClaim) { return this.subjectType === 'resume_claim'; },
     },
+    subjectType: { type: String, enum: EVIDENCE_SUBJECT_TYPES, required: true, default: 'resume_claim' },
+    subjectKey: { type: String, required: true, trim: true },
+    source: { type: String, enum: EVIDENCE_SOURCES, required: true, default: 'user' },
+    sourceUrl: {
+      type: String,
+      trim: true,
+      validate: (value: string) => {
+        try {
+          const url = new URL(value);
+          return url.protocol === 'https:' || url.protocol === 'http:';
+        } catch {
+          return false;
+        }
+      },
+    },
+    fetchedAt: { type: Date },
+    staleAfter: { type: Date },
     variantId: {
       type: String,
       default: null,
@@ -81,7 +115,7 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
     },
     verificationStatus: {
       type: String,
-      enum: ['verified', 'partial', 'unverified', 'flagged'],
+      enum: VERIFICATION_STATUSES,
       default: 'unverified',
       index: true,
     },
@@ -121,7 +155,14 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
   }
 );
 
+resumeEvidenceClaimSchema.pre('validate', function () {
+  if (this.subjectType === 'resume_claim' && this.subjectKey === undefined) {
+    this.subjectKey = 'resume:' + this._id.toString();
+  }
+});
+
 // Indexes
+resumeEvidenceClaimSchema.index(EVIDENCE_LEDGER_INDEX.key, EVIDENCE_LEDGER_INDEX.options);
 resumeEvidenceClaimSchema.index({ userId: 1, verificationStatus: 1 });
 resumeEvidenceClaimSchema.index({ resumeProfileId: 1 });
 resumeEvidenceClaimSchema.index({ variantId: 1 });
