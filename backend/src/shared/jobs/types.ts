@@ -128,12 +128,23 @@ export interface OgRenderJobData {
   requestId?: string;
 }
 
+/**
+ * One answer to evaluate. `stateVersion` is the session version at which the answer was
+ * accepted (state SCORING); the worker only writes a result while the session is still there.
+ */
+export interface InterviewScoreJobData {
+  sessionId: string;
+  turnIndex: number;
+  stateVersion: number;
+  requestId?: string;
+}
+
 export interface DossierRenderJobData {
   userId: string;
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData;
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -151,6 +162,9 @@ export const QueueNames = {
   // Render pool (WORKER_TYPE=render)
   OG_RENDER: 'domain-og-render',
   DOSSIER_RENDER: 'dossier-render',
+
+  // AI pool (answer evaluation for the mock interview studio)
+  INTERVIEW_SCORE: 'interview-score',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',

@@ -217,6 +217,13 @@ interface HookCallbackRegistry {
 const activeCallbacks = new Set<HookCallbackRegistry>();
 
 let globalEventSource: EventSource | null = null;
+// Bumped by every disconnect. A connect attempt remembers the value it started with and gives
+// up after each await if it changed, so a disconnect always wins over a ticket request that is
+// still in flight.
+let connectGeneration = 0;
+// The connect attempt that is currently waiting for its token or ticket. Concurrent callers
+// share it instead of each opening their own stream.
+let connectInFlight: Promise<void> | null = null;
 let globalReconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 let globalHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 // Last time this stream proved it was alive (open, data event or named heartbeat event).
@@ -283,18 +290,32 @@ function attachUserStoreAuthListener(
   });
 }
 
-export async function connectGlobalSse(
+export function connectGlobalSse(
   setSseStatus?: (status: 'connected' | 'reconnecting' | 'disconnected') => void,
   setInfrastructureDegraded?: (degraded: boolean) => void
-) {
+): Promise<void> {
   const updateStatus = setSseStatus || ((status) => useUIStore.getState().setSseStatus(status));
   const updateDegraded = setInfrastructureDegraded || ((deg) => useUIStore.getState().setInfrastructureDegraded(deg));
 
   attachUserStoreAuthListener(updateStatus, updateDegraded);
 
-  if (globalEventSource !== null) return;
+  if (globalEventSource !== null) return Promise.resolve();
+  if (connectInFlight !== null) return connectInFlight;
 
+  const attempt: Promise<void> = openGlobalStream(connectGeneration, updateStatus, updateDegraded).finally(() => {
+    if (connectInFlight === attempt) connectInFlight = null;
+  });
+  connectInFlight = attempt;
+  return attempt;
+}
+
+async function openGlobalStream(
+  generation: number,
+  updateStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void,
+  updateDegraded: (degraded: boolean) => void
+): Promise<void> {
   const token = await resolveAuthToken();
+  if (generation !== connectGeneration) return;
   const isAuthed = useUserStore.getState().isAuthenticated;
 
   if (!token && !isAuthed) {
@@ -317,6 +338,7 @@ export async function connectGlobalSse(
     const { data } = await axiosClient.post<{ data: { ticket: string } }>('/auth/sse-handshake');
     ticket = data.data.ticket;
   } catch {
+    if (generation !== connectGeneration) return;
     console.warn('[SSE] Failed to obtain SSE handshake ticket, will retry.');
     globalConsecutiveFailures += 1;
     store.consecutiveFailures = globalConsecutiveFailures;
@@ -330,6 +352,9 @@ export async function connectGlobalSse(
     scheduleReconnect(false, updateStatus, updateDegraded);
     return;
   }
+
+  // disconnectGlobalSse() ran while the ticket request was in flight: do not open a stream.
+  if (generation !== connectGeneration) return;
 
   const urlParams = new URLSearchParams({ ticket });
   
@@ -509,6 +534,10 @@ export function disconnectGlobalSse(
   setSseStatus?: (status: 'connected' | 'reconnecting' | 'disconnected') => void
 ) {
   const updateStatus = setSseStatus || ((status) => useUIStore.getState().setSseStatus(status));
+
+  // Cancel any connect that is still waiting for its token or ticket.
+  connectGeneration += 1;
+  connectInFlight = null;
 
   clearStabilityTimer();
   stopHeartbeatWatchdog();
