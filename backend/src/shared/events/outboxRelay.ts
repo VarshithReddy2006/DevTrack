@@ -39,13 +39,14 @@ export function toEnvelope(e: IOutboxEvent): DomainEventEnvelope {
     userId: e.userId,
     timestamp: e.createdAt.toISOString(),
     payload: e.payload,
-    metadata: { aggregateType: e.aggregateType, aggregateId: e.aggregateId },
+    metadata: { aggregateType: e.aggregateType, aggregateId: e.aggregateId, traceContext: e.traceContext },
   };
 }
 
 export class OutboxRelay {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
+  private pendingTick: Promise<number> | undefined;
   private readonly batchSize: number;
   private readonly leaseMs: number;
   private readonly maxAttempts: number;
@@ -133,18 +134,22 @@ export class OutboxRelay {
       if (!this.running) return;
       let handled = 0;
       try {
-        handled = await this.tick();
+        this.pendingTick = this.tick();
+        handled = await this.pendingTick;
       } catch (err) {
         this.opts.onError?.(err);
+      } finally {
+        this.pendingTick = undefined;
       }
       if (this.running) this.timer = setTimeout(loop, handled >= this.batchSize ? 0 : this.pollIntervalMs);
     };
     this.timer = setTimeout(loop, 0);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    await this.pendingTick?.catch(() => undefined);
   }
 }

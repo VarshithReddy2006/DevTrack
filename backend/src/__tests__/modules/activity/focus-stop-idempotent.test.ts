@@ -4,17 +4,21 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { Types } from 'mongoose';
 import {
-  User, UserXp, XpTransaction, FocusSession, ActivityEvent, UserStreakLog, Mission,
+  User, UserXp, XpTransaction, FocusSession, ActivityEvent, UserStreakLog, Mission, ProcessedEvent, UnifiedRuntimeState,
 } from '../../../db/models/index.js';
+import { OutboxEvent } from '../../../db/models/outboxEvent.model.js';
 import activityRoutes from '../../../modules/activity/activity.routes.js';
+import focusRoutes from '../../../modules/activity/focus.routes.js';
 import { errorHandler } from '../../../middleware/error.js';
 import { FocusEngine } from '../../../modules/activity/focusEngine.service.js';
+import { QueueNames } from '../../../shared/jobs/types.js';
+import { createDomainOutboxRelay, processFocusCompletionJob } from '../../../workers/focus-completion.worker.js';
+import type { DomainEventEnvelope } from '../../../shared/events/eventContract.js';
 
-const fixture = vi.hoisted(() => ({ verify: vi.fn(), queued: [] as Array<{ name: string; data: Record<string, unknown> }> }));
+const fixture = vi.hoisted(() => ({ verify: vi.fn() }));
+const queued: DomainEventEnvelope[] = [];
 
-// Keep auth middleware, routes, controller, focus engine, runtime state, streak service,
-// XP processor and MongoDB real. The queue runs the XP processor inline, so the real
-// XpTransaction unique index decides whether an award is a duplicate.
+// Keep the HTTP routes and MongoDB real. Dispatch jobs inline when a test drains the relay.
 vi.mock('@clerk/backend', () => ({ verifyToken: fixture.verify }));
 vi.mock('../../../services/auth/ClerkUserSyncService.js', () => ({ syncClerkUser: vi.fn() }));
 vi.mock('../../../shared/sse/index.js', () => ({
@@ -29,40 +33,37 @@ vi.mock('../../../shared/cache/cacheManager.js', () => ({
   },
 }));
 vi.mock('../../../shared/logger.js', () => ({ logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
-vi.mock('../../../shared/jobs/index.js', () => ({
-  getXpProcessingQueue: () => ({
-    add: async (name: string, data: Record<string, unknown>) => {
-      fixture.queued.push({ name, data });
-      if (data.sourceType === 'focus_session') {
-        const { processXpEvent } = await import('../../../modules/xp/processor.js');
-        await processXpEvent(data as never);
-      }
-      return {};
-    },
-  }),
-}));
+const relay = createDomainOutboxRelay(async (queue, _jobId, event) => {
+  if (queue === QueueNames.DOMAIN_READINESS) return;
+  if (queue === QueueNames.DOMAIN_FOCUS_XP) queued.push(event);
+  await processFocusCompletionJob(queue, event);
+});
 
 const userId = '000000000000000000000055';
 let server: Server;
 let base: string;
 
 beforeAll(async () => {
-  await Promise.all([User.init(), UserXp.init(), XpTransaction.init(), FocusSession.init(), UserStreakLog.init()]);
+  await Promise.all([
+    User.init(), UserXp.init(), XpTransaction.init(), FocusSession.init(), UserStreakLog.init(),
+    OutboxEvent.init(), ProcessedEvent.init(),
+  ]);
   const app = express();
   app.use(express.json());
   app.use('/api/v1/activity', activityRoutes);
+  app.use('/api/v1/focus/sessions', focusRoutes);
   app.use(errorHandler);
   server = await new Promise<Server>((resolve, reject) => {
     const listener = app.listen(0, '127.0.0.1');
     listener.once('error', reject);
     listener.once('listening', () => resolve(listener));
   });
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1/activity`;
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1`;
 });
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  fixture.queued.length = 0;
+  queued.length = 0;
   vi.stubEnv('CLERK_SECRET_KEY', 'sk_test_focus_stop');
   fixture.verify.mockResolvedValue({ sub: 'clerk_focus_user' });
   await User.create({ _id: userId, clerkId: 'clerk_focus_user', username: 'focususer', email: 'focus@example.test',
@@ -77,13 +78,16 @@ afterAll(async () => {
 });
 
 async function post(path: string, body?: unknown) {
-  const response = await fetch(`${base}${path}`, {
+  const route = path.startsWith('/focus/sessions/') ? path : `/activity${path}`;
+  const response = await fetch(`${base}${route}`, {
     method: 'POST',
     headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
-  return { status: response.status, body: await response.json() as { message?: string; data?: Record<string, unknown> } };
+  const result = { status: response.status, body: await response.json() as { message?: string; data?: Record<string, unknown> } };
+  if (path === '/focus/stop' || path.endsWith('/complete')) await relay.tick();
+  return result;
 }
 
 async function seedQualifyingTimer(sessionId: string) {
@@ -93,7 +97,7 @@ async function seedQualifyingTimer(sessionId: string) {
 }
 
 async function expectNoAward() {
-  expect(fixture.queued).toHaveLength(0);
+  expect(queued).toHaveLength(0);
   expect(await XpTransaction.countDocuments({ userId, sourceType: 'focus_session' })).toBe(0);
   expect((await UserXp.findOne({ userId }))!.totalXp).toBe(0);
   expect(await ActivityEvent.countDocuments({ userId, type: 'focus_session' })).toBe(0);
@@ -123,8 +127,8 @@ describe('POST /activity/focus/stop', () => {
       expect(replay.body.message).toBe('No running focus session to stop');
     }
 
-    expect(fixture.queued).toHaveLength(1);
-    expect(fixture.queued[0].data).toMatchObject({ userId, sourceType: 'focus_session', sourceId: `focus_${sessionId}` });
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ userId, type: 'focus.session.completed', payload: { sessionId } });
     const ledger = await XpTransaction.find({ userId, sourceType: 'focus_session' });
     expect(ledger).toHaveLength(1);
     expect(ledger[0].xpAwarded).toBe(50);
@@ -132,7 +136,7 @@ describe('POST /activity/focus/stop', () => {
     expect(await ActivityEvent.countDocuments({ userId, type: 'focus_session' })).toBe(1);
     const logs = await UserStreakLog.find({ userId, streakType: 'focus' });
     expect(logs).toHaveLength(1);
-    expect(logs[0]).toMatchObject({ activityCount: 1, sources: [`focus_${sessionId}`] });
+    expect(logs[0]).toMatchObject({ activityCount: 1, sources: [`focus_session:${sessionId}`] });
     expect((await FocusSession.findById(sessionId))!.status).toBe('completed');
   });
 
@@ -215,6 +219,33 @@ describe('POST /activity/focus/stop', () => {
     expect(await ActivityEvent.countDocuments({ userId, type: 'focus_session' })).toBe(1);
     expect(await UserStreakLog.countDocuments({ userId, streakType: 'focus' })).toBe(1);
   });
+
+  it('returns the same persisted result on replays of the session-ID endpoint', async () => {
+    const { sessionId } = await new FocusEngine().startSession(userId, 'deep_work', 25);
+    await seedQualifyingTimer(sessionId);
+    const path = `/focus/sessions/${sessionId}/complete`;
+    const first = await post(path);
+    const replay = await post(path);
+    expect(first.status).toBe(200);
+    expect(replay).toEqual(first);
+    expect(first.body.data).toMatchObject({ status: 'completed', xp: { amount: 50, reason: 'qualified' } });
+    expect(queued).toHaveLength(1);
+  });
+
+  it('keeps the runtime status aligned when a cancellation races completion', async () => {
+    await post('/focus/start', { duration: 25, mode: 'deep_work' });
+    const live = await FocusSession.findOne({ userId, status: 'running' }).orFail();
+    await seedQualifyingTimer(String(live._id));
+    await Promise.all([post('/focus/stop'), post('/focus/cancel')]);
+
+    const session = await FocusSession.findById(live._id).orFail();
+    expect(['completed', 'abandoned']).toContain(session.status);
+    expect(await UnifiedRuntimeState.findOne({ userId })).toMatchObject({
+      sessionContext: { isActive: false, status: session.status },
+    });
+    expect(await OutboxEvent.countDocuments({ aggregateId: String(live._id) }))
+      .toBe(session.status === 'completed' ? 1 : 0);
+  });
 });
 
 describe('FocusEngine.completeSession', () => {
@@ -235,12 +266,13 @@ describe('FocusEngine.completeSession', () => {
     expect(await FocusSession.findById(sessionId)).toMatchObject({ heartbeatCount: 4, coveredHeartbeatIntervals: 2 });
   });
 
-  it('returns a result for only one of two concurrent completions', async () => {
+  it('persists exactly one completion for concurrent requests', async () => {
     const engine = new FocusEngine();
     const owner = new Types.ObjectId().toString();
     const { sessionId } = await engine.startSession(owner, 'deep_work', 25);
     const results = await Promise.all([engine.completeSession(sessionId, owner), engine.completeSession(sessionId, owner)]);
-    expect(results.filter(Boolean)).toHaveLength(1);
-    expect(await engine.completeSession(sessionId, owner)).toBeNull();
+    expect(results.map(result => result?.replayed).sort()).toEqual([false, true]);
+    expect(await engine.completeSession(sessionId, owner)).toMatchObject({ replayed: true, sessionId });
+    expect(await OutboxEvent.countDocuments({ aggregateId: sessionId })).toBe(1);
   });
 });

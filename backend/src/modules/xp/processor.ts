@@ -18,6 +18,7 @@ import { updateMissionProgress } from '../missions/missionProgress.service.js';
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { unifiedRuntimeStateService } from '../runtime-state/unifiedRuntimeState.service.js';
 import { computeActiveSec, decideFocusXp } from '../activity/focusXpDecision.js';
+import { ensureUserXp, readFocusXpForDay } from './focusXpLedger.js';
 import { enqueueLeagueScore } from '../leagues/workers/leagueScore.worker.js';
 
 export interface XpEventPayload {
@@ -45,14 +46,20 @@ export async function processXpEvent(payload: XpEventPayload): Promise<XpProcess
   return applyXpEvent(payload);
 }
 
+export async function processFocusSessionXp(userId: string, sessionId: string): Promise<XpProcessingResult> {
+  return applyXpEvent({ userId, sourceType: 'focus_session', sourceId: sessionId });
+}
+
 // Internal mission entry point: callers supply identity, never a reward amount.
 // Retain the existing manual/mission_<id> ledger key, including historical zeros.
-export async function processMissionReward(userId: string, missionId: string): Promise<XpProcessingResult> {
+export async function processMissionReward(userId: string, missionId: string, focusSessionId?: string): Promise<XpProcessingResult> {
   const mission = await Mission.findOne({
     _id: new Types.ObjectId(missionId),
     userId: new Types.ObjectId(userId),
     status: 'completed',
-    expiresAt: { $gte: new Date() },
+    ...(focusSessionId
+      ? { completedByFocusSessionId: focusSessionId, $expr: { $lte: ['$completedAt', '$expiresAt'] } }
+      : { expiresAt: { $gte: new Date() } }),
   }).lean();
 
   if (!mission || !mission.completedAt || !(mission.targetCount > 0 && mission.currentCount >= mission.targetCount)) {
@@ -106,11 +113,7 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
 
   // Establish the unique aggregate outside the transaction. Concurrent first
   // awards may race on this upsert; only the userId duplicate is recoverable.
-  try {
-    await UserXp.updateOne({ userId: userObjId }, { $setOnInsert: { userId: userObjId } }, { upsert: true });
-  } catch (error) {
-    if ((error as { code?: number }).code !== 11000 || !await UserXp.exists({ userId: userObjId })) throw error;
-  }
+  await ensureUserXp(userObjId);
   const activityIncrements: Record<string, number> = {};
   if (sourceType === 'dsa_accepted' && difficulty) {
     activityIncrements['lifetimeStats.totalProblemsSolved'] = 1;
@@ -136,7 +139,8 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
       let xpAwarded = baseAward;
       let ledgerMetadata = metadata;
       if (sourceType === 'focus_session') {
-        const sessionId = /^focus_([a-f0-9]{24})$/.exec(sourceId)?.[1];
+        const legacySessionId = /^focus_([a-f0-9]{24})$/.exec(sourceId)?.[1];
+        const sessionId = legacySessionId ?? (/^[a-f0-9]{24}$/.test(sourceId) ? sourceId : undefined);
         const focus = sessionId && await FocusSession.findOne({
           _id: new Types.ObjectId(sessionId), userId: userObjId, status: 'completed',
         }).session(session).lean();
@@ -144,22 +148,17 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
         xpAwarded = 0;
         if (focus && focus.completedAt) {
           const completionDay = focus.completedAt.toISOString().slice(0, 10);
-          const dayStart = new Date(completionDay);
-          const dayEnd = new Date(dayStart.getTime() + 86_400_000);
-          // This read and the shared per-user XP aggregate write use the same
-          // transaction. A concurrent award forces a retry against the new ledger.
-          const prior = await XpTransaction.find({
-            userId: userObjId, sourceType, xpAwarded: { $gt: 0 },
-            $or: [
-              { 'metadata.focusCompletionDay': completionDay },
-              { 'metadata.focusCompletionDay': { $exists: false }, createdAt: { $gte: dayStart, $lt: dayEnd } },
-            ],
-          }).select('xpAwarded').session(session).lean();
-          xpAwarded = decideFocusXp({
-            plannedSec: focus.plannedDurationMinutes * 60,
-            activeSec: computeActiveSec(focus.activeDurationMs),
-            coveredHeartbeatIntervals: focus.coveredHeartbeatIntervals ?? 0,
-          }, prior).xpAmount;
+          if (!legacySessionId) {
+            xpAwarded = focus.xp?.amount ?? 0;
+          } else if (!focus.xp) {
+            // Prefixed jobs already in Redis settle through the legacy ledger.
+            const prior = await readFocusXpForDay(userObjId, focus.completedAt, session);
+            xpAwarded = decideFocusXp({
+              plannedSec: focus.plannedDurationMinutes * 60,
+              activeSec: computeActiveSec(focus.activeDurationMs),
+              coveredHeartbeatIntervals: focus.coveredHeartbeatIntervals ?? 0,
+            }, prior).xpAmount;
+          }
           ledgerMetadata = { focusCompletionDay: completionDay };
         }
         if (xpAwarded === 0) {
