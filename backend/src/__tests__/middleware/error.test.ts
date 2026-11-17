@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import mongoose, { Types } from 'mongoose';
+import multer from 'multer';
 import { describe, expect, it, vi } from 'vitest';
 import { errorHandler } from '../../middleware/error.js';
 
@@ -50,5 +51,26 @@ describe('errorHandler ObjectId errors', () => {
     const { status, json } = handleError(new Error('Private internal details'));
     expect(status).toHaveBeenCalledWith(500);
     expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'INTERNAL_ERROR', message: 'Internal server error' }));
+  });
+});
+
+describe('errorHandler multer errors', () => {
+  it.each([
+    ['LIMIT_FILE_SIZE', 413, 'FILE_TOO_LARGE'],
+    ['LIMIT_FILE_COUNT', 400, 'TOO_MANY_FILES'],
+    ['LIMIT_UNEXPECTED_FILE', 400, 'UNEXPECTED_FILE'],
+    ['LIMIT_PART_COUNT', 400, 'UPLOAD_ERROR'],
+    ['LIMIT_FIELD_VALUE', 400, 'UPLOAD_ERROR'],
+  ] as const)('maps %s to %i %s using the real MulterError', (multerCode, statusCode, code) => {
+    const { status, json } = handleError(new multer.MulterError(multerCode, 'resume'));
+    expect(status).toHaveBeenCalledWith(statusCode);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ success: false, code, statusCode }));
+  });
+
+  it('honours a statusCode set on a plain error, as the file filter error does', () => {
+    const error = Object.assign(new Error('Unsupported file type.'), { statusCode: 415, code: 'UNSUPPORTED_FILE_TYPE' });
+    const { status, json } = handleError(error);
+    expect(status).toHaveBeenCalledWith(415);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'UNSUPPORTED_FILE_TYPE' }));
   });
 });
