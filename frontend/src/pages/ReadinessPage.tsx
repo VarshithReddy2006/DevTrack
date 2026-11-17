@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Code2, Map, TrendingUp, MessageSquare, Target, Flame } from 'lucide-react';
+import { Code2, Map, TrendingUp, MessageSquare, Target, Flame, ShieldCheck } from 'lucide-react';
 import { NetworkErrorPanel } from '../components/shared/NetworkErrorPanel';
 import { useReadinessData } from '../features/readiness/hooks/useReadinessData';
 import { ReadinessHero } from '../features/readiness/components/ReadinessHero';
@@ -113,6 +113,17 @@ const ReadinessPage: React.FC = () => {
       gradientFrom: '#FDF2F8',
       gradientTo: '#FCE7F3',
       summary: 'Ask why, get evidence-backed answers',
+    },
+    {
+      id: 'evidence',
+      title: 'Evidence Ledger',
+      description: 'Claims behind your score',
+      route: '/readiness/evidence',
+      icon: <ShieldCheck size={18} />,
+      accentColor: '#0EA5E9',
+      gradientFrom: '#F0F9FF',
+      gradientTo: '#E0F2FE',
+      summary: 'See what is verified, partial or flagged',
     },
   ];
 
