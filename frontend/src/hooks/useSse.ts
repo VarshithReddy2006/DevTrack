@@ -38,6 +38,8 @@ export type SseEventType =
   | 'xp_updated'
   | 'badge_earned'
   | 'resume_progression'
+  | 'interview.turn.delta'
+  | 'interview.session.completed'
   | 'heartbeat';
 
 // ---------------------------------------------------------------------------

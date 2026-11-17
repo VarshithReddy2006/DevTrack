@@ -10,7 +10,7 @@ const clerk = vi.hoisted(() => {
     matches: false, media, addEventListener: vi.fn(), removeEventListener: vi.fn(),
     addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(), onchange: null,
   }));
-  return { signedIn: false, originalMatchMedia };
+  return { signedIn: false, interviewEnabled: false, originalMatchMedia };
 });
 
 afterAll(() => { window.matchMedia = clerk.originalMatchMedia; });
@@ -34,6 +34,15 @@ vi.mock('../pages/SignupPage', () => ({ SignupPage: () => <h1>Signup</h1> }));
 vi.mock('../pages/FocusPage', () => ({ default: () => <h1>Focus</h1> }));
 vi.mock('../pages/DashboardPage', () => ({ default: () => <h1>Dashboard</h1> }));
 vi.mock('../pages/admin/BetaDashboardPage', () => ({ default: () => <h1>Beta Dashboard</h1> }));
+vi.mock('../pages/ReadinessPage', () => ({ default: () => <h1>Readiness</h1> }));
+vi.mock('../pages/interview/InterviewStudioPage', () => ({ default: () => <h1>Interview studio</h1> }));
+vi.mock('../pages/interview/InterviewReviewPage', () => ({ default: () => <h1>Interview review</h1> }));
+vi.mock('../features/flags/hooks/useFeatureFlags', () => ({
+  useFeatureFlags: () => ({
+    isLoading: false,
+    isEnabled: (key: string) => key === 'interview-studio' && clerk.interviewEnabled,
+  }),
+}));
 
 function renderAt(path: string) {
   return render(
@@ -44,7 +53,7 @@ function renderAt(path: string) {
 }
 
 describe('AppRouter', () => {
-  beforeEach(() => { clerk.signedIn = false; });
+  beforeEach(() => { clerk.signedIn = false; clerk.interviewEnabled = false; });
   afterEach(cleanup);
 
   it('shows the landing page to signed-out visitors at /', () => {
@@ -77,5 +86,21 @@ describe('AppRouter', () => {
     renderAt('/beta/dashboard');
     expect(await screen.findByText('Beta Dashboard')).toBeTruthy();
     expect(screen.getByTestId('app-shell')).toBeTruthy();
+  });
+
+  it.each([
+    ['/interview', 'Interview studio'],
+    ['/interview/session-1/review', 'Interview review'],
+  ])('renders %s for signed-in users with the interview-studio flag', async (path, heading) => {
+    clerk.signedIn = true;
+    clerk.interviewEnabled = true;
+    renderAt(path);
+    expect(await screen.findByRole('heading', { name: heading })).toBeTruthy();
+  });
+
+  it('redirects the interview review to Readiness when the flag is off', async () => {
+    clerk.signedIn = true;
+    renderAt('/interview/session-1/review');
+    expect(await screen.findByRole('heading', { name: 'Readiness' })).toBeTruthy();
   });
 });

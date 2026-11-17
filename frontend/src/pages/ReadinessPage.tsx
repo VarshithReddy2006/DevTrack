@@ -1,5 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import { Code2, Map, TrendingUp, MessageSquare, Target, Flame } from 'lucide-react';
 import { NetworkErrorPanel } from '../components/shared/NetworkErrorPanel';
 import { useReadinessData } from '../features/readiness/hooks/useReadinessData';
@@ -9,9 +10,12 @@ import { ActiveBlockersPanel } from '../features/readiness/components/ActiveBloc
 import { NextBestActionsPanel } from '../features/readiness/components/NextBestActionsPanel';
 import { EvolutionPreviewPanel } from '../features/readiness/components/EvolutionPreviewPanel';
 import { TrustConfidenceLayer } from '../features/readiness/components/TrustConfidenceLayer';
+import { useFeatureFlags } from '../features/flags/hooks/useFeatureFlags';
+import { INTERVIEW_STUDIO_FLAG, INTERVIEW_STUDIO_PATH } from '../features/interview/interview';
 
 const ReadinessPage: React.FC = () => {
   const { data, loading, error, refetch } = useReadinessData();
+  const { isEnabled } = useFeatureFlags();
   const handleRetry = React.useCallback(() => { void refetch(); }, [refetch]);
 
   if (loading) {
@@ -123,7 +127,7 @@ const ReadinessPage: React.FC = () => {
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4 }}
-        className="flex items-center justify-between"
+        className="flex flex-wrap items-center justify-between gap-3"
       >
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0">
@@ -134,6 +138,12 @@ const ReadinessPage: React.FC = () => {
             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mt-0.5">Engineering Progression Overview</p>
           </div>
         </div>
+        {isEnabled(INTERVIEW_STUDIO_FLAG) && (
+          <Link to={INTERVIEW_STUDIO_PATH}
+            className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-white px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50">
+            <MessageSquare size={16} aria-hidden="true" /> Practice an interview
+          </Link>
+        )}
       </motion.div>
 
       <motion.div
