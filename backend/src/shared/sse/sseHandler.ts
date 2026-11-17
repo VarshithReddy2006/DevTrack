@@ -21,40 +21,108 @@ export function parseStreamId(lastEventId: string | undefined | null): string | 
   return match ? `${match[1]}-${match[2]}` : null;
 }
 
+/** Entries read from the Redis stream per XRANGE call. */
+export const REPLAY_PAGE_SIZE = 50;
+
+/**
+ * Most missed events a reconnect will replay. The stream is trimmed to about 100 entries
+ * (see eventBus.ts), so a client further behind than this has lost part of its history
+ * anyway and gets the full state instead of a partial replay.
+ */
+export const MAX_REPLAY_EVENTS = 100;
+
+type StreamEntry = [string, string[]];
+
+/**
+ * Pages through the stream after `afterId` until it is exhausted. Returns null when more than
+ * MAX_REPLAY_EVENTS entries are waiting, so the caller can fall back to full state instead of
+ * replaying a prefix and silently dropping the rest.
+ */
+async function readMissedEvents(
+  redis: ReturnType<typeof getRedisClient>,
+  streamKey: string,
+  afterId: string
+): Promise<StreamEntry[] | null> {
+  const events: StreamEntry[] = [];
+  let cursor = afterId;
+
+  for (;;) {
+    // `(` makes the start exclusive, so the next page never repeats the last entry of this one.
+    const page = (await redis.xrange(streamKey, `(${cursor}`, '+', 'COUNT', REPLAY_PAGE_SIZE)) as StreamEntry[];
+    events.push(...page);
+    if (events.length > MAX_REPLAY_EVENTS) return null;
+    if (page.length < REPLAY_PAGE_SIZE) return events;
+    cursor = page[page.length - 1][0];
+  }
+}
+
+async function sendFullState(
+  userId: string,
+  controller: ReadableStreamDefaultController<Uint8Array>
+): Promise<void> {
+  // Import runtime state service to get full state
+  const { unifiedRuntimeStateService } = await import('../../modules/runtime-state/unifiedRuntimeState.service.js');
+  const state = await unifiedRuntimeStateService.getRuntimeState(userId);
+
+  if (state) {
+    const fullStateEvent = {
+      id: `${userId}-full-${Date.now()}`,
+      type: 'runtime_state_full' as const,
+      sequence: 0,
+      timestamp: new Date().toISOString(),
+      userId,
+      payload: { state: state.toObject() },
+    };
+
+    const payload = `id: ${fullStateEvent.id}\ndata: ${JSON.stringify(fullStateEvent)}\n\n`;
+    controller.enqueue(new TextEncoder().encode(payload));
+  }
+}
+
+/**
+ * Replays what the client missed while it was disconnected. Returns the ids of the events it
+ * sent, so the caller can drop live copies of the same events.
+ */
 export async function replayMissedEvents(
   userId: string,
   lastEventId: string,
   controller: ReadableStreamDefaultController<Uint8Array>
-): Promise<void> {
+): Promise<Set<string>> {
   const redis = getRedisClient();
   const streamKey = `sse:stream:${userId}`;
-  
+  const replayedIds = new Set<string>();
+
   try {
     // Last-Event-ID is a full `<ms>-<seq>` stream id. A malformed or foreign id (an older
     // client, a fallback id) cannot be placed in the stream, so skip replay and resend full state.
     const lastStreamId = parseStreamId(lastEventId);
     const lastSequence = lastStreamId;
 
-    // Read only events strictly after that position
-    const events = lastStreamId
-      ? await redis.xrange(streamKey, `(${lastStreamId}`, '+', 'COUNT', 50)
-      : [];
-    
-    if (events.length > 0) {
+    // Read every event strictly after that position, a page at a time
+    const events = lastStreamId ? await readMissedEvents(redis, streamKey, lastStreamId) : [];
+
+    if (events === null) {
+      logger.info('[sse] Gap too large to replay, sending full state', {
+        userId,
+        lastSequence,
+        maxReplayEvents: MAX_REPLAY_EVENTS,
+      });
+      await sendFullState(userId, controller);
+    } else if (events.length > 0) {
       logger.info('[sse] Replaying missed events', {
         userId,
         lastSequence,
         eventCount: events.length,
       });
-      
+
       for (const event of events) {
         // event is [id, [field1, value1, field2, value2, ...]]
-        const [id, fields] = event as [string, string[]];
+        const [id, fields] = event;
         const fieldsObj: Record<string, string> = {};
         for (let i = 0; i < fields.length; i += 2) {
           fieldsObj[fields[i]] = fields[i + 1];
         }
-        
+
         const envelope = {
           id,
           type: fieldsObj.type as string,
@@ -63,34 +131,18 @@ export async function replayMissedEvents(
           userId,
           payload: JSON.parse(fieldsObj.payload),
         };
-        
+
         const payload = `id: ${envelope.id}\ndata: ${JSON.stringify(envelope)}\n\n`;
         controller.enqueue(new TextEncoder().encode(payload));
+        replayedIds.add(id);
       }
     } else {
-      // If no events in stream or gap too large, send full state
+      // Nothing in the stream after that position (or no usable position): send full state
       logger.info('[sse] No events to replay, sending full state', {
         userId,
         lastSequence,
       });
-      
-      // Import runtime state service to get full state
-      const { unifiedRuntimeStateService } = await import('../../modules/runtime-state/unifiedRuntimeState.service.js');
-      const state = await unifiedRuntimeStateService.getRuntimeState(userId);
-      
-      if (state) {
-        const fullStateEvent = {
-          id: `${userId}-full-${Date.now()}`,
-          type: 'runtime_state_full' as const,
-          sequence: 0,
-          timestamp: new Date().toISOString(),
-          userId,
-          payload: { state: state.toObject() },
-        };
-        
-        const payload = `id: ${fullStateEvent.id}\ndata: ${JSON.stringify(fullStateEvent)}\n\n`;
-        controller.enqueue(new TextEncoder().encode(payload));
-      }
+      await sendFullState(userId, controller);
     }
   } catch (error) {
     logger.warn('[sse] Failed to replay missed events', {
@@ -99,9 +151,11 @@ export async function replayMissedEvents(
       error,
     });
   }
+
+  return replayedIds;
 }
 
-function createSseStream(
+export function createSseStream(
   userId: string,
   clientId: string,
   requestId: string,
@@ -113,15 +167,27 @@ function createSseStream(
     async start(controller) {
       controllerRef = controller;
 
-      // Replay missed events if Last-Event-ID header present
-      if (lastEventId) {
-        await replayMissedEvents(userId, lastEventId, controller);
-      }
+      // The event bus writes straight to client.controller. While a replay is being read, that
+      // controller holds writes back, so a reconnecting client gets the replay first and nothing
+      // published in between is lost or delivered out of order.
+      let replaying = Boolean(lastEventId);
+      const heldBack: Uint8Array[] = [];
+      const gatedController = {
+        enqueue(chunk: Uint8Array) {
+          if (replaying) heldBack.push(chunk);
+          else controller.enqueue(chunk);
+        },
+        close: () => controller.close(),
+        error: (reason?: unknown) => controller.error(reason),
+        get desiredSize() {
+          return controller.desiredSize;
+        },
+      } as ReadableStreamDefaultController<Uint8Array>;
 
       const client: SseClient = {
         id: clientId,
         userId,
-        controller,
+        controller: gatedController,
         connectedAt: Date.now(),
         emit(event) {
           if (!controllerRef) return;
@@ -141,6 +207,8 @@ function createSseStream(
         },
       };
 
+      // Register before reading the stream: an event published after the read but before
+      // registration used to be neither replayed nor delivered.
       try {
         eventBus.register(client);
       } catch (err) {
@@ -151,6 +219,26 @@ function createSseStream(
           event: 'sse_register_failed',
         });
         controller.error(err);
+        return;
+      }
+
+      // Replay missed events if Last-Event-ID header present
+      if (lastEventId) {
+        const replayedIds = await replayMissedEvents(userId, lastEventId, controller);
+        replaying = false;
+        // An event written to the stream just before the read can be both replayed and held back.
+        const decoder = new TextDecoder();
+        for (const chunk of heldBack) {
+          const id = /^id: (.+)$/m.exec(decoder.decode(chunk))?.[1];
+          if (id && replayedIds.has(id)) continue;
+          try {
+            controller.enqueue(chunk);
+          } catch {
+            // Stream closed while replaying
+            break;
+          }
+        }
+        heldBack.length = 0;
       }
     },
     cancel() {
