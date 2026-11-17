@@ -22,7 +22,7 @@ export async function fetchWithRetry(
   } catch (err) {
     if (retries > 0) {
       const delay = backoff * (2 ** (3 - retries)) + Math.random() * 100;
-      logger.warn(`Sync fetch error (${err instanceof Error ? err.message : 'Unknown'}). Retrying...`, { url, retriesLeft: retries - 1 });
+      logger.warn('Sync fetch failed, retrying', { error: err, retriesLeft: retries - 1 });
       await new Promise(resolve => setTimeout(resolve, delay));
       return fetchWithRetry(url, options, retries - 1, backoff);
     }

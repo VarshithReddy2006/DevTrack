@@ -93,6 +93,11 @@ jobs:
         working-directory: ./frontend
         run: npm ci
 
+      - name: Run Shared Contract Tests
+        run: |
+          npm ci --workspace @devtrack/contracts
+          npm run test --workspace @devtrack/contracts
+
       - name: Run Backend Unit Tests
         working-directory: ./backend
         run: npm run test:unit --if-present
@@ -168,8 +173,7 @@ jobs:
         run: docker build -f backend/Dockerfile -t devtrack-backend:test .
 
       - name: Verify Frontend Docker Build
-        working-directory: ./frontend
-        run: docker build -t devtrack-frontend:test .
+        run: docker build -f frontend/Dockerfile -t devtrack-frontend:test .
 
   resume-e2e:
     name: Resume browser flow

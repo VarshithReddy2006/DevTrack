@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { captureTraceContext, runTraceOperation, type TraceCarrier } from '../tracing/propagation.js';
 import { createRedisConnection, getRedisClient, getRedisHealth, isRedisConfigured } from '../redis/client.js';
 
 // ─── Zod validation schemas for SSE event payloads ─────────────────────────
@@ -360,11 +361,17 @@ class EventBus extends EventEmitter {
 
       (subscriber as any).on('message', (_channel: string, message: string) => {
         try {
-          const parsed = JSON.parse(message) as { origin?: string; event?: SseEvent } & SseEvent;
-          // Envelope from this version is { origin, event }; a bare event comes from an older instance.
+          const parsed = JSON.parse(message) as { origin?: string; event?: SseEvent } & SseEvent & TraceCarrier;
           const event = parsed.event ?? parsed;
           if (parsed.origin === this.instanceId) return;
-          this.publishLocal(event, event.userId);
+          // Keep delivery synchronous for messages from peers that do not send trace context.
+          if (!parsed.event || !parsed.traceparent) {
+            this.publishLocal(event, event.userId);
+            return;
+          }
+          void runTraceOperation('sse.receive', async () => {
+            this.publishLocal(event, event.userId);
+          }, parsed).catch(err => logger.warn('[sse] Redis delivery failed', { error: err }));
         } catch (err) {
           logger.warn('[sse] Failed to parse Redis message', { error: err });
         }
@@ -427,17 +434,15 @@ class EventBus extends EventEmitter {
 
   private async publishToRedis(event: SseEvent): Promise<void> {
     if (!isRedisConfigured()) return;
-    const payload = JSON.stringify({ origin: this.instanceId, event });
-    try {
+    await runTraceOperation('sse.publish', async () => {
+      const payload = JSON.stringify({ origin: this.instanceId, event, ...captureTraceContext() });
       if (this.redisPublisher && (this.redisPublisher as any).status === 'ready') {
         await (this.redisPublisher as any).publish(SSE_CHANNEL, payload);
       } else if (getRedisHealth().status === 'connected') {
         // Fall back to the shared client while the dedicated publisher is reconnecting
         await getRedisClient().publish(SSE_CHANNEL, payload);
       }
-    } catch (err) {
-      logger.debug('[sse] Redis publish failed', { error: err });
-    }
+    }).catch(err => logger.debug('[sse] Redis publish failed', { error: err }));
   }
 
   private publishLocal(event: SseEvent, targetUserId?: string): void {

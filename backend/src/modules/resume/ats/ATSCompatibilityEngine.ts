@@ -84,7 +84,7 @@ export class ATSCompatibilityEngine {
         logger.info(`[ATSCompatibility] Flagged unverified infrastructure claims: deducted ${credibilityPenalty} from ATS core`);
       }
     } catch (e) {
-      logger.warn(`[ATSCompatibility] Failed to fetch profile/claims for calibration: ${e instanceof Error ? e.message : String(e)}`);
+      logger.warn('[ATSCompatibility] Failed to fetch profile/claims for calibration', { error: e });
     }
 
     const atsScore = calculateAtsScore({
@@ -147,7 +147,7 @@ export class ATSCompatibilityEngine {
       if (!response.ok) throw new Error(`Greenhouse API responded with ${response.status}`);
       return await response.json();
     } catch (err: any) {
-      logger.error(`[ATSCompatibility] Greenhouse Sync Error: ${err.message}`);
+      logger.error('[ATSCompatibility] Greenhouse sync failed', err);
       throw err;
     }
   }
@@ -166,7 +166,7 @@ export class ATSCompatibilityEngine {
       if (!response.ok) throw new Error(`Workday REST API responded with ${response.status}`);
       return await response.json();
     } catch (err: any) {
-      logger.error(`[ATSCompatibility] Workday Sync Error: ${err.message}`);
+      logger.error('[ATSCompatibility] Workday sync failed', err);
       throw err;
     }
   }
@@ -185,7 +185,7 @@ export class ATSCompatibilityEngine {
       if (!response.ok) throw new Error(`Lever API responded with ${response.status}`);
       return await response.json();
     } catch (err: any) {
-      logger.error(`[ATSCompatibility] Lever Sync Error: ${err.message}`);
+      logger.error('[ATSCompatibility] Lever sync failed', err);
       throw err;
     }
   }
@@ -204,7 +204,7 @@ export class ATSCompatibilityEngine {
       if (!response.ok) throw new Error(`Taleo REST API responded with ${response.status}`);
       return await response.json();
     } catch (err: any) {
-      logger.error(`[ATSCompatibility] Taleo Sync Error: ${err.message}`);
+      logger.error('[ATSCompatibility] Taleo sync failed', err);
       throw err;
     }
   }
