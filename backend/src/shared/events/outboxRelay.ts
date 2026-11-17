@@ -5,6 +5,7 @@
 // the next claim picks it up again.
 import { OutboxEvent, type IOutboxEvent } from '../../db/models/outboxEvent.model.js';
 import type { DomainEventEnvelope } from './eventContract.js';
+import { withTraceContext } from '../tracing/propagation.js';
 
 export const OUTBOX_LEASE_MS = 30_000;
 export const OUTBOX_MAX_ATTEMPTS = 10;
@@ -38,13 +39,14 @@ export function toEnvelope(e: IOutboxEvent): DomainEventEnvelope {
     userId: e.userId,
     timestamp: e.createdAt.toISOString(),
     payload: e.payload,
-    metadata: { aggregateType: e.aggregateType, aggregateId: e.aggregateId },
+    metadata: { aggregateType: e.aggregateType, aggregateId: e.aggregateId, traceContext: e.traceContext },
   };
 }
 
 export class OutboxRelay {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
+  private pendingTick: Promise<number> | undefined;
   private readonly batchSize: number;
   private readonly leaseMs: number;
   private readonly maxAttempts: number;
@@ -89,7 +91,10 @@ export class OutboxRelay {
     try {
       const envelope = toEnvelope(event);
       const queues = this.opts.resolveQueues(event.type);
-      for (const queue of queues) await this.opts.enqueue(queue, event.eventId, envelope);
+      // BullMQ derives its job telemetry from the context active during queue.add.
+      await withTraceContext({ traceparent: event.traceContext?.traceparent }, async () => {
+        for (const queue of queues) await this.opts.enqueue(queue, event.eventId, envelope);
+      });
       await OutboxEvent.updateOne(
         { _id: event._id, status: 'processing' },
         { $set: { status: 'published', publishedAt: this.now(), leaseExpiresAt: null, lastError: null } },
@@ -129,18 +134,22 @@ export class OutboxRelay {
       if (!this.running) return;
       let handled = 0;
       try {
-        handled = await this.tick();
+        this.pendingTick = this.tick();
+        handled = await this.pendingTick;
       } catch (err) {
         this.opts.onError?.(err);
+      } finally {
+        this.pendingTick = undefined;
       }
       if (this.running) this.timer = setTimeout(loop, handled >= this.batchSize ? 0 : this.pollIntervalMs);
     };
     this.timer = setTimeout(loop, 0);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    await this.pendingTick?.catch(() => undefined);
   }
 }

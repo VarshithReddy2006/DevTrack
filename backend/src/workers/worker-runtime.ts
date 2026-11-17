@@ -79,6 +79,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../modules/profile/workers/ogRender.worker.js');
     return { start: m.startOgRenderWorker, stop: m.stopOgRenderWorker };
   } },
+  { role: 'render', queueName: 'dossier-render', load: async () => {
+    const m = await import('../modules/profile/workers/dossierRender.worker.js');
+    return { start: m.startDossierRenderWorker, stop: m.stopDossierRenderWorker };
+  } },
   { role: 'xp', queueName: 'streak-recalc', load: async () => {
     const m = await import('../shared/jobs/streakRecalcWorker.js');
     return { start: m.startStreakRecalcWorker, stop: m.stopStreakRecalcWorker };
@@ -94,6 +98,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
   { role: 'xp', queueName: 'domain-readiness', load: async () => {
     const m = await import('../modules/readiness/workers/domainReadiness.worker.js');
     return { start: m.startDomainReadinessWorker, stop: m.stopDomainReadinessWorker };
+  } },
+  { role: 'xp', load: async () => {
+    const m = await import('./focus-completion.worker.js');
+    return m.createFocusCompletionWorkers();
   } },
   { role: 'maintenance', queueName: 'league-rollover', load: async () => {
     const m = await import('../modules/leagues/workers/weeklyRollover.worker.js');

@@ -6,7 +6,8 @@ import { getRedisClient, isRedisConfigured } from '../../../shared/redis/client.
 import { logger } from '../../../shared/logger.js';
 import { AIResponseAuditLog } from '../../../db/models/aiResponseAuditLog.model.js';
 import { quotaService, AIQuotaExceededError } from '../quota.service.js';
-import { AIProviderAdapter, type AIRequest } from './AIProviderAdapter.js';
+import { AIProviderAdapter, type AIRequest, type AIStreamOptions } from './AIProviderAdapter.js';
+import { AIStreamInterruptedError } from './AIStreamInterruptedError.js';
 
 export interface LLMCompletionRequest {
   userId: string;
@@ -33,6 +34,11 @@ export interface LLMCompletionResponse {
   fallbackTriggered: boolean;
   promptHash: string;
 }
+
+/** What streamCompletion yields: text deltas as they arrive, then one `done` summary. */
+export type LLMStreamEvent =
+  | { type: 'delta'; delta: string }
+  | { type: 'done'; response: LLMCompletionResponse };
 
 export class LLMGateway {
   private readonly defaultTtlSeconds = 24 * 60 * 60; // 24 hours
@@ -251,6 +257,151 @@ export class LLMGateway {
       cost,
       fallbackTriggered,
       promptHash,
+    };
+  }
+
+  /**
+   * Streaming counterpart of generateCompletion. Yields text deltas as the provider produces
+   * them, then a final `done` event shaped like a generateCompletion result.
+   *
+   * Same quota feature accounting (one unit per call), prompt-hash cache and heuristic (G8)
+   * fallback as generateCompletion:
+   * - A cache hit is replayed as a single delta followed by `done` with cached: true.
+   * - Provider failover lives in AIProviderAdapter.streamResponse and only happens before the
+   *   first delta; if every provider fails before any text, `heuristicFallback` supplies the
+   *   content (an empty string yields no delta) and `done.provider` is 'heuristic'.
+   * - If a provider drops after text was already yielded, AIStreamInterruptedError is thrown
+   *   rather than splicing in a different answer.
+   * Throws AIQuotaExceededError before anything is yielded when the daily quota is spent.
+   */
+  async *streamCompletion(request: LLMCompletionRequest, options: AIStreamOptions = {}): AsyncGenerator<LLMStreamEvent> {
+    const startTime = Date.now();
+    const {
+      userId,
+      prompt,
+      systemPrompt,
+      feature = 'general',
+      temperature = 0.7,
+      maxTokens = 1000,
+      bypassCache = false,
+      heuristicFallback,
+    } = request;
+
+    const quota = await quotaService.checkAndConsumeQuota(userId, feature);
+    if (!quota.allowed) {
+      throw new AIQuotaExceededError(feature, quota.limit, quota.used, quota.resetAt);
+    }
+
+    const preferredProvider = request.preferredProvider || 'gemini';
+    const targetModel = request.model || (preferredProvider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini');
+    const promptHash = this.computePromptHash(targetModel, systemPrompt, prompt);
+    const cacheKey = `devtrack:ai:prompt_cache:${promptHash}`;
+
+    if (!bypassCache && isRedisConfigured()) {
+      try {
+        const cachedPayload = await getRedisClient().get(cacheKey);
+        if (cachedPayload) {
+          const parsed = JSON.parse(cachedPayload);
+          const latencyMs = Math.max(1, Date.now() - startTime);
+          const model = parsed.model || targetModel;
+          const provider = parsed.provider || preferredProvider;
+          await this.auditLog({
+            userId, promptHash, requestType: feature, model, provider, latencyMs,
+            tokensUsed: parsed.tokensUsed || 0, cost: 0, cached: true, cacheHit: true,
+            fallbackTriggered: false, success: true,
+          });
+          if (parsed.content) yield { type: 'delta', delta: parsed.content };
+          yield {
+            type: 'done',
+            response: {
+              content: parsed.content, model, provider, tokensUsed: parsed.tokensUsed || 0, latencyMs,
+              cached: true, cacheHit: true, cost: 0, fallbackTriggered: false, promptHash,
+            },
+          };
+          return;
+        }
+      } catch (err) {
+        logger.warn('[LLMGateway] Prompt cache lookup error', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    const adapterReq: AIRequest = {
+      prompt, systemPrompt, temperature, maxTokens,
+      model: request.model,
+      providerPreference: preferredProvider,
+      tenantScope: userId,
+      cache: false,
+    };
+
+    let content = '';
+    let selectedModel = targetModel;
+    let selectedProvider: string = preferredProvider;
+    let tokensUsed = 0;
+    let fallbackTriggered = false;
+    let delivered = false;
+
+    try {
+      for await (const event of AIProviderAdapter.streamResponse(adapterReq, options)) {
+        if (event.type === 'delta') {
+          delivered = true;
+          yield { type: 'delta', delta: event.delta };
+        } else {
+          content = event.response.content;
+          selectedModel = event.response.model;
+          selectedProvider = event.response.provider;
+          tokensUsed = event.response.tokensUsed;
+          fallbackTriggered = event.response.fallbackTriggered;
+        }
+      }
+    } catch (err) {
+      if (delivered || options.signal?.aborted) {
+        if (err instanceof AIStreamInterruptedError) {
+          await this.auditLog({
+            userId, promptHash, requestType: feature, model: selectedModel, provider: err.provider,
+            latencyMs: Math.max(1, Date.now() - startTime), tokensUsed: 0, cost: 0, cached: false,
+            cacheHit: false, fallbackTriggered: false, success: false,
+          });
+        }
+        throw err;
+      }
+      logger.error('[LLMGateway] All streaming providers failed, triggering heuristic fallback', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      content = heuristicFallback ? heuristicFallback(prompt, systemPrompt) : this.defaultHeuristicFallback(prompt);
+      selectedModel = 'heuristic-rule-engine';
+      selectedProvider = 'heuristic';
+      tokensUsed = 0;
+      fallbackTriggered = true;
+      if (content) yield { type: 'delta', delta: content };
+    }
+
+    const latencyMs = Math.max(1, Date.now() - startTime);
+    const cost = this.estimateCost(selectedProvider, tokensUsed);
+
+    if (isRedisConfigured() && content && selectedProvider !== 'heuristic') {
+      try {
+        await getRedisClient().set(
+          cacheKey,
+          JSON.stringify({ content, model: selectedModel, provider: selectedProvider, tokensUsed }),
+          'EX',
+          this.defaultTtlSeconds,
+        );
+      } catch (err) {
+        logger.warn('[LLMGateway] Failed to save response to prompt cache', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    await this.auditLog({
+      userId, promptHash, requestType: feature, model: selectedModel, provider: selectedProvider,
+      latencyMs, tokensUsed, cost, cached: false, cacheHit: false, fallbackTriggered, success: true,
+    });
+
+    yield {
+      type: 'done',
+      response: {
+        content, model: selectedModel, provider: selectedProvider, tokensUsed, latencyMs,
+        cached: false, cacheHit: false, cost, fallbackTriggered, promptHash,
+      },
     };
   }
 

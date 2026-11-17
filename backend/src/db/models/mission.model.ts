@@ -13,6 +13,7 @@ export interface IMission extends Document {
   category: 'dsa' | 'project' | 'learning' | 'consistency';
   expiresAt: Date;
   completedAt: Date | null;
+  completedByFocusSessionId?: string;
   createdAt: Date;
   periodKey?: string;
   templateKey?: string;
@@ -71,6 +72,7 @@ const missionSchema = new Schema<IMission>(
       type: Date,
       default: null,
     },
+    completedByFocusSessionId: String,
     periodKey: String,
     templateKey: String,
     generationCalibration: {
@@ -88,6 +90,7 @@ const missionSchema = new Schema<IMission>(
         delete ret.periodKey;
         delete ret.templateKey;
         delete ret.generationCalibration;
+        delete ret.completedByFocusSessionId;
         return ret;
       },
     },
