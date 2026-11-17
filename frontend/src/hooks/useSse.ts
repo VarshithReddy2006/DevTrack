@@ -14,6 +14,10 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 5;
 const MAX_SEEN_ENVELOPE_IDS = 1000;
+// A connection has to stay open this long before earlier failures are forgiven, so a server that
+// accepts and immediately drops keeps backing off (same idea as STABLE_CONNECTION_MS in
+// lib/realtime/sse-manager.ts).
+const STABLE_CONNECTION_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Event types taxonomy
@@ -83,7 +87,13 @@ export type ConnectionStatus =
 
 interface UseSseOptions {
   onEvent?: (event: SseEvent) => void;
+  /** Query keys to invalidate when an event listed in `invalidateOn` arrives. */
   extraInvalidateKeys?: string[][];
+  /**
+   * Event types that trigger `extraInvalidateKeys`. Without it the keys are invalidated for every
+   * event of every type (token streaming included), so callers should always pass it.
+   */
+  invalidateOn?: SseEventType[];
   enabled?: boolean;
 }
 
@@ -201,6 +211,7 @@ interface HookCallbackRegistry {
   onEvent?: (event: SseEvent) => void;
   queryClient: ReturnType<typeof useQueryClient>;
   extraInvalidateKeys: string[][];
+  invalidateOn?: SseEventType[];
 }
 
 const activeCallbacks = new Set<HookCallbackRegistry>();
@@ -211,10 +222,18 @@ let globalHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let globalLastMessage = 0;
 let globalConsecutiveFailures = 0;
 let globalDisconnectedAt: number | null = null;
+let globalStabilityTimer: ReturnType<typeof setTimeout> | null = null;
 let userStoreSubscribed = false;
 let previousAuth = false;
 
 const STALE_STATE_THRESHOLD_MS = 30_000;
+
+function clearStabilityTimer(): void {
+  if (globalStabilityTimer !== null) {
+    clearTimeout(globalStabilityTimer);
+    globalStabilityTimer = null;
+  }
+}
 
 async function resolveAuthToken(): Promise<string | null> {
   if (typeof window !== 'undefined' && window.Clerk && window.Clerk.session) {
@@ -315,11 +334,9 @@ export async function connectGlobalSse(
   globalEventSource = es;
 
   es.onopen = () => {
-    globalConsecutiveFailures = 0;
     const now = Date.now();
     store.connectedAt = now;
     store.totalReconnects = store.reconnectAttempt > 0 ? store.totalReconnects + 1 : store.totalReconnects;
-    store.consecutiveFailures = 0;
     store.nextReconnectAt = null;
     store.connectionStatus = 'connected';
     emitChange();
@@ -339,6 +356,19 @@ export async function connectGlobalSse(
       }
       globalDisconnectedAt = null;
     }
+
+    // Only forgive earlier failures once the connection has proven stable. Resetting on open would
+    // let a flaky link that keeps dropping after the handshake never reach the failure cap, and
+    // never resetting made every later isolated drop wait longer than the one before.
+    clearStabilityTimer();
+    globalStabilityTimer = setTimeout(() => {
+      globalStabilityTimer = null;
+      if (es !== globalEventSource) return;
+      globalConsecutiveFailures = 0;
+      store.consecutiveFailures = 0;
+      store.reconnectAttempt = 0;
+      emitChange();
+    }, STABLE_CONNECTION_MS);
 
     if (globalHeartbeatTimer) clearInterval(globalHeartbeatTimer);
     globalHeartbeatTimer = setInterval(() => {
@@ -415,8 +445,10 @@ export async function connectGlobalSse(
       try {
         cb.onEvent?.(event);
         invalidateOnSyncEvent(cb.queryClient, event);
-        for (const k of cb.extraInvalidateKeys) {
-          cb.queryClient.invalidateQueries({ queryKey: k });
+        if (!cb.invalidateOn || cb.invalidateOn.includes(event.type)) {
+          for (const k of cb.extraInvalidateKeys) {
+            cb.queryClient.invalidateQueries({ queryKey: k });
+          }
         }
       } catch (e) {
         console.error('[SSE] Broadcast dispatch failure: ', e);
@@ -425,6 +457,7 @@ export async function connectGlobalSse(
   };
 
   es.onerror = () => {
+    clearStabilityTimer();
     globalConsecutiveFailures += 1;
     store.consecutiveFailures = globalConsecutiveFailures;
 
@@ -454,6 +487,7 @@ export function disconnectGlobalSse(
 ) {
   const updateStatus = setSseStatus || ((status) => useUIStore.getState().setSseStatus(status));
 
+  clearStabilityTimer();
   if (globalHeartbeatTimer !== null) {
     clearInterval(globalHeartbeatTimer);
     globalHeartbeatTimer = null;
@@ -531,7 +565,7 @@ export function reconnectNow(): void {
 }
 
 export function useSse(options: UseSseOptions = {}): UseSseResult {
-  const { onEvent, extraInvalidateKeys = [], enabled = true } = options;
+  const { onEvent, extraInvalidateKeys = [], invalidateOn, enabled = true } = options;
 
   const queryClient = useQueryClient();
   const isAuthenticated = useUserStore((s) => s.isAuthenticated);
@@ -550,10 +584,13 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
     onEvent,
     queryClient,
     extraInvalidateKeys,
+    invalidateOn,
   });
 
+  // Update the object the subscribe effect registered. Replacing it would leave the registry
+  // holding the first render's callbacks forever.
   useEffect(() => {
-    callbackRef.current = { onEvent, queryClient, extraInvalidateKeys };
+    Object.assign(callbackRef.current, { onEvent, queryClient, extraInvalidateKeys, invalidateOn });
   });
 
   useEffect(() => {

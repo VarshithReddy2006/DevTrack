@@ -40,6 +40,7 @@ export function useDailyChallenge() {
       }
     },
     extraInvalidateKeys: [['dailyChallenge', 'today']],
+    invalidateOn: ['challenge_completed'],
   });
 
   return {
