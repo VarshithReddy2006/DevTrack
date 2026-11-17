@@ -1,6 +1,5 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NotificationDrawer } from './NotificationDrawer';
@@ -63,31 +62,29 @@ describe('NotificationDrawer keyboard behaviour', () => {
   });
 
   it('keeps Tab inside the drawer when tabbing past the last control', async () => {
-    const user = userEvent.setup();
     const { dialog } = openDrawer();
     const controls = within(dialog).getAllByRole('button');
     const first = controls[0];
     const last = controls[controls.length - 1];
     last.focus();
-    await user.tab();
+    fireEvent.keyDown(last, { key: 'Tab' });
     expect(document.activeElement).toBe(first);
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
   });
 
   it('wraps Shift+Tab from the first control to the last one', async () => {
-    const user = userEvent.setup();
     const { dialog } = openDrawer();
     const controls = within(dialog).getAllByRole('button');
     controls[0].focus();
-    await user.tab({ shift: true });
+    fireEvent.keyDown(controls[0], { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(controls[controls.length - 1]);
   });
 
   it('pulls focus back in when it was somewhere on the page behind the drawer', async () => {
-    const user = userEvent.setup();
     const { dialog } = openDrawer();
-    screen.getByRole('button', { name: 'background after' }).focus();
-    await user.tab();
+    const outside = screen.getByRole('button', { name: 'background after' });
+    outside.focus();
+    fireEvent.keyDown(outside, { key: 'Tab' });
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
   });
 
@@ -101,9 +98,8 @@ describe('NotificationDrawer keyboard behaviour', () => {
   });
 
   it('returns focus to the opener after Escape with focus inside the drawer', async () => {
-    const user = userEvent.setup();
     const { opener } = openDrawer();
-    await user.keyboard('{Escape}');
+    fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(opener).toHaveFocus());
   });

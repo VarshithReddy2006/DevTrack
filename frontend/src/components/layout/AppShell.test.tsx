@@ -1,6 +1,5 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from './AppShell';
@@ -57,22 +56,21 @@ describe('command palette keyboard behaviour', () => {
   });
 
   it('keeps Tab inside the palette when tabbing past the last control', async () => {
-    const user = userEvent.setup();
     const { dialog } = openPalette();
     const controls = within(dialog).getAllByRole('button');
     const last = controls[controls.length - 1];
     expect(last).toHaveTextContent('Advanced search');
     last.focus();
-    await user.tab();
+    fireEvent.keyDown(last, { key: 'Tab' });
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
     expect(document.activeElement).toBe(within(dialog).getByPlaceholderText('Where do you want to go?'));
   });
 
   it('wraps Shift+Tab from the first control to the last one', async () => {
-    const user = userEvent.setup();
     const { dialog } = openPalette();
-    within(dialog).getByPlaceholderText('Where do you want to go?').focus();
-    await user.tab({ shift: true });
+    const first = within(dialog).getByPlaceholderText('Where do you want to go?');
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toHaveTextContent('Advanced search');
   });
 
@@ -115,7 +113,6 @@ describe('command palette keyboard behaviour', () => {
 
 describe('notifications drawer inside the app shell', () => {
   it('opens from the bell, traps Tab, and returns focus to the bell on Escape', async () => {
-    const user = userEvent.setup();
     renderShell();
     const bell = screen.getAllByRole('button', { name: /^Notifications/ })[0];
     bell.focus();
@@ -123,10 +120,11 @@ describe('notifications drawer inside the app shell', () => {
     const dialog = screen.getByRole('dialog', { name: 'Notifications' });
     expect(document.body.style.overflow).toBe('hidden');
     const controls = within(dialog).getAllByRole('button');
-    controls[controls.length - 1].focus();
-    await user.tab();
+    const last = controls[controls.length - 1];
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
-    await user.keyboard('{Escape}');
+    fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(bell).toHaveFocus());
     expect(document.body.style.overflow).toBe('');
