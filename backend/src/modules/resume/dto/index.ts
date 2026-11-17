@@ -29,6 +29,41 @@ export const GenerateVariantSchema = z.object({
   }).optional(),
 });
 
+// Live ATS editor (v2) variant request. Used only while the `ats-live-editor` flag is on.
+// `clientScore` is the browser's preview score. It is diagnostic only and never stored as the score.
+const singleLine = (max: number) => z.string().max(max).refine(value => !/[\r\n]/.test(value), 'Must be a single line');
+
+export const BulletEditSchema = z.object({
+  section: singleLine(50).transform(value => value.trim()).pipe(z.string().min(1)),
+  bulletIndex: z.number().int().min(0).max(999),
+  originalText: singleLine(1000),
+  editedText: singleLine(1000).transform(value => value.trim()).pipe(z.string().min(1)),
+});
+
+export const GenerateVariantRequestV2Schema = GenerateVariantSchema.extend({
+  bulletEdits: z.array(BulletEditSchema).max(200).optional(),
+  jobTargetId: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ID format').optional(),
+  clientScore: z.number().min(0).max(100).optional(),
+}).superRefine((value, ctx) => {
+  const seen = new Set<string>();
+  (value.bulletEdits ?? []).forEach((edit, index) => {
+    const key = `${edit.section.toLowerCase()}#${edit.bulletIndex}`;
+    if (seen.has(key)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['bulletEdits', index], message: 'Duplicate section and bulletIndex' });
+    seen.add(key);
+  });
+});
+
+// Server-computed ATS result stored on a variant.
+export interface AtsScoreDto {
+  score: number;
+  extractionConfidence: number;
+  parserWarningCount: number;
+  formattingWarningCount: number;
+  keywordsMatched: number;
+  keywordsTotal: number;
+  scoredAt: Date;
+}
+
 // Resume Export DTOs
 export const ExportResumeSchema = z.object({
   variantId: z.string().optional(),
@@ -64,6 +99,8 @@ export const DossierExportSchema = z.object({ sessionId: z.string().trim().min(1
 export type CreateResumeProfileDTO = z.infer<typeof CreateResumeProfileSchema>;
 export type UpdateResumeProfileDTO = z.infer<typeof UpdateResumeProfileSchema>;
 export type GenerateVariantDTO = z.infer<typeof GenerateVariantSchema>;
+export type BulletEditDTO = z.infer<typeof BulletEditSchema>;
+export type GenerateVariantRequestV2DTO = z.infer<typeof GenerateVariantRequestV2Schema>;
 export type ExportResumeDTO = z.infer<typeof ExportResumeSchema>;
 export type AnalyzeATSDTO = z.infer<typeof AnalyzeATSSchema>;
 export type CreateEvidenceClaimDTO = z.infer<typeof CreateEvidenceClaimSchema>;
