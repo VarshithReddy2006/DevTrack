@@ -1,5 +1,5 @@
 import React from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PageShell } from '../components/layout/PageShell';
 import { ProfileHeader } from '../components/profile/ProfileHeader';
@@ -201,6 +201,9 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
                 Public viewers, signed in or not, only get the read-only stats. */}
             {!isPublicView && (
               <>
+                <Link to="/profile/portfolio" className="text-sm font-semibold text-indigo-600 hover:underline">
+                  Manage your public portfolio
+                </Link>
                 <div className="profile-grid">
                   <PersonalInfoCard profile={activeProfile} onUpdate={updateField} />
                   <CareerGoalsCard

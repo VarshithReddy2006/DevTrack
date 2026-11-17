@@ -19,6 +19,7 @@ const LeaguesPage = lazy(() => import('../features/leagues/LeaguesPage'));
 const ProjectsPage = lazy(() => import('../pages/ProjectsPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
 const ProfilePage = lazy(() => import('../pages/ProfilePage'));
+const PortfolioSettingsPage = lazy(() => import('../pages/PortfolioSettingsPage'));
 const AdminPage = lazy(() => import('../pages/AdminPage'));
 const ReadinessPage = lazy(() => import('../pages/ReadinessPage'));
 
@@ -192,6 +193,16 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="Progress">
               <Suspense fallback={<PageFallback />}>
                 <ProfilePage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/profile/portfolio"
+          element={
+            <ErrorBoundary pageName="Portfolio Settings">
+              <Suspense fallback={<PageFallback />}>
+                <PortfolioSettingsPage />
               </Suspense>
             </ErrorBoundary>
           }
