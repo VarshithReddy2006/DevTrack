@@ -39,6 +39,7 @@ describe('Contest Ingestion Adapters & Circuit Breaker', () => {
     circuitBreakers.leetcode.reset();
     circuitBreakers.atcoder.reset();
     circuitBreakers.codechef.reset();
+    await DsaContest.init();
     await DsaContest.deleteMany({ kind: 'scheduled' });
   });
 
@@ -296,6 +297,107 @@ describe('Contest Ingestion Adapters & Circuit Breaker', () => {
       const cached = redisStore.get('devtrack:contests:upcoming:codeforces');
       expect(cached).toBeDefined();
       expect(cached).toContain('Codeforces Global Round 28');
+    });
+
+    it('enforces unique compound index on { platform, externalId, kind } for scheduled contests', async () => {
+      await DsaContest.create({
+        platform: 'codeforces',
+        externalId: 'unique-cf-100',
+        contestName: 'Round 100',
+        kind: 'scheduled',
+        startTime: new Date(Date.now() + 3600000),
+        endTime: new Date(Date.now() + 7200000),
+      });
+
+      // Attempting to insert duplicate scheduled contest with identical (platform, externalId, kind) must reject
+      await expect(
+        DsaContest.create({
+          platform: 'codeforces',
+          externalId: 'unique-cf-100',
+          contestName: 'Duplicate Round 100',
+          kind: 'scheduled',
+          startTime: new Date(Date.now() + 3600000),
+          endTime: new Date(Date.now() + 7200000),
+        })
+      ).rejects.toThrow();
+    });
+
+    it('prunes obsolete future contests when upstream provider cancels or removes them', async () => {
+      const now = new Date();
+      const futureStart = new Date(now.getTime() + 3600000);
+      const futureEnd = new Date(now.getTime() + 7200000);
+
+      // Pre-seed an existing future scheduled contest that is subsequently cancelled upstream
+      await DsaContest.create({
+        platform: 'codeforces',
+        externalId: 'cancelled-round-999',
+        contestName: 'Cancelled Codeforces Round',
+        kind: 'scheduled',
+        startTime: futureStart,
+        endTime: futureEnd,
+        stale: false,
+      });
+
+      // Pre-seed another platform contest that should NOT be pruned
+      await DsaContest.create({
+        platform: 'leetcode',
+        externalId: 'weekly-keep-400',
+        contestName: 'Weekly Contest 400',
+        kind: 'scheduled',
+        startTime: futureStart,
+        endTime: futureEnd,
+        stale: false,
+      });
+
+      // Mock upstream returning only active contest "active-round-1000", omitting "cancelled-round-999"
+      const nowSec = Math.floor(now.getTime() / 1000);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'OK',
+          result: [
+            {
+              id: 1000,
+              name: 'Active Codeforces Round 1000',
+              type: 'CF',
+              phase: 'BEFORE',
+              frozen: false,
+              durationSeconds: 7200,
+              startTimeSeconds: nowSec + 3600,
+            },
+          ],
+        }),
+      } as Response);
+
+      const res = await contestRefreshService.refreshPlatformContests('codeforces');
+      expect(res.stale).toBe(false);
+      expect(res.contests).toHaveLength(1);
+      expect(res.contests[0].externalId).toBe('1000');
+
+      // The cancelled contest should have been pruned
+      const cancelledDoc = await DsaContest.findOne({
+        platform: 'codeforces',
+        externalId: 'cancelled-round-999',
+        kind: 'scheduled',
+      });
+      expect(cancelledDoc).toBeNull();
+
+      // The new active contest exists
+      const activeDoc = await DsaContest.findOne({
+        platform: 'codeforces',
+        externalId: '1000',
+        kind: 'scheduled',
+      });
+      expect(activeDoc).not.toBeNull();
+
+      // The other platform's contest remains intact
+      const leetcodeDoc = await DsaContest.findOne({
+        platform: 'leetcode',
+        externalId: 'weekly-keep-400',
+        kind: 'scheduled',
+      });
+      expect(leetcodeDoc).not.toBeNull();
     });
 
     it('falls back to stale cache without crashing when provider times out', async () => {

@@ -83,6 +83,14 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../shared/jobs/notificationWorker.js');
     return { start: m.startNotificationWorker, stop: m.stopNotificationWorker };
   } },
+  { role: 'xp', queueName: 'league-score', load: async () => {
+    const m = await import('../modules/leagues/workers/leagueScore.worker.js');
+    return { start: m.startLeagueScoreWorker, stop: m.stopLeagueScoreWorker };
+  } },
+  { role: 'maintenance', queueName: 'league-rollover', load: async () => {
+    const m = await import('../modules/leagues/workers/weeklyRollover.worker.js');
+    return { start: async () => { m.startWeeklyRolloverWorker(); await m.scheduleWeeklyRollover(); }, stop: m.stopWeeklyRolloverWorker };
+  } },
   { role: 'resume-intelligence', queueName: 'resume-ats', load: async () => {
     const m = await import('./worker-resume-ats.js');
     return { start: m.startResumeATSWorker, stop: m.stopResumeATSWorker };

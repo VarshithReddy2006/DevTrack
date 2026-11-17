@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PublicProfile } from '../../../db/models/publicProfile.model.js';
 import { User } from '../../../db/models/user.model.js';
 import { PublicProfileService } from '../../../modules/profile/publicProfile.service.js';
 
@@ -38,13 +39,25 @@ describe('PublicProfileService.getPublicProfileByUsername lookup', () => {
     expect(computeProfile).not.toHaveBeenCalled();
   });
 
-  it('still finds the user case-insensitively', async () => {
+  it('finds a published profile by handle, case-insensitively, without a user lookup', async () => {
     const user = await makeUser('john.doe');
-    await makeUser('johnxdoe');
+    await PublicProfile.create({
+      userId: user._id, username: 'john.doe', slug: 'john.doe', published: true, visibility: 'public',
+      snapshot: { version: 2 },
+    });
 
-    await PublicProfileService.getPublicProfileByUsername('John.Doe', '127.0.0.1', 'public');
+    const profile = await PublicProfileService.getPublicProfileByUsername('John.Doe', '127.0.0.1', 'public');
 
-    expect(computeProfile).toHaveBeenCalledTimes(1);
-    expect(String(computeProfile.mock.calls[0][0])).toBe(String(user._id));
+    expect(String(profile.userId)).toBe(String(user._id));
+    expect(computeProfile).not.toHaveBeenCalled();
+  });
+
+  it('does not build or serve a profile for a user who never published', async () => {
+    await makeUser('quietuser');
+    await expect(
+      PublicProfileService.getPublicProfileByUsername('QuietUser', '127.0.0.1', 'public'),
+    ).rejects.toThrow('Profile not found');
+    expect(computeProfile).not.toHaveBeenCalled();
+    expect(await PublicProfile.countDocuments()).toBe(0);
   });
 });
