@@ -99,7 +99,7 @@ Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to the collector's full HTTP/JSON trace
 
 For custom process entry points, preload the built SDK with `node --import ./dist/instrumentation.js ...` before loading instrumented libraries. Exported spans keep trace IDs, timings, operation names, and status codes. The exporter drops request URLs, database arguments, Redis payloads, and exception bodies.
 
-When the transactional outbox from issue #296 is available, persist `captureTraceContext()` in the event's `traceContext` field. Enqueue within `withTraceContext(row.traceContext, () => queue.add(...))` so BullMQ derives its metadata from the originating request.
+The transactional outbox stores the active W3C `traceparent` when writing an event. The relay restores that parent around each enqueue so BullMQ carries the trace into the consumer job. Existing events without a valid parent start their own queue trace.
 
 
 ---
