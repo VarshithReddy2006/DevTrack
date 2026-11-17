@@ -20,6 +20,16 @@ const storage = multer.diskStorage({
   },
 });
 
+// Rejected by the file filter. Carries its own status so the error handler returns 415, not 500.
+export class UnsupportedFileTypeError extends Error {
+  readonly statusCode = 415;
+  readonly code = 'UNSUPPORTED_FILE_TYPE';
+  constructor() {
+    super('Unsupported file type. Upload a PDF, DOCX, TXT or MD file.');
+    this.name = 'UnsupportedFileTypeError';
+  }
+}
+
 // Configure file filter
 const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   const allowedMimeTypes = [
@@ -37,7 +47,7 @@ const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCa
     cb(null, true);
   } else {
     logger.warn(`[Multer] Rejected file: ${file.originalname} (type: ${file.mimetype})`);
-    cb(new Error('Unsupported file type'));
+    cb(new UnsupportedFileTypeError());
   }
 };
 

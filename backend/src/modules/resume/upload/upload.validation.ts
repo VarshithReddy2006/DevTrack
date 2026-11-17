@@ -1,5 +1,6 @@
 // src/modules/resume-intelligence/upload/upload.validation.ts
 import { Request, Response, NextFunction } from 'express';
+import { promises as fsPromises } from 'fs';
 import { logger } from '../../../shared/logger.js';
 
 /**
@@ -54,6 +55,10 @@ export async function validateUpload(req: Request, res: Response, next: NextFunc
 
     if (errors.length > 0) {
       logger.warn(`[UploadValidation] Validation failed: ${errors.join(', ')}`);
+      // The file is already on disk; nothing downstream will pick it up, so remove it.
+      await fsPromises.unlink(req.file.path).catch((e) => {
+        logger.warn(`[UploadValidation] Could not remove rejected upload ${req.file?.path}: ${(e as Error).message}`);
+      });
       res.status(400).json({
         success: false,
         error: 'File validation failed',
