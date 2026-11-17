@@ -1,8 +1,7 @@
-// src/shared/syncScheduler.ts — Platform sync scheduler
-// Schedules background sync via BullMQ. Reuses existing sync service logic.
-// Extracted for clean separation — scheduler is now purely orchestration.
+// src/shared/syncScheduler.ts — Platform sync sweep
+// Enqueues one platform-sync job per connected platform. The recurring trigger is a BullMQ
+// repeatable (see shared/jobs/maintenanceWorker.ts), so exactly one instance runs each tick.
 
-import cron from 'node-cron';
 import { Types } from 'mongoose';
 import { ConnectedPlatform } from '../db/models/index.js';
 import { syncState } from './syncState.js';
@@ -13,7 +12,7 @@ import { env } from '../config/env.js';
 import { acquireSchedulerLock, releaseSchedulerLock } from './redis/syncLock.service.js';
 
 // ---------------------------------------------------------------------------
-// Distributed leader lock + In-memory guard — prevents overlapping cron executions
+// Distributed leader lock + In-memory guard — prevents overlapping sweeps
 // ---------------------------------------------------------------------------
 
 let syncLock = false;
@@ -150,56 +149,3 @@ async function runScheduledSync(): Promise<void> {
 }
 
 export { runScheduledSync };
-
-// ---------------------------------------------------------------------------
-// Scheduler lifecycle
-// ---------------------------------------------------------------------------
-
-let scheduledTask: cron.ScheduledTask | null = null;
-let isStarted = false;
-
-export function startSyncScheduler(): void {
-  if (isStarted) return;
-
-  if (!env.SYNC_ENABLED) {
-    logger.info('[sync-scheduler] Disabled via SYNC_ENABLED=false', {
-      job: 'platform-sync',
-    });
-    return;
-  }
-
-  const intervalMinutes = env.SYNC_INTERVAL_MINUTES;
-  const cronExpression = `*/${intervalMinutes} * * * *`;
-
-  scheduledTask = cron.schedule(cronExpression, () => {
-    void runScheduledSync();
-  });
-
-  isStarted = true;
-
-  logger.info('[sync-scheduler] Started', {
-    job: 'platform-sync',
-    intervalMinutes,
-    cooldownMs: env.SYNC_COOLDOWN_MS,
-    env: env.NODE_ENV,
-  });
-
-  // Run an initial sync shortly after startup
-  setTimeout(() => {
-    void runScheduledSync();
-  }, 10_000);
-}
-
-export function stopSyncScheduler(): void {
-  if (!isStarted || !scheduledTask) return;
-
-  scheduledTask.stop();
-  scheduledTask = null;
-  isStarted = false;
-
-  logger.info('[sync-scheduler] Stopped', { job: 'platform-sync' });
-}
-
-export function isSchedulerRunning(): boolean {
-  return isStarted;
-}

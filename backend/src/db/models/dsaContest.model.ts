@@ -131,7 +131,16 @@ const dsaContestSchema = new Schema<IDsaContest>(
 dsaContestSchema.index({ userId: 1, participatedAt: -1 });
 dsaContestSchema.index({ userId: 1, platform: 1 });
 dsaContestSchema.index({ platform: 1, startTime: 1, kind: 1 });
-dsaContestSchema.index({ platform: 1, externalId: 1, kind: 1 });
+dsaContestSchema.index(
+  { platform: 1, externalId: 1, kind: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      kind: 'scheduled',
+      externalId: { $type: 'string' },
+    },
+  }
+);
 dsaContestSchema.index({ kind: 1, startTime: 1, alertEmitted: 1 });
 
 export const DsaContest = model<IDsaContest>('DsaContest', dsaContestSchema);
