@@ -2,6 +2,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { parseTrustProxy } from './trustProxy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -79,6 +80,9 @@ export const env = {
 
   // CORS
   CORS_ORIGIN: getCorsOrigin(),
+
+  // Reverse proxy hops (Render / nginx = 1). Unset = not behind a proxy.
+  TRUST_PROXY: parseTrustProxy(process.env.TRUST_PROXY),
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: getEnvVarNumber('RATE_LIMIT_WINDOW_MS', 900000), // 15 minutes
