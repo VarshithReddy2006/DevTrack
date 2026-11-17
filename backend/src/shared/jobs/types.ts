@@ -128,7 +128,20 @@ export interface OgRenderJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData;
+/** Job target analysis (WORKER_TYPE=ai). The JD text itself never travels in the job: the worker loads it. */
+export interface JdParseJobData {
+  userId: string;
+  jobTargetId: string;
+  requestId?: string;
+}
+
+export interface JdScoreJobData {
+  userId: string;
+  jobTargetId: string;
+  requestId?: string;
+}
+
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | JdParseJobData | JdScoreJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -145,6 +158,10 @@ export const QueueNames = {
   
   // Render pool (WORKER_TYPE=render)
   OG_RENDER: 'domain-og-render',
+
+  // AI pool (WORKER_TYPE=ai): job description parsing and match scoring
+  JD_PARSE: 'jd-parse',
+  JD_SCORE: 'jd-score',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',

@@ -17,6 +17,7 @@
     "worker:resume-intelligence": "tsx src/worker-entrypoint.ts resume-intelligence",
     "worker:dataset": "tsx src/worker-entrypoint.ts dataset",
     "worker:render": "tsx src/worker-entrypoint.ts render",
+    "worker:ai": "tsx src/worker-entrypoint.ts ai",
     "postinstall": "node build-ats-core.mjs && node node_modules/@devtrack/contracts/build-for-app.mjs",
     "prebuild": "node build-ats-core.mjs",
     "build": "tsc -p tsconfig.json && node fix-esm-imports.mjs",
