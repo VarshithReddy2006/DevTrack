@@ -1,9 +1,13 @@
-// src/features/realtime/RecoveryOverlay.tsx — Gentle full-page overlay on comeback
-// Shows when user returns after inactivity, provides encouragement
+// src/features/realtime/RecoveryOverlay.tsx — Recovery surfaces for the realtime layer
+// 1. Gentle full-page overlay on comeback (user returns after inactivity)
+// 2. Small status banner while the SSE connection is down, with a retry countdown
 
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowRight, Sparkles } from 'lucide-react';
-import { useSse } from '../../hooks/useSse';
+import { ArrowRight, Sparkles, WifiOff } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { reconnectNow, useSse } from '../../hooks/useSse';
+import { useUserStore } from '../../store/userStore';
 import { cn } from '../../lib/design-system/tokens.css';
 import { copy } from '../../lib/copy';
 
@@ -18,7 +22,121 @@ interface RecoveryMessage {
   expiresAt: string;
 }
 
+const CONNECTED_MESSAGE_MS = 1_500;
+const RUNTIME_STATE_QUERY_KEY = ['runtime-state'] as const;
+
+/** Whole seconds left until `nextReconnectAt`, never negative. */
+export function secondsUntil(nextReconnectAt: number, now: number): number {
+  return Math.max(0, Math.ceil((nextReconnectAt - now) / 1000));
+}
+
+export function ConnectionRecoveryBanner() {
+  const isAuthenticated = useUserStore((s) => s.isAuthenticated);
+  const { connectionStatus, nextReconnectAt } = useSse();
+  const queryClient = useQueryClient();
+  // `interrupted` stays true from the first drop until the "Connected!" message is gone,
+  // so the first connect after page load (status 'connecting') never shows a banner.
+  const [interrupted, setInterrupted] = useState(false);
+  const [recovered, setRecovered] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setInterrupted(false);
+      setRecovered(false);
+      return;
+    }
+    if (connectionStatus === 'reconnecting') {
+      setInterrupted(true);
+      setRecovered(false);
+    } else if (connectionStatus === 'connected' && interrupted && !recovered) {
+      setRecovered(true);
+      // Events missed while offline are gone, so pull the runtime state fresh.
+      void queryClient.invalidateQueries({ queryKey: RUNTIME_STATE_QUERY_KEY });
+    }
+  }, [isAuthenticated, connectionStatus, interrupted, recovered, queryClient]);
+
+  useEffect(() => {
+    if (!recovered) return;
+    const timer = setTimeout(() => {
+      setRecovered(false);
+      setInterrupted(false);
+    }, CONNECTED_MESSAGE_MS);
+    return () => clearTimeout(timer);
+  }, [recovered]);
+
+  const waiting = connectionStatus === 'reconnecting' && nextReconnectAt !== null;
+  useEffect(() => {
+    if (!waiting) return;
+    setNow(Date.now());
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [waiting, nextReconnectAt]);
+
+  if (!isAuthenticated) return null;
+
+  const showBanner = interrupted && (recovered || connectionStatus !== 'connected');
+  const seconds = waiting && nextReconnectAt !== null ? secondsUntil(nextReconnectAt, now) : 0;
+  const attemptInFlight = connectionStatus === 'connecting' || (waiting && seconds === 0);
+
+  // The live region stays mounted so screen readers pick up the text changes inside it.
+  return (
+    <div role="status" aria-live="polite" aria-atomic="true" className="pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 px-4">
+      <AnimatePresence>
+        {showBanner && (
+          <motion.div
+            key="connection-banner"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.25 }}
+            className="pointer-events-auto flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm shadow-lg"
+          >
+            {recovered ? (
+              <p className="font-medium text-[#12B76A]">Connected!</p>
+            ) : (
+              <>
+                <WifiOff className="h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
+                <div className="text-zinc-700">
+                  {connectionStatus === 'disconnected' ? (
+                    <p>Live updates paused. We could not reach the server.</p>
+                  ) : (
+                    <p>
+                      Reconnecting to live server...
+                      {waiting && !attemptInFlight && (
+                        // Hidden from the live region so it does not announce every second.
+                        <span aria-hidden="true"> Next attempt in {seconds}s</span>
+                      )}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={reconnectNow}
+                  disabled={attemptInFlight}
+                  className="rounded-lg border border-zinc-200 px-3 py-1.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-50"
+                >
+                  Reconnect Now
+                </button>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export function RecoveryOverlay() {
+  return (
+    <>
+      <ConnectionRecoveryBanner />
+      <ComebackOverlay />
+    </>
+  );
+}
+
+function ComebackOverlay() {
   const { eventHistory } = useSse();
 
   // Filter for comeback messages
