@@ -160,10 +160,21 @@ database and ledger before clearing the `runner` record in
 | `SYNC_ENABLED` | No | `true` | Platform sync sweep (BullMQ repeatable on the maintenance worker; `false` removes it) |
 | `SYNC_INTERVAL_MINUTES` | No | `15` (prod) | Sync sweep interval in minutes, applied by the maintenance worker at startup |
 | `CLOSED_BETA` | No | `false` | Restrict access to beta users |
+| `TRUST_PROXY` | No | unset | Number of reverse proxies in front of the API (`1` on Render and behind the compose nginx). See [Behind a reverse proxy](#behind-a-reverse-proxy) |
 | `RATE_LIMIT_WINDOW_MS` | No | `900000` | Global rate limit window |
 | `RATE_LIMIT_MAX_REQUESTS` | No | `100` | Max requests per window |
 
 Copy `.env.example` (root) as a starting template for production.
+
+#### Behind a reverse proxy
+
+The rate limiters key requests by `req.ip`. Behind a proxy that is the proxy's own address unless Express is told to trust the `X-Forwarded-For` header, which means every user shares one bucket (for example 100 requests per 15 minutes for the whole app). Set `TRUST_PROXY` to the number of proxies between the internet and the API:
+
+- Render web service: `TRUST_PROXY=1`
+- `docker-compose.prod.yml` (nginx in front of `api`): `TRUST_PROXY=1`
+- API exposed directly, no proxy: leave it unset
+
+Only set it when a proxy really is in front. If the API is also reachable directly, clients can send their own `X-Forwarded-For` and pick any rate-limit bucket they like. Values must be a plain integer; anything else (including `true`) fails at startup.
 
 > **Auth note:** DevTrack uses **Clerk** for authentication. The root `.env.example` templates all required environment variables for both Render and Vercel deployments.
 

@@ -4,6 +4,22 @@ import { ZodError } from 'zod';
 import { errorResponse, commonErrors } from '../shared/response.js';
 import { reportError } from '../shared/monitoring.js';
 
+const MAX_UPLOAD_MB = 10;
+
+// Multer errors carry no HTTP status, so without this they fall through to a 500.
+function multerErrorResponse(err: AppError & { field?: string }): { message: string; code: string; statusCode: number } {
+  switch (err.code) {
+    case 'LIMIT_FILE_SIZE':
+      return { message: `File is too large. Maximum size is ${MAX_UPLOAD_MB} MB.`, code: 'FILE_TOO_LARGE', statusCode: 413 };
+    case 'LIMIT_FILE_COUNT':
+      return { message: 'Too many files. Upload one file at a time.', code: 'TOO_MANY_FILES', statusCode: 400 };
+    case 'LIMIT_UNEXPECTED_FILE':
+      return { message: `Unexpected file field${err.field ? ` "${err.field}"` : ''}.`, code: 'UNEXPECTED_FILE', statusCode: 400 };
+    default:
+      return { message: 'The upload could not be processed.', code: 'UPLOAD_ERROR', statusCode: 400 };
+  }
+}
+
 export interface AppError extends Error {
   statusCode?: number;
   code?: string;
@@ -71,6 +87,13 @@ export function errorHandler(
   }
 
 
+
+  // Multer upload errors (file too large, unexpected field, ...) are client errors
+  if (err.name === 'MulterError') {
+    const { message, code, statusCode } = multerErrorResponse(err);
+    errorResponse(res, message, code, statusCode);
+    return;
+  }
 
   // Handle custom AppErrors
   if (err.statusCode) {

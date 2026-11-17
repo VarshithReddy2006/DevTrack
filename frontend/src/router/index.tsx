@@ -11,6 +11,7 @@ import { SignupPage } from '../pages/SignupPage';
 import { LandingPage } from '../pages/LandingPage';
 import FocusPage from '../pages/FocusPage';
 import { FlagRoute } from './FlagRoute';
+import { INTERVIEW_STUDIO_FLAG, INTERVIEW_STUDIO_PATH } from '../features/interview/interview';
 import { JOB_TARGET_FLAG } from '../features/resume-tracker/jobTargets';
 
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
@@ -24,6 +25,8 @@ const ProfilePage = lazy(() => import('../pages/ProfilePage'));
 const PortfolioSettingsPage = lazy(() => import('../pages/PortfolioSettingsPage'));
 const AdminPage = lazy(() => import('../pages/AdminPage'));
 const ReadinessPage = lazy(() => import('../pages/ReadinessPage'));
+const InterviewStudioPage = lazy(() => import('../pages/interview/InterviewStudioPage'));
+const InterviewReviewPage = lazy(() => import('../pages/interview/InterviewReviewPage'));
 
 // Resume Tracker Workspace
 const ResumeEntryWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeEntryWorkspace').then(module => ({ default: module.ResumeEntryWorkspace })));
@@ -358,6 +361,30 @@ export const AppRouter: React.FC = () => {
           }
         />
 
+        <Route
+          path={INTERVIEW_STUDIO_PATH}
+          element={
+            <ErrorBoundary pageName="Interview Studio">
+              <FlagRoute flagKey={INTERVIEW_STUDIO_FLAG} redirectTo="/readiness">
+                <Suspense fallback={<PageFallback />}>
+                  <InterviewStudioPage />
+                </Suspense>
+              </FlagRoute>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path={`${INTERVIEW_STUDIO_PATH}/:sessionId/review`}
+          element={
+            <ErrorBoundary pageName="Interview Review">
+              <FlagRoute flagKey={INTERVIEW_STUDIO_FLAG} redirectTo="/readiness">
+                <Suspense fallback={<PageFallback />}>
+                  <InterviewReviewPage />
+                </Suspense>
+              </FlagRoute>
+            </ErrorBoundary>
+          }
+        />
         <Route path="/goals" element={<Navigate to="/dashboard" replace />} />
         <Route path="/challenges" element={<Navigate to="/dashboard" replace />} />
         <Route path="/achievements" element={<Navigate to="/profile" replace />} />

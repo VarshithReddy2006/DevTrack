@@ -2,6 +2,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { parseTrustProxy } from './trustProxy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +84,9 @@ export const env = {
   // Public origin of this API, used for absolute og:image links in shared portfolio previews.
   // Unset in production means previews keep the static image.
   PUBLIC_API_URL: getEnvVar('PUBLIC_API_URL', IS_PROD ? '' : `http://localhost:${getEnvVarNumber('PORT', 3001)}`),
+
+  // Reverse proxy hops (Render / nginx = 1). Unset = not behind a proxy.
+  TRUST_PROXY: parseTrustProxy(process.env.TRUST_PROXY),
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: getEnvVarNumber('RATE_LIMIT_WINDOW_MS', 900000), // 15 minutes

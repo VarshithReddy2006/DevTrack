@@ -3,7 +3,7 @@ import { Worker, Job, WorkerOptions } from 'bullmq';
 import { getRedisClient } from '../../shared/redis/index.js';
 import { logger } from '../../shared/logger.js';
 import { getQueueTelemetry } from '../../shared/tracing/queueTelemetry.js';
-import { ErrorClassifier, NonRetryableError } from './ErrorClassifier.js';
+import { ErrorClassifier, NonRetryableError, RetryableError } from './ErrorClassifier.js';
 import { DeadLetterHandler } from './DeadLetterHandler.js';
 import { RetryPolicy } from './RetryPolicy.js';
 import { attachWorkerDlq } from '../../shared/jobs/dlq.service.js';
@@ -36,7 +36,7 @@ export class WorkerFactory {
             const result = jobTimeoutMs === null ? await processing : await Promise.race([
               processing,
               new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error(`Job execution timed out after ${jobTimeoutMs / 60_000} minutes`)), jobTimeoutMs);
+                timer = setTimeout(() => reject(new RetryableError(`Job execution timed out after ${jobTimeoutMs / 60_000} minutes`)), jobTimeoutMs);
               }),
             ]);
             logger.info(`[Worker:${queueName}] Completed Job ${jobId}`);

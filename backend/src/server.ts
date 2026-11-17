@@ -7,6 +7,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import mongoose from 'mongoose';
 import { env, API_BASE_PATH } from './config/index.js';
+import { configureTrustProxy } from './config/trustProxy.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import { requestContextMiddleware } from './middleware/requestContext.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
@@ -37,6 +38,9 @@ const { version: APP_VERSION } = require('../package.json') as { version: string
 
 export async function createApp(): Promise<express.Express> {
   const app = express();
+
+  // Must run before any middleware that reads req.ip (rate limiters, request context).
+  configureTrustProxy(app, env.TRUST_PROXY);
 
   app.use(requestContextMiddleware);
   app.use(tracingMiddleware);
