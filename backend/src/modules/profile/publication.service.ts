@@ -1,6 +1,7 @@
 import type { ClientSession, Types } from 'mongoose';
 import { ProfileAuditLog } from '../../db/models/profileAuditLog.model.js';
 import { PUBLIC_PROFILE_SECTIONS, PublicProfile, type IPublicProfile } from '../../db/models/publicProfile.model.js';
+import { RenderArtifact } from '../../db/models/renderArtifact.model.js';
 import { RESERVED_SLUGS, SLUG_PATTERN, UsernameReservation } from '../../db/models/usernameReservation.model.js';
 import { User } from '../../db/models/user.model.js';
 import { createDomainEvent, type DomainEventType, type ProfilePublicationPayload } from '../../shared/events/eventContract.js';
@@ -140,6 +141,10 @@ export class PublicationService {
     });
 
     if (!profile) return this.getStatus(userId);
+    // Public reads already 404; also drop the stored card so no image of a private profile is kept.
+    await RenderArtifact.deleteMany({ userId, type: 'og_image' }).catch(error => {
+      logger.warn('[PublicationService] Could not remove stored OG image', { userId: String(userId), error });
+    });
     await dispatch('profile.unpublished', userId, { slug: profile.slug, publicationVersion: profile.publicationVersion });
     return toStatus(profile);
   }

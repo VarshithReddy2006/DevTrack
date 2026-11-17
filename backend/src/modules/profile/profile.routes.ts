@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { asyncHandler, authMiddleware, validateBody } from '../../middleware/index.js';
 import * as controller from './profile.controller.js';
 import * as publication from './publication.controller.js';
+import { getPublicOgImage } from './ogImage.controller.js';
 import { publishProfileSchema } from './publication.schemas.js';
 import { z } from 'zod';
 
@@ -47,5 +48,6 @@ router.get('/publication', authMiddleware, asyncHandler(publication.getPublicati
 router.put('/publication', authMiddleware, validateBody(publishProfileSchema), asyncHandler(publication.publishProfile));
 router.delete('/publication', authMiddleware, asyncHandler(publication.unpublishProfile));
 router.get('/public/:username', asyncHandler(controller.getPublicProfile as any));
+router.get('/public/:username/og.png', asyncHandler(getPublicOgImage));
 
 export default router;

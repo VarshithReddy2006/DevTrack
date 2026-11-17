@@ -134,6 +134,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `resume-*` | Upload, ATS, semantic, embedding, credibility, variant, export |
 | `system-maintenance` | Scheduled cleanup and reconciliation, daily/weekly mission generation, platform sync sweep (all BullMQ repeatables) |
 | `dataset-ingestion` | Dataset scan and ingest (ops) |
+| `domain-og-render` | 1200x630 OG share cards (satori + resvg), cached by content hash in `RenderArtifact` |
 
 ### Worker topology
 
@@ -149,15 +150,16 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `worker-readiness` | `readiness` | Six Readiness intelligence consumers |
 | `worker-resume` | `resume-intelligence` | Resume consumers and profile rebuild |
 | `worker-dataset` | `dataset` | Dataset ingestion |
+| `worker-render` | `render` | OG image rendering (CPU and memory heavy, isolated from the API) |
 | `worker-maint` | `maintenance` | Maintenance |
 
 The standalone dispatcher accepts exactly `sync`, `xp`, `readiness`, `maintenance`,
-`resume-intelligence`, `dataset`, and `all`. An unset or empty selector defaults to
+`resume-intelligence`, `dataset`, `render`, and `all`. An unset or empty selector defaults to
 `all` for local development; production services must select an explicit role.
 Unknown values fail before loading service modules or connecting to databases.
 There is no standalone orchestration-compensation consumer: `orch` and
 `orchestration` are invalid selectors. The resume role groups existing consumers;
-it does not add a new orchestration engine. `all` is the union of the six roles.
+it does not add a new orchestration engine. `all` is the union of the seven roles.
 
 Backend `worker:*` scripts use the same dispatcher with a positional selector.
 An explicit positional selector takes precedence over `WORKER_TYPE`. Shutdown

@@ -81,6 +81,10 @@ export const env = {
   // CORS
   CORS_ORIGIN: getCorsOrigin(),
 
+  // Public origin of this API, used for absolute og:image links in shared portfolio previews.
+  // Unset in production means previews keep the static image.
+  PUBLIC_API_URL: getEnvVar('PUBLIC_API_URL', IS_PROD ? '' : `http://localhost:${getEnvVarNumber('PORT', 3001)}`),
+
   // Reverse proxy hops (Render / nginx = 1). Unset = not behind a proxy.
   TRUST_PROXY: parseTrustProxy(process.env.TRUST_PROXY),
 

@@ -1,5 +1,5 @@
 /** Validate before loading any service modules. */
-export const WORKER_TYPES = ['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset', 'all'] as const;
+export const WORKER_TYPES = ['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset', 'render', 'all'] as const;
 export type WorkerType = typeof WORKER_TYPES[number];
 type Role = Exclude<WorkerType, 'all'>;
 
@@ -74,6 +74,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
   { role: 'dataset', queueName: 'dataset-ingestion', load: async () => {
     const m = await import('./worker-dataset-ingestion.js');
     return { start: m.startDatasetIngestionWorker, stop: m.stopDatasetIngestionWorker };
+  } },
+  { role: 'render', queueName: 'domain-og-render', load: async () => {
+    const m = await import('../modules/profile/workers/ogRender.worker.js');
+    return { start: m.startOgRenderWorker, stop: m.stopOgRenderWorker };
   } },
   { role: 'xp', queueName: 'streak-recalc', load: async () => {
     const m = await import('../shared/jobs/streakRecalcWorker.js');

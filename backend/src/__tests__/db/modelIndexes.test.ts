@@ -66,6 +66,7 @@ import '../../db/models/readinessSkills.model.js';
 import '../../db/models/readinessSnapshotRecord.model.js';
 import '../../db/models/recommendation.model.js';
 import '../../db/models/recommendationMemory.model.js';
+import '../../db/models/renderArtifact.model.js';
 import '../../db/models/resumeCredibility.model.js';
 import '../../db/models/resumeEvidenceClaim.model.js';
 import '../../db/models/resumeExport.model.js';

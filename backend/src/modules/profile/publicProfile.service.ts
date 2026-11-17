@@ -15,6 +15,7 @@ import { SUSPICION_FLAG_THRESHOLD, VerificationEngine } from './verification.eng
 import mongoose from 'mongoose';
 import { calculateStreaks, formatISODate, getStartOfDay, getStartOfYear, subtractDays } from '../../shared/date.js';
 import { getAchievements } from '../dashboard/dashboard.service.js';
+import { ogImagePath, ogImageVersion } from './og/ogCard.js';
 
 const SNAPSHOT_VERSION = 2;
 
@@ -35,7 +36,7 @@ export class PublicProfileService {
   /** Read only explicitly public snapshot metadata. Crawlers do not count as profile views. */
   static async getPublishedPreview(slug: string) {
     const profile = await PublicProfile.findOne({ slug, published: true, visibility: 'public' })
-      .select('userId username published visibility isIndexable snapshot.identity.displayName seo.ogDescription seo.ogImageUrl')
+      .select('userId username slug published visibility isIndexable publicationVersion snapshot.computedAt snapshot.identity.displayName seo.ogDescription seo.ogImageUrl')
       .lean();
     if (!profile) return null;
 
@@ -46,6 +47,8 @@ export class PublicProfileService {
       displayName: profile.snapshot?.identity?.displayName || profile.username,
       description: profile.seo?.ogDescription || 'View this verified engineering portfolio on DevTrack.',
       imageUrl: profile.seo?.ogImageUrl,
+      // Site-relative path of the generated card. Only a published profile gets here.
+      ogImagePath: ogImagePath(profile.slug, ogImageVersion(profile)),
       isIndexable: profile.isIndexable !== false,
     };
   }

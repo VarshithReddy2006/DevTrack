@@ -50,9 +50,10 @@ Separate the HTTP server from background workers so each scales independently.
 | Maintenance worker | `node dist/worker-entrypoint.js` | `WORKER_TYPE=maintenance` |
 | Resume intelligence | `node dist/worker-entrypoint.js` | `WORKER_TYPE=resume-intelligence` |
 | Dataset ingestion | `node dist/worker-entrypoint.js` | `WORKER_TYPE=dataset` |
+| Render pool | `node dist/worker-entrypoint.js` | `WORKER_TYPE=render` |
 
 Supported selectors are `sync`, `xp`, `maintenance`, `resume-intelligence`,
-`dataset` and `all`. An unset or empty selector defaults to `all`, preserving the
+`dataset`, `render` and `all`. An unset or empty selector defaults to `all`, preserving the
 local development fallback; typos fail before service imports/connections.
 Use explicit roles in production.
 `all` starts the union once and is intended for local development. There is no
@@ -61,13 +62,21 @@ unsupported. The resume role runs the existing resume consumers and profile rebu
 The `readiness` role runs all six Readiness consumers. The `xp` role also runs
 streak recalculation and notifications. The Resume role includes both legacy
 feature queues and session-based upload, ATS, embedding, semantic and recommendation
-queues. Start all six roles in production with API `ENABLE_WORKERS=false`.
+queues. Start all seven roles in production with API `ENABLE_WORKERS=false`.
 Recurring work (mission generation, platform sync sweeps, cleanups) runs as BullMQ
 repeatable jobs registered by the maintenance role, not as timers inside the API, so any number of
 API replicas produce each scheduled job exactly once. Keep at least one `maintenance` worker (or an
 `all` process) running, otherwise nothing triggers the schedules.
 Shutdown allows nine seconds for startup/drain/disconnect, then exits nonzero on a
 deadline failure; unfinished work is recovered through BullMQ stalled-job handling.
+
+The render role (`domain-og-render` queue) draws the 1200x630 share cards served at
+`GET /api/v1/profile/public/:username/og.png` with satori and resvg. The API only queues a job and
+waits up to eight seconds for the stored card; if no render worker is running it answers `503` with
+`Retry-After`, so deploy at least one `render` service wherever the API serves public profiles. Set
+`PUBLIC_API_URL` on the API to its public origin so the `/u/:username` share page can emit an absolute
+`og:image`; without it (production default) the static preview image stays in place. The Docker image
+ships the bundled Inter font under `assets/fonts` (SIL OFL 1.1).
 
 The dataset role runs dataset ingestion independently. Backend `npm run worker:*`
 commands use the same dispatcher; their positional role overrides `WORKER_TYPE`.
@@ -137,6 +146,7 @@ database and ledger before clearing the `runner` record in
 | `PORT` | No | `3001` | HTTP listen port |
 | `MONGODB_URI` | Yes | `mongodb://localhost:27017/devtrack` | MongoDB connection string |
 | `CORS_ORIGIN` | Yes | `http://localhost:5173` | Frontend origin - **must be HTTPS in production** |
+| `PUBLIC_API_URL` | No | `http://localhost:<PORT>` in dev, unset in prod | Public origin of the API, used for the absolute `og:image` link in `/u/:username` previews |
 | `CLERK_SECRET_KEY` | Yes | - | Clerk backend secret |
 | `REDIS_URL` | Recommended | - | Full Redis URL (overrides host/port) |
 | `REDIS_HOST` | No | `localhost` | Redis hostname |
@@ -272,6 +282,7 @@ Create one Render service per worker type. Use the same repository root and buil
 | `devtrack-xp` | `xp` | `cd backend && node dist/worker-entrypoint.js` |
 | `devtrack-resume` | `resume-intelligence` | `cd backend && node dist/worker-entrypoint.js` |
 | `devtrack-dataset` | `dataset` | `cd backend && node dist/worker-entrypoint.js` |
+| `devtrack-render` | `render` | `cd backend && node dist/worker-entrypoint.js` |
 | `devtrack-maint` | `maintenance` | `cd backend && node dist/worker-entrypoint.js` |
 
 ### 4. Required Environment Variables (Render Dashboard)

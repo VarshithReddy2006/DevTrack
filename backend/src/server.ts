@@ -76,7 +76,7 @@ export async function createApp(): Promise<express.Express> {
   // Phase 2: Health & observability endpoints (before routes)
   setupHealthEndpoints(app, getRedisHealth, getWorkerStatus, getXpWorkerStatus, getOrCreateQueue, QueueNames, eventBus, syncState, getInfrastructureState);
 
-  registerPublicProfileShell(app, env.CORS_ORIGIN);
+  registerPublicProfileShell(app, env.CORS_ORIGIN, env.PUBLIC_API_URL || undefined);
 
   // Phase 3: API routes
   app.use('/api/system/dlq', dlqRoutes);

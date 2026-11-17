@@ -2,16 +2,12 @@ import { IPublicProfile } from '../../db/models/publicProfile.model.js';
 import { IProfileTimelineEvent } from '../../db/models/profileTimelineEvent.model.js';
 
 import type { IUserSettings } from '../../db/models/userSettings.model.js';
+import { ogImagePath, ogImageVersion } from './og/ogCard.js';
+import { visibleSections } from './visibility.js';
 
 export function mapToPublicProfileDTO(profile: IPublicProfile, privacy?: Partial<IUserSettings['privacy']>) {
   const snapshot = profile.snapshot;
-  // A section needs the owner's publication opt-in and must not be switched off in privacy settings.
-  const { sections } = profile;
-  const showStreak = sections?.streak === true && privacy?.showStreak !== false;
-  const showGithub = sections?.github === true && privacy?.showGithub !== false;
-  const showDsa = sections?.dsa === true && privacy?.showDsaProgress !== false;
-  const showProjects = sections?.projects === true && privacy?.showProjects !== false;
-  const showActivity = sections?.activity === true && privacy?.showActivity !== false;
+  const { streak: showStreak, github: showGithub, dsa: showDsa, projects: showProjects, activity: showActivity } = visibleSections(profile, privacy);
   // Badges are derived from the activity counters the anti-gaming audit distrusts, so hide them while flagged.
   const underReview = profile.antiGaming?.isFlagged === true;
 
@@ -67,7 +63,13 @@ export function mapToPublicProfileDTO(profile: IPublicProfile, privacy?: Partial
       xpVelocity30d: showStreak && showDsa && showGithub && showProjects ? snapshot.velocityIndicators.xpVelocity30d : undefined,
       trend: showStreak && showDsa && showGithub && showProjects ? snapshot.velocityIndicators.trend : undefined,
     } : undefined,
-    seo: profile.seo,
+    seo: {
+      ogTitle: profile.seo?.ogTitle,
+      ogDescription: profile.seo?.ogDescription,
+      // Only published profiles reach this mapper, so the dynamic card is safe to advertise.
+      ogImageUrl: profile.seo?.ogImageUrl ?? ogImagePath(profile.slug, ogImageVersion(profile)),
+      canonicalUrl: profile.seo?.canonicalUrl,
+    },
   };
 }
 
