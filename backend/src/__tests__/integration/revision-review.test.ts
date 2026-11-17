@@ -1,5 +1,5 @@
 // backend/src/__tests__/integration/revision-review.test.ts
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { Types } from 'mongoose';
 import { RevisionCard } from '../../db/models/revisionCard.model.js';
 import { UserXp, XpTransaction } from '../../db/models/index.js';
@@ -11,6 +11,11 @@ import {
 } from '../../modules/revision/revision.service.js';
 
 describe('Revision Radar Integration & Optimistic Concurrency', () => {
+  beforeAll(async () => {
+    // Duplicate detection depends on the compound unique index being ready.
+    await RevisionCard.init();
+  });
+
   beforeEach(async () => {
     await RevisionCard.deleteMany({});
     await UserXp.deleteMany({});
