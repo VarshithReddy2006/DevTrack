@@ -11,6 +11,23 @@ export interface IWeightingProfile {
   leadershipWeight: number;
 }
 
+export interface IBulletEdit {
+  section: string;
+  bulletIndex: number;
+  originalText: string;
+  editedText: string;
+}
+
+export interface IVariantAtsScore {
+  score: number;
+  extractionConfidence: number;
+  parserWarningCount: number;
+  formattingWarningCount: number;
+  keywordsMatched: number;
+  keywordsTotal: number;
+  scoredAt: Date;
+}
+
 export interface IResumeVariant extends Document {
   userId: Schema.Types.ObjectId;
   resumeProfileId: Schema.Types.ObjectId;
@@ -31,9 +48,35 @@ export interface IResumeVariant extends Document {
     preferredFormat: string;
   };
   confidence: number;
+  bulletEdits?: IBulletEdit[];
+  jobTargetId?: Schema.Types.ObjectId;
+  atsScore?: IVariantAtsScore;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const bulletEditSchema = new Schema<IBulletEdit>(
+  {
+    section: { type: String, required: true, trim: true, maxlength: 50 },
+    bulletIndex: { type: Number, required: true, min: 0, validate: Number.isInteger },
+    originalText: { type: String, default: '', maxlength: 1000 },
+    editedText: { type: String, required: true, maxlength: 1000 },
+  },
+  { _id: false }
+);
+
+const variantAtsScoreSchema = new Schema<IVariantAtsScore>(
+  {
+    score: { type: Number, required: true, min: 0, max: 100 },
+    extractionConfidence: { type: Number, required: true, min: 0, max: 100 },
+    parserWarningCount: { type: Number, required: true, min: 0 },
+    formattingWarningCount: { type: Number, required: true, min: 0 },
+    keywordsMatched: { type: Number, required: true, min: 0 },
+    keywordsTotal: { type: Number, required: true, min: 0 },
+    scoredAt: { type: Date, required: true },
+  },
+  { _id: false }
+);
 
 const resumeVariantSchema = new Schema<IResumeVariant>(
   {
@@ -105,6 +148,10 @@ const resumeVariantSchema = new Schema<IResumeVariant>(
       min: 0,
       max: 100,
     },
+    // Absent (not empty) on variants created without the live editor, so v1 responses keep their shape.
+    bulletEdits: { type: [bulletEditSchema], default: undefined },
+    jobTargetId: { type: Schema.Types.ObjectId },
+    atsScore: { type: variantAtsScoreSchema, default: undefined },
   },
   {
     timestamps: true,

@@ -1,18 +1,32 @@
 // src/modules/resume-intelligence/routes/resume-intelligence.routes.ts
 import { Router } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { authMiddleware } from '../../../middleware/auth.js';
 import { rateLimiters } from '../../../middleware/rateLimitAdvanced.js';
 import { validateRequest } from '../../../middleware/validation.js';
+import { isFlagEnabled } from '../../flags/flags.service.js';
+import { ATS_LIVE_EDITOR_FLAG } from '../flags.js';
 import * as controller from '../controllers/ResumeIntelligenceController.js';
 import {
   UpdateResumeProfileSchema,
   GenerateVariantSchema,
+  GenerateVariantRequestV2Schema,
   ExportResumeSchema,
   AnalyzeATSSchema,
   CreateEvidenceClaimSchema,
   GenerateReportSchema,
   DossierExportSchema,
 } from '../dto/index.js';
+
+// With ats-live-editor off the body is parsed by the v1 schema, which drops the v2 fields.
+async function validateVariantBody(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const liveEditor = await isFlagEnabled(ATS_LIVE_EDITOR_FLAG, (req as any).user.id);
+    validateRequest({ body: liveEditor ? GenerateVariantRequestV2Schema : GenerateVariantSchema })(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+}
 
 export function createResumeIntelligenceRoutes(auth = authMiddleware): Router {
   const router = Router();
@@ -37,7 +51,7 @@ export function createResumeIntelligenceRoutes(auth = authMiddleware): Router {
   router.post('/generate', controller.generateResume);
 
   // Variant routes
-  router.post('/variants', validateRequest({ body: GenerateVariantSchema }), controller.generateVariant);
+  router.post('/variants', validateVariantBody, controller.generateVariant);
   router.get('/variants', controller.getVariants);
   router.get('/variants/:variantId', controller.getVariant);
 

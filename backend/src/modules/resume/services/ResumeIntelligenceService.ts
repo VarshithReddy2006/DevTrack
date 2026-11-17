@@ -10,9 +10,10 @@ import { Project } from '../../../db/models/project.model.js';
 import { ResumeOrchestrationEngine } from '../orchestration/ResumeOrchestrationEngine.js';
 import { ResumeVariantEngine } from '../engines/ResumeVariantEngine.js';
 import { ATSCompatibilityEngine } from '../ats/ATSCompatibilityEngine.js';
+import { scoreBulletEdits } from '../ats/bulletEditScoring.js';
 import { ResumeExportService } from '../export/ResumeExportService.js';
 import { ResumeMLService } from '../ai/ResumeMLService.js';
-import type { CreateResumeProfileDTO, UpdateResumeProfileDTO, GenerateVariantDTO, ExportResumeDTO, AnalyzeATSDTO, CreateEvidenceClaimDTO } from '../dto/index.js';
+import type { CreateResumeProfileDTO, UpdateResumeProfileDTO, GenerateVariantDTO, GenerateVariantRequestV2DTO, ExportResumeDTO, AnalyzeATSDTO, CreateEvidenceClaimDTO } from '../dto/index.js';
 import { logger } from '../../../shared/logger.js';
 import { randomBytes } from 'crypto';
 
@@ -100,7 +101,7 @@ export class ResumeIntelligenceService {
    */
   async generateVariant(
     userId: Types.ObjectId,
-    data: GenerateVariantDTO
+    data: GenerateVariantDTO | GenerateVariantRequestV2DTO
   ): Promise<typeof ResumeVariant.prototype> {
     logger.info(`[ResumeIntelligence] Generating ${data.roleType} variant for user ${userId}`);
 
@@ -109,6 +110,29 @@ export class ResumeIntelligenceService {
       data.roleType,
       data.customWeights
     );
+
+    // v2 fields are only present when the route validated against the v2 schema (ats-live-editor on).
+    const { bulletEdits, jobTargetId, clientScore } = data as Partial<GenerateVariantRequestV2DTO>;
+    if (!bulletEdits?.length && !jobTargetId) return variant;
+
+    if (jobTargetId) variant.set('jobTargetId', jobTargetId);
+    if (bulletEdits?.length) {
+      const profile = await ResumeProfile.findById(variant.resumeProfileId);
+      // The score comes from the edited text only. clientScore is never copied onto the variant.
+      const atsScore = scoreBulletEdits(bulletEdits, {
+        targetRole: profile?.targetRole,
+        keywords: variant.prioritizedSkills,
+      });
+      variant.bulletEdits = bulletEdits;
+      variant.atsScore = atsScore;
+
+      if (clientScore !== undefined && clientScore !== atsScore.score) {
+        logger.warn(
+          `[ResumeIntelligence] ATS score drift for variant ${variant.variantId}: client=${clientScore} server=${atsScore.score} diff=${Math.abs(clientScore - atsScore.score)}`
+        );
+      }
+    }
+    await variant.save();
 
     return variant;
   }
