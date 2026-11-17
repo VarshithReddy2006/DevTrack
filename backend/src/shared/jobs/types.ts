@@ -146,6 +146,9 @@ export const QueueNames = {
   // Render pool (WORKER_TYPE=render)
   OG_RENDER: 'domain-og-render',
 
+  // Domain event consumers (outbox relay delivers here)
+  DOMAIN_READINESS: 'domain-readiness',
+
   // Readiness Decoupled Pipelines
   READINESS_DSA: 'readiness-dsa',
   READINESS_PROJECTS: 'readiness-projects',

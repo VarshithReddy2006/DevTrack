@@ -1,79 +1,46 @@
-// src/modules/resume-intelligence/evidence/EvidenceGraphEngine.ts
+import { isDeepStrictEqual } from 'node:util';
 import type { Types } from 'mongoose';
-import { logger } from '../../../shared/logger.js';
 import { ResumeEvidenceClaim, resumeClaimScope } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { ClaimLineageResolver } from './ClaimLineageResolver.js';
 import { EvidenceRelationshipMapper } from './EvidenceRelationshipMapper.js';
 import { VerificationConfidenceEngine } from './VerificationConfidenceEngine.js';
 
-export interface IEvidenceNode {
-  id: string;
-  type: 'signal' | 'evidence' | 'claim' | 'projection';
-  data: any;
-  metadata: {
-    provenance: string;
-    confidence: number;
-    timestamp: Date;
-  };
-}
-
-export interface IEvidenceEdge {
-  from: string;
-  to: string;
-  relationship: string;
-  weight: number;
-}
-
-/**
- * EvidenceGraphEngine
- * 
- * The intelligence substrate of DevTrack.
- * Manages the graph of signals, evidence, claims, and projections.
- */
 export class EvidenceGraphEngine {
-  private lineageResolver: ClaimLineageResolver;
-  private relationshipMapper: EvidenceRelationshipMapper;
-  private confidenceEngine: VerificationConfidenceEngine;
+  private readonly lineageResolver = new ClaimLineageResolver();
+  private readonly relationshipMapper = new EvidenceRelationshipMapper();
+  private readonly confidenceEngine = new VerificationConfidenceEngine();
 
-  constructor() {
-    this.lineageResolver = new ClaimLineageResolver();
-    this.relationshipMapper = new EvidenceRelationshipMapper();
-    this.confidenceEngine = new VerificationConfidenceEngine();
-  }
-
-  /**
-   * Build or update the evidence graph for a user
-   */
   async buildGraphForUser(userId: Types.ObjectId): Promise<void> {
-    logger.info(`[EvidenceGraph] Building graph for user ${userId}`);
-    
-    // 1. Resolve claim lineage
-    const claims = await ResumeEvidenceClaim.find({ userId, ...resumeClaimScope });
+    const claims = await ResumeEvidenceClaim.find({ userId, ...resumeClaimScope })
+      .select('_id evidenceSources +lineage confidence verificationStatus updatedAt').lean();
+    const resolve = await this.lineageResolver.forUser(userId, claims.flatMap(claim => claim.evidenceSources ?? []));
+
     for (const claim of claims) {
-      await this.lineageResolver.resolveLineage(claim);
+      const lineage = this.relationshipMapper.mapRelationships(resolve(claim.evidenceSources ?? []));
+      const confidence = this.confidenceEngine.calculate(lineage, claim.verificationStatus);
+      if (confidence === claim.confidence && isDeepStrictEqual(lineage, claim.lineage ?? [])) continue;
+
+      // Persist edges and their derived score together. A concurrent claim edit triggers a rebuild.
+      const update = await ResumeEvidenceClaim.updateOne(
+        { _id: claim._id, userId, ...resumeClaimScope, updatedAt: claim.updatedAt ?? { $exists: false } },
+        { $set: { lineage, confidence } },
+        { runValidators: true },
+      );
+      if (!update.matchedCount && await ResumeEvidenceClaim.exists({ _id: claim._id, userId, ...resumeClaimScope })) {
+        throw new Error('Evidence claim changed during graph rebuild');
+      }
     }
-
-    // 2. Map relationships
-    await this.relationshipMapper.mapRelationships(userId);
-
-    // 3. Update confidence scores
-    await this.confidenceEngine.recalculateConfidence(userId);
   }
 
-  /**
-   * Get recruiter-facing traceability for a specific claim
-   */
-  async getTraceability(claimId: string): Promise<{
-    lineage: any;
-    provenance: any;
-    confidence: number;
-  }> {
-    const claim = await ResumeEvidenceClaim.findOne({ _id: claimId, ...resumeClaimScope });
+  /** Internal lookup for a claim already authorized by the caller. */
+  async getTraceability(claimId: string) {
+    const claim = await ResumeEvidenceClaim.findOne({ _id: claimId, ...resumeClaimScope })
+      .select('+lineage evidenceSources confidence').lean();
     if (!claim) throw new Error('Claim not found');
 
     return {
-      lineage: await this.lineageResolver.getLineage(claimId),
-      provenance: claim.evidenceSources,
+      lineage: claim.lineage ?? [],
+      provenance: claim.evidenceSources ?? [],
       confidence: claim.confidence,
     };
   }

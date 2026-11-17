@@ -66,6 +66,7 @@ export type DomainEventType =
   | 'focus.session.completed'
   | 'dsa.problem.solved'
   | 'revision.reviewed'
+  | 'jobtarget.parsed'
   | 'contest.starting-soon'
   | 'league.week.finalized'
   // Public profile integrity
@@ -116,6 +117,33 @@ export interface ProfileFlaggedPayload {
   flags: string[];
 }
 
+/** Emitted when a focus session is closed as completed. Carries what the XP rules need to judge it. */
+export interface FocusSessionCompletedPayload {
+  sessionId: string;
+  plannedDurationMinutes: number;
+  activeDurationMs: number;
+  coveredHeartbeatIntervals?: number;
+  /** ISO-8601; falls back to the envelope timestamp when absent. */
+  completedAt?: string;
+}
+
+export interface RevisionReviewedPayload {
+  cardId: string;
+  reviewSeq: number;
+  rating: 'failed' | 'hard' | 'easy';
+  /** ISO-8601; falls back to the envelope timestamp when absent. */
+  reviewedAt?: string;
+}
+
+/** Emitted by the JD parse pipeline once a job target has been parsed and scored. */
+export interface JobTargetParsedPayload {
+  jobTargetId: string;
+  targetRole?: string;
+  company?: string;
+  requiredSkills?: string[];
+  analysisMode?: 'ai' | 'taxonomy_only';
+}
+
 export interface OrchestrationStageFailedPayload {
   stage: string;
   error: string;
@@ -142,6 +170,9 @@ export type AchievementUnlockedEvent = DomainEventEnvelope<'achievement.unlocked
 export type ProfilePublishedEvent = DomainEventEnvelope<'profile.published', ProfilePublicationPayload>;
 export type ProfileUnpublishedEvent = DomainEventEnvelope<'profile.unpublished', ProfilePublicationPayload>;
 export type ProfileFlaggedEvent = DomainEventEnvelope<'profile.flagged', ProfileFlaggedPayload>;
+export type FocusSessionCompletedEvent = DomainEventEnvelope<'focus.session.completed', FocusSessionCompletedPayload>;
+export type RevisionReviewedEvent = DomainEventEnvelope<'revision.reviewed', RevisionReviewedPayload>;
+export type JobTargetParsedEvent = DomainEventEnvelope<'jobtarget.parsed', JobTargetParsedPayload>;
 export type OrchestrationStageFailedEvent = DomainEventEnvelope<'orchestration.stage_failed', OrchestrationStageFailedPayload>;
 export type WorkerPoisonedEvent = DomainEventEnvelope<'worker.poisoned', WorkerPoisonedPayload>;
 

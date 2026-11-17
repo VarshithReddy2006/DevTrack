@@ -5,7 +5,9 @@ import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js
 import { ReadinessRoadmap } from '../../../db/models/readinessRoadmap.model.js';
 import { ReadinessBenchmarks } from '../../../db/models/readinessBenchmarks.model.js';
 import { ReadinessCore } from '../../../db/models/readinessCore.model.js';
+import { ReadinessInput } from '../../../db/models/readinessInput.model.js';
 import { logger } from '../../../shared/logger.js';
+import { summarizeInputs, toObjectId, type ReadinessInputsView } from '../consumers/readinessInputs.js';
 
 export interface ReadinessSnapshot {
   snapshotId: string;
@@ -49,6 +51,17 @@ export interface SnapshotComparison {
 }
 
 export class ReadinessSnapshotServiceClass {
+  /**
+   * Live consumer-maintained inputs (7-day focus and revision counters, job target context).
+   * Computed against the rolling window at read time, so an idle user's counters decay to zero
+   * without any event. Additive to the snapshot; nothing here changes the stored snapshot shape.
+   */
+  async getInputs(userId: string, now: Date = new Date()): Promise<ReadinessInputsView> {
+    const objectId = toObjectId(userId);
+    const doc = objectId ? await ReadinessInput.findOne({ userId: objectId }) : null;
+    return summarizeInputs(doc, now);
+  }
+
   async createReadinessSnapshot(userId: string, changeDescription: string, createdBy = 'system'): Promise<ReadinessSnapshot> {
     const [dsa, skills, projects, roadmap, benchmarks, core] = await Promise.all([
       ReadinessDsa.findOne({ userId }).lean(),

@@ -52,8 +52,8 @@ export function startGithubAnalysisWorker(): Worker {
   githubAnalysisWorker = createDlqWorker(
     GITHUB_ANALYSIS_QUEUE,
     async (job: Job) => {
-      logger.info(`[GithubAnalysisWorker] Analyzing repo ${job.data.repoUrl}`);
-      await engine.analyzeRepository(job.data.repoUrl);
+      logger.info(`[GithubAnalysisWorker] Processing job ${job.id}`);
+      return engine.analyzeRepository(job.data.repoUrl);
     },
     { connection: getRedisConnection() }
   );

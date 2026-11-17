@@ -38,6 +38,7 @@ export type SseEventType =
   | 'xp_updated'
   | 'badge_earned'
   | 'resume_progression'
+  | 'jobtarget.parsed'
   | 'heartbeat';
 
 // ---------------------------------------------------------------------------

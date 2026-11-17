@@ -1,5 +1,6 @@
 // src/db/models/resumeSession.model.ts
 import { Schema, model, type Document } from 'mongoose';
+import { cascadeEmbeddingDeletes, type EmbeddingOwner } from './embeddingCascade.js';
 
 export type ProcessingStage = 
   | 'UPLOADED'
@@ -375,5 +376,11 @@ resumeSessionSchema.index({ currentStage: 1 });
 resumeSessionSchema.index({ 'timestamps.uploadedAt': -1 });
 resumeSessionSchema.index({ 'timestamps.completedAt': -1 });
 resumeSessionSchema.index({ userId: 1, 'timestamps.completedAt': -1 });
+
+// Resume embeddings are saved under the session ID, so they go when the session does.
+cascadeEmbeddingDeletes(resumeSessionSchema, ({ userId, sessionId }) => ({
+  userId: userId as EmbeddingOwner['userId'],
+  sessionId: sessionId as string | undefined,
+}));
 
 export const ResumeSession = model<IResumeSession>('ResumeSession', resumeSessionSchema);

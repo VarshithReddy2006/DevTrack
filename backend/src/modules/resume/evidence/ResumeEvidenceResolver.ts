@@ -173,7 +173,7 @@ export class ResumeEvidenceResolver {
     };
     const existing = await ResumeEvidenceClaim.findOneAndUpdate(
       { userId, claimText: cleanText, ...resumeClaimScope },
-      { $set: update },
+      { $set: update, $unset: { lineage: '' } },
       { runValidators: true },
     );
     if (existing) return;

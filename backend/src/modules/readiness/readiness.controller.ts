@@ -6,11 +6,31 @@ import { UserSkillProgress } from '../../db/models/userSkillProgress.model.js';
 import { normalizeSkill } from './role/roleSkills.js';
 import { ApiResponse } from '../../shared/response.js';
 import { withAuth } from '../../shared/controllerUtils.js';
+import { logger } from '../../shared/logger.js';
+import { isFlagEnabled } from '../flags/flags.service.js';
+import { ReadinessSnapshotService } from './snapshot/ReadinessSnapshotService.js';
+
+export const READINESS_V2_FLAG = 'readiness-v2';
+
+/**
+ * Additive `inputs` for the v2 snapshot. Any failure (flag lookup, inputs read) falls back to the
+ * unchanged v1 payload instead of failing the endpoint.
+ */
+async function readinessInputsFor(userId: string) {
+  try {
+    if (!await isFlagEnabled(READINESS_V2_FLAG, userId)) return null;
+    return await ReadinessSnapshotService.getInputs(userId);
+  } catch (err) {
+    logger.warn('[readiness] Skipping v2 inputs on snapshot', { userId, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
 
 export const ReadinessController = {
   getSnapshot: withAuth('[readiness]', 'get snapshot', async (userId, _req, res) => {
     const dynamicSnapshot = await ReadinessOrchestratorService.computeDynamicSnapshot(userId);
-    res.json({ success: true, data: dynamicSnapshot });
+    const inputs = await readinessInputsFor(userId);
+    res.json({ success: true, data: inputs ? { ...dynamicSnapshot, inputs } : dynamicSnapshot });
   }),
 
   getDomainIntelligence: withAuth('[readiness]', 'get domain intelligence', async (userId, req, res) => {
