@@ -135,6 +135,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `system-maintenance` | Scheduled cleanup and reconciliation, daily/weekly mission generation, platform sync sweep (all BullMQ repeatables) |
 | `dataset-ingestion` | Dataset scan and ingest (ops) |
 | `domain-og-render` | 1200x630 OG share cards (satori + resvg), cached by content hash in `RenderArtifact` |
+| `interview-score` | Mock interview answer evaluation: streams `interview.turn.delta` events, rubric scoring on the last turn, checklist (basic mode) fallback. The consumer is implemented but not registered in a worker role yet; it needs the InterviewSession model |
 
 ### Worker topology
 

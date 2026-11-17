@@ -5,6 +5,7 @@ import { CircuitBreaker, CircuitOpenError } from '../../../shared/circuit-breake
 import { AIResponseAuditLog } from '../audit/AIResponseAuditLog.js';
 import type { AIAuditErrorCode } from '../../../db/models/aiResponseAuditLog.model.js';
 import { AICacheManager } from '../cache/AICacheManager.js';
+import { AIStreamInterruptedError } from './AIStreamInterruptedError.js';
 
 export type AIProvider = 'openai' | 'gemini';
 export interface AIRequest {
@@ -31,6 +32,16 @@ export interface AIResponse {
   fallbackTriggered: boolean;
 }
 
+/** One increment of a streamed completion, or the final summary once the stream has ended. */
+export type AIStreamEvent =
+  | { type: 'delta'; delta: string }
+  | { type: 'done'; response: AIResponse };
+
+export interface AIStreamOptions {
+  /** Aborts the provider call; the stream then ends with an AbortError. */
+  signal?: AbortSignal;
+}
+
 export interface ProviderHealth {
   provider: AIProvider;
   status: 'healthy' | 'degraded' | 'down';
@@ -50,6 +61,8 @@ export interface TokenUsage {
 
 const defaultModels: Record<AIProvider, string> = { openai: 'gpt-4o-mini', gemini: 'gemini-1.5-flash' };
 const providerTimeoutMs = 15_000;
+/** A streamed reply may outlive the 15s request timeout, but never indefinitely. */
+const streamMaxDurationMs = 90_000;
 
 class ProviderConfigurationError extends Error {}
 
@@ -57,6 +70,14 @@ class ProviderHttpError extends Error {
   constructor(readonly status: number) {
     super(`Provider HTTP error: ${status}`);
   }
+}
+
+function isRetryableStreamError(error: unknown): boolean {
+  if (error instanceof ProviderConfigurationError) return false;
+  if (error instanceof Error && error.name === 'AbortError') return false;
+  // A 4xx means the request itself is wrong; only rate limits are worth another attempt.
+  if (error instanceof ProviderHttpError) return error.status === 429 || error.status >= 500;
+  return true;
 }
 
 function auditErrorCode(error: unknown): AIAuditErrorCode {
@@ -186,6 +207,251 @@ class AIProviderAdapterClass {
     if (lastFailure) audit({ ...lastFailure, tokensUsed: 0, cached: false, success: false });
     logger.error('[AIProviderAdapter] All providers failed', { errorCode: lastFailure?.errorCode });
     throw new Error(`All AI providers failed. Last error: ${lastFailure?.errorCode ?? 'provider_error'}`);
+  }
+
+  /**
+   * Stream an AI response as text deltas, then a final `done` event with the usual AIResponse.
+   *
+   * Uses the same primary -> secondary provider order, models, API keys and circuit breakers
+   * as generateResponse. Differences that come from streaming itself:
+   * - Failover and retries only happen before the first delta. After that the caller already
+   *   holds part of the text, so a failure surfaces as AIStreamInterruptedError.
+   * - The circuit breaker guards opening the stream and receiving its first delta; a drop later
+   *   in the stream is not counted against the provider.
+   * - There is no response cache here (the LLMGateway owns prompt-hash caching).
+   */
+  async *streamResponse(request: AIRequest, options: AIStreamOptions = {}): AsyncGenerator<AIStreamEvent> {
+    const primary = request.providerPreference ?? this.currentProvider;
+    const chain: AIProvider[] = [primary, primary === 'openai' ? 'gemini' : 'openai'];
+    const startTime = Date.now();
+    let lastFailure: { provider: AIProvider; model: string; errorCode: AIAuditErrorCode } | undefined;
+    const audit = (outcome: {
+      provider: AIProvider; model: string; tokensUsed: number; success: boolean; errorCode?: AIAuditErrorCode;
+    }) => {
+      void AIResponseAuditLog.log({
+        ...outcome,
+        cached: false,
+        userId: request.tenantScope || 'unscoped',
+        requestType: 'provider-stream',
+        latency: Date.now() - startTime,
+        contextVersion: request.responseSchemaVersion ?? '',
+        responseConfidence: 0,
+        moderationFlags: [],
+        hallucinationFlags: [],
+        safetyViolations: [],
+      });
+    };
+
+    for (const provider of chain) {
+      const fallbackTriggered = provider !== primary;
+      const effectiveRequest: EffectiveAIRequest = {
+        ...request,
+        model: (!fallbackTriggered && request.model) || defaultModels[provider],
+        temperature: request.temperature ?? 0.7,
+        maxTokens: request.maxTokens ?? 1000,
+      };
+      let content = '';
+      try {
+        const stream = this.streamWithRetry(provider, effectiveRequest, options.signal);
+        let step = await stream.next();
+        while (!step.done) {
+          content += step.value;
+          yield { type: 'delta', delta: step.value };
+          step = await stream.next();
+        }
+        const latency = Date.now() - startTime;
+        const tokensUsed = step.value;
+        this.updateProviderHealth(provider, true, latency);
+        this.trackTokenUsage(provider, effectiveRequest.model, tokensUsed);
+        audit({ provider, model: effectiveRequest.model, tokensUsed, success: true });
+        yield {
+          type: 'done',
+          response: {
+            content, model: effectiveRequest.model, provider, tokensUsed, latency, cached: false, fallbackTriggered,
+          },
+        };
+        return;
+      } catch (error) {
+        const errorCode = auditErrorCode(error);
+        if (!(error instanceof CircuitOpenError)) {
+          this.updateProviderHealth(provider, false, 0);
+          logger.error('[AIProviderAdapter] Provider stream failed', { provider, errorCode });
+        }
+        if (content) {
+          audit({ provider, model: effectiveRequest.model, tokensUsed: 0, success: false, errorCode });
+          throw new AIStreamInterruptedError(provider, content, error);
+        }
+        if (options.signal?.aborted) throw error;
+        lastFailure = { provider, model: effectiveRequest.model, errorCode };
+      }
+    }
+
+    if (lastFailure) audit({ ...lastFailure, tokensUsed: 0, success: false });
+    logger.error('[AIProviderAdapter] All providers failed to stream', { errorCode: lastFailure?.errorCode });
+    throw new Error(`All AI providers failed. Last error: ${lastFailure?.errorCode ?? 'provider_error'}`);
+  }
+
+  /**
+   * Open a provider stream behind the circuit breaker and retry the connection (not the body).
+   * Returns the token count once the stream has been fully relayed.
+   */
+  private async *streamWithRetry(
+    provider: AIProvider, request: EffectiveAIRequest, signal?: AbortSignal,
+  ): AsyncGenerator<string, number> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      let probing = false;
+      let opened: { iterator: AsyncGenerator<string, number>; first: IteratorResult<string, number> };
+      try {
+        opened = await this.circuits[provider].execute(async state => {
+          probing = state === 'half_open';
+          const iterator = this.streamProvider(provider, request, signal);
+          const first = await iterator.next();
+          if (first.done) throw new Error('Provider stream ended without content');
+          return { iterator, first };
+        });
+      } catch (error) {
+        if (probing || error instanceof CircuitOpenError || !isRetryableStreamError(error)) throw error;
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (this.circuits[provider].getState() === 'open') throw lastError;
+
+        if (attempt < this.maxRetries) {
+          const delay = this.retryDelay * attempt;
+          logger.info('[AIProviderAdapter] Retrying stream', { provider, attempt, delay });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        continue;
+      }
+
+      let step = opened.first;
+      while (!step.done) {
+        yield step.value;
+        step = await opened.iterator.next();
+      }
+      return step.value;
+    }
+
+    throw lastError || new Error('Unknown error in streamWithRetry');
+  }
+
+  /** Call one provider's streaming endpoint. Yields text deltas, returns the total token count. */
+  private streamProvider(
+    provider: AIProvider, request: EffectiveAIRequest, signal?: AbortSignal,
+  ): AsyncGenerator<string, number> {
+    switch (provider) {
+      case 'openai':
+        return this.streamOpenAI(request, signal);
+      case 'gemini':
+        return this.streamGemini(request, signal);
+      default:
+        throw new Error(`Unknown provider: ${provider}`);
+    }
+  }
+
+  private async *streamOpenAI(request: EffectiveAIRequest, signal?: AbortSignal): AsyncGenerator<string, number> {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey || apiKey.startsWith('sk-or-')) {
+      throw new ProviderConfigurationError('OpenAI is not configured');
+    }
+
+    const messages = [];
+    if (request.systemPrompt) messages.push({ role: 'system', content: request.systemPrompt });
+    messages.push({ role: 'user', content: request.prompt });
+
+    // The request timeout only covers getting a response; the whole stream has its own cap.
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) forwardAbort();
+    signal?.addEventListener('abort', forwardAbort, { once: true });
+    const connectTimer = setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), providerTimeoutMs);
+    const maxTimer = setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), streamMaxDurationMs);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: request.model,
+          messages,
+          temperature: request.temperature,
+          max_tokens: request.maxTokens,
+          stream: true,
+          stream_options: { include_usage: true },
+        }),
+      });
+      clearTimeout(connectTimer);
+
+      if (!res.ok || !res.body) {
+        await res.body?.cancel().catch(() => {});
+        throw res.ok ? new Error('OpenAI returned an empty stream body') : new ProviderHttpError(res.status);
+      }
+
+      reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let content = '';
+      let totalTokens = 0;
+
+      // Each SSE event is a `data: {json}` line; blank lines and comments are skipped.
+      const readLine = (line: string): string | undefined => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) return undefined;
+        const data = trimmed.slice(5).trim();
+        if (!data || data === '[DONE]') return undefined;
+        let parsed: { choices?: { delta?: { content?: unknown } }[]; usage?: { total_tokens?: number } };
+        try { parsed = JSON.parse(data); } catch { return undefined; }
+        if (parsed.usage?.total_tokens) totalTokens = parsed.usage.total_tokens;
+        const delta = parsed.choices?.[0]?.delta?.content;
+        return typeof delta === 'string' && delta ? delta : undefined;
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split('\n');
+        buffer = done ? '' : lines.pop() ?? '';
+        for (const line of lines) {
+          const delta = readLine(line);
+          if (delta) { content += delta; yield delta; }
+        }
+        if (done) break;
+      }
+
+      return totalTokens || this.estimateTokens(request.prompt + content);
+    } finally {
+      clearTimeout(connectTimer);
+      clearTimeout(maxTimer);
+      signal?.removeEventListener('abort', forwardAbort);
+      await reader?.cancel().catch(() => {});
+    }
+  }
+
+  private async *streamGemini(request: EffectiveAIRequest, signal?: AbortSignal): AsyncGenerator<string, number> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'dummy_key_for_dev') {
+      throw new ProviderConfigurationError('Gemini is not configured');
+    }
+
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
+      model: request.model,
+      systemInstruction: request.systemPrompt ? { parts: [{ text: request.systemPrompt }], role: 'system' } : undefined,
+    });
+    const result = await model.generateContentStream({
+      contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
+      // Streamed replies are prose, unlike the JSON mime type generateResponse asks for.
+      generationConfig: { temperature: request.temperature, maxOutputTokens: request.maxTokens },
+    }, { timeout: providerTimeoutMs, signal });
+
+    let content = '';
+    for await (const chunk of result.stream) {
+      const delta = chunk.text();
+      if (delta) { content += delta; yield delta; }
+    }
+    const final = await result.response;
+    return final.usageMetadata?.totalTokenCount || this.estimateTokens(request.prompt + content);
   }
 
   /**
