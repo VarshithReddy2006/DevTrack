@@ -5,10 +5,11 @@
 // Connected to notificationStore for real-time SSE-driven notifications.
 // ============================================================================
 
-import React, { useEffect, useRef, useCallback } from 'react';
+import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Bell, Check, Trash2, Zap, Flame, Trophy, AlertTriangle, RefreshCw, Star, Info } from 'lucide-react';
 import { useNotificationStore, type Notification, type NotificationType } from '../../store/notificationStore';
+import { useDialogFocus } from '../../components/ui/useDialogFocus';
 import { overlayEnter, drawerSlideRight, overlaySpring, durations, prefersReducedMotion } from '../../design-system/motion';
 
 // ---------------------------------------------------------------------------
@@ -119,19 +120,8 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ open, on
   const markAllRead = useNotificationStore((s) => s.markAllRead);
   const markRead = useNotificationStore((s) => s.markRead);
   const clearAll = useNotificationStore((s) => s.clearAll);
-  const drawerRef = useRef<HTMLDivElement>(null);
-
-  // Focus trap
-  useEffect(() => {
-    if (open && drawerRef.current) {
-      drawerRef.current.focus();
-    }
-  }, [open]);
-
-  // Escape to close
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') onClose();
-  }, [onClose]);
+  // Focus trap, Escape, scroll lock and focus restore are shared with Modal/Drawer.
+  const drawerRef = useDialogFocus<HTMLDivElement>(onClose);
 
   // Group notifications
   const today = new Date();
@@ -173,7 +163,6 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ open, on
               }
             }}
             className="fixed right-0 top-0 h-full w-[400px] max-w-[90vw] z-[81] bg-white border-l border-slate-100 shadow-2xl flex flex-col"
-            onKeyDown={handleKeyDown}
             role="dialog"
             aria-label="Notifications"
             aria-modal="true"

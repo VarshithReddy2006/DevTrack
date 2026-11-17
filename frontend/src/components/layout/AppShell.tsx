@@ -27,6 +27,7 @@ import {
   TrendingUp,
   FileText,
 } from 'lucide-react';
+import { useDialogFocus } from '../ui/useDialogFocus';
 import { cn } from '../../lib/design-system/tokens.css';
 import { useSse } from '../../hooks/useSse';
 import { useUIStore } from '../../store/uiStore';
@@ -556,6 +557,7 @@ function CommandPalette({
   onNavigate: (path: string) => void;
   onSearch: () => void;
 }) {
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
   const [query, setQuery] = useState('');
   const filtered = query
     ? items.filter((i) => i.label.toLowerCase().includes(query.toLowerCase()))
@@ -563,6 +565,7 @@ function CommandPalette({
 
   return (
     <motion.div
+      ref={dialogRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -571,6 +574,7 @@ function CommandPalette({
       role="dialog"
       aria-modal="true"
       aria-label="Command palette"
+      tabIndex={-1}
     >
       <motion.div
         initial={{ opacity: 0, y: -16, scale: 0.97 }}
@@ -583,7 +587,7 @@ function CommandPalette({
         <div className="flex items-center gap-3 p-4 border-b border-zinc-100">
           <Search size={18} className="text-[#8B5CF6] shrink-0" />
           <input
-            autoFocus
+            data-dialog-initial-focus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Where do you want to go?"
