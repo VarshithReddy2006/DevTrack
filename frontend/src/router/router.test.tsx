@@ -10,7 +10,7 @@ const clerk = vi.hoisted(() => {
     matches: false, media, addEventListener: vi.fn(), removeEventListener: vi.fn(),
     addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(), onchange: null,
   }));
-  return { signedIn: false, originalMatchMedia };
+  return { signedIn: false, jobTargetsEnabled: false, originalMatchMedia };
 });
 
 afterAll(() => { window.matchMedia = clerk.originalMatchMedia; });
@@ -34,6 +34,21 @@ vi.mock('../pages/SignupPage', () => ({ SignupPage: () => <h1>Signup</h1> }));
 vi.mock('../pages/FocusPage', () => ({ default: () => <h1>Focus</h1> }));
 vi.mock('../pages/DashboardPage', () => ({ default: () => <h1>Dashboard</h1> }));
 vi.mock('../pages/admin/BetaDashboardPage', () => ({ default: () => <h1>Beta Dashboard</h1> }));
+vi.mock('../features/flags/hooks/useFeatureFlags', () => ({
+  useFeatureFlags: () => ({
+    isLoading: false,
+    isEnabled: (key: string) => key === 'jd-matcher' && clerk.jobTargetsEnabled,
+  }),
+}));
+vi.mock('../features/resume-tracker/pages/ResumeEntryWorkspace', () => ({
+  ResumeEntryWorkspace: () => <h1>Resume Intelligence</h1>,
+}));
+vi.mock('../features/resume-tracker/pages/JobTargetsWorkspace', () => ({
+  JobTargetsWorkspace: () => <h1>Job targets</h1>,
+}));
+vi.mock('../features/resume-tracker/pages/JobTargetDetailWorkspace', () => ({
+  JobTargetDetailWorkspace: () => <h1>Job target detail</h1>,
+}));
 
 function renderAt(path: string) {
   return render(
@@ -44,7 +59,7 @@ function renderAt(path: string) {
 }
 
 describe('AppRouter', () => {
-  beforeEach(() => { clerk.signedIn = false; });
+  beforeEach(() => { clerk.signedIn = false; clerk.jobTargetsEnabled = false; });
   afterEach(cleanup);
 
   it('shows the landing page to signed-out visitors at /', () => {
@@ -77,5 +92,21 @@ describe('AppRouter', () => {
     renderAt('/beta/dashboard');
     expect(await screen.findByText('Beta Dashboard')).toBeTruthy();
     expect(screen.getByTestId('app-shell')).toBeTruthy();
+  });
+
+  it.each([
+    ['/resume/targets', 'Job targets'],
+    ['/resume/targets/target-1', 'Job target detail'],
+  ])('renders %s when jd-matcher is enabled', async (path, title) => {
+    clerk.signedIn = true;
+    clerk.jobTargetsEnabled = true;
+    renderAt(path);
+    expect(await screen.findByRole('heading', { name: title })).toBeTruthy();
+  });
+
+  it('redirects a disabled Job Targets route to Resume Intelligence', async () => {
+    clerk.signedIn = true;
+    renderAt('/resume/targets/target-1');
+    expect(await screen.findByRole('heading', { name: 'Resume Intelligence' })).toBeTruthy();
   });
 });

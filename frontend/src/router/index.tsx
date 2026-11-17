@@ -10,6 +10,8 @@ import { LoginPage } from '../pages/LoginPage';
 import { SignupPage } from '../pages/SignupPage';
 import { LandingPage } from '../pages/LandingPage';
 import FocusPage from '../pages/FocusPage';
+import { FlagRoute } from './FlagRoute';
+import { JOB_TARGET_FLAG } from '../features/resume-tracker/jobTargets';
 
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const DsaPage = lazy(() => import('../pages/DsaPage'));
@@ -25,6 +27,8 @@ const ReadinessPage = lazy(() => import('../pages/ReadinessPage'));
 // Resume Tracker Workspace
 const ResumeEntryWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeEntryWorkspace').then(module => ({ default: module.ResumeEntryWorkspace })));
 const ResumeAnalysisWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeAnalysisWorkspace').then(module => ({ default: module.ResumeAnalysisWorkspace })));
+const JobTargetsWorkspace = lazy(() => import('../features/resume-tracker/pages/JobTargetsWorkspace').then(module => ({ default: module.JobTargetsWorkspace })));
+const JobTargetDetailWorkspace = lazy(() => import('../features/resume-tracker/pages/JobTargetDetailWorkspace').then(module => ({ default: module.JobTargetDetailWorkspace })));
 
 // Readiness Domain Workspaces
 const DSAIntelligencePage = lazy(() => import('../pages/readiness/DSAIntelligencePage'));
@@ -252,6 +256,30 @@ export const AppRouter: React.FC = () => {
               <Suspense fallback={<PageFallback />}>
                 <ResumeAnalysisWorkspace />
               </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/resume/targets"
+          element={
+            <ErrorBoundary pageName="Job Targets">
+              <FlagRoute flagKey={JOB_TARGET_FLAG} redirectTo="/resume">
+                <Suspense fallback={<PageFallback />}>
+                  <JobTargetsWorkspace />
+                </Suspense>
+              </FlagRoute>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/resume/targets/:jobTargetId"
+          element={
+            <ErrorBoundary pageName="Job Target">
+              <FlagRoute flagKey={JOB_TARGET_FLAG} redirectTo="/resume">
+                <Suspense fallback={<PageFallback />}>
+                  <JobTargetDetailWorkspace />
+                </Suspense>
+              </FlagRoute>
             </ErrorBoundary>
           }
         />
