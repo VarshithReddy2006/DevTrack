@@ -135,6 +135,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `system-maintenance` | Scheduled cleanup and reconciliation, daily/weekly mission generation, platform sync sweep (all BullMQ repeatables) |
 | `dataset-ingestion` | Dataset scan and ingest (ops) |
 | `domain-og-render` | 1200x630 OG share cards (satori + resvg), cached by content hash in `RenderArtifact` |
+| `dossier-render` | Verified Developer Dossier PDFs (headless Chromium, network blocked), stored via `ObjectStorage` |
 | `jd-parse`, `jd-score` | Job target analysis: taxonomy extraction, model-assisted metadata and STAR rewrites, `jobtarget.parsed` outbox event (`ai` role) |
 
 ### Worker topology
@@ -151,7 +152,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `worker-readiness` | `readiness` | Six Readiness intelligence consumers |
 | `worker-resume` | `resume-intelligence` | Resume consumers and profile rebuild |
 | `worker-dataset` | `dataset` | Dataset ingestion |
-| `worker-render` | `render` | OG image rendering (CPU and memory heavy, isolated from the API) |
+| `worker-render` | `render` | OG image and dossier PDF rendering (CPU and memory heavy, isolated from the API) |
 | `worker-ai` | `ai` | Job description parsing and scoring (`jd-parse`, `jd-score`, concurrency 4); slow model calls stay out of the XP and sync pools |
 | `worker-maint` | `maintenance` | Maintenance |
 

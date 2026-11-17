@@ -5,6 +5,11 @@ import { SpanKind, trace as bullTrace } from 'bullmq';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
+import { OutboxEvent } from '../../db/models/outboxEvent.model.js';
+import { runInTransaction } from '../../db/transaction.js';
+import { writeOutboxEvent } from '../../shared/events/outbox.js';
+import { OutboxRelay } from '../../shared/events/outboxRelay.js';
+import { runConsumer } from '../../shared/events/runConsumer.js';
 import { logger } from '../../shared/logger.js';
 import { captureTraceContext, traceContextPropagator, withTraceContext } from '../../shared/tracing/propagation.js';
 import { getQueueTelemetry } from '../../shared/tracing/queueTelemetry.js';
@@ -14,6 +19,13 @@ import { tracingMiddleware } from '../../shared/tracing/tracing.js';
 vi.unmock('bullmq');
 
 const exporter = new InMemorySpanExporter();
+const eventInput = {
+  type: 'focus.session.completed',
+  aggregateType: 'focus_session',
+  aggregateId: 'session-42',
+  userId: 'user-42',
+  payload: { minutes: 25 },
+};
 const sdk = new NodeSDK({
   autoDetectResources: false,
   textMapPropagator: traceContextPropagator,
@@ -35,7 +47,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it('restores a persisted W3C parent across BullMQ and correlates the worker log', async () => {
+it('preserves the request trace across a MongoDB outbox row, BullMQ and the consumer log', async () => {
   vi.stubEnv('DEBUG', 'true');
   vi.stubEnv('SILENT_LOGGING', 'false');
   const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
@@ -45,29 +57,56 @@ it('restores a persisted W3C parent across BullMQ and correlates the worker log'
     context: { requestId: 'request-42' },
   } as Request;
   const res = Object.assign(new EventEmitter(), { setHeader: vi.fn() }) as unknown as Response;
-  let row = '';
-  tracingMiddleware(req, res, () => { row = JSON.stringify(captureTraceContext()); });
+  let pending: ReturnType<typeof writeOutboxEvent> | undefined;
+  tracingMiddleware(req, res, () => {
+    pending = runInTransaction(session => writeOutboxEvent(session, {
+      ...eventInput,
+      traceContext: {
+        traceparent: '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+        correlationId: 'request-42',
+        baggage: 'authorization=private-token',
+        tracestate: 'vendor=private-resume',
+        resumeText: 'private-resume',
+      },
+    }));
+  });
+  const persisted = await pending!;
   res.emit('finish');
 
   const traceId = parentTrace.split('-')[1];
   expect(req.traceContext?.traceId).toBe(traceId);
-  expect(JSON.parse(row)).toEqual({ traceparent: expect.stringContaining(traceId) });
+  const row = await OutboxEvent.findOne({ eventId: persisted.eventId }).lean();
+  expect(row?.traceContext).toEqual({ traceparent: expect.stringContaining(traceId), correlationId: 'request-42' });
   expect(res.setHeader).toHaveBeenCalledWith('X-Trace-ID', traceId);
 
-  const metadata = await withTraceContext(JSON.parse(row), () => bullTrace(
-    getQueueTelemetry(), SpanKind.PRODUCER, 'sync', 'add', 'platform-sync',
-    async (_span, carrier) => carrier,
-  ));
-  expect(JSON.parse(metadata!)).toEqual({ traceparent: expect.stringContaining(traceId) });
+  let workerIds: ReturnType<typeof trace.getSpanContext>;
+  const relay = new OutboxRelay({
+    resolveQueues: () => ['domain-readiness'],
+    enqueue: async (queue, jobId, envelope) => {
+      expect(jobId).toBe(persisted.eventId);
+      expect(envelope.correlationId).toBe('request-42');
+      const metadata = await bullTrace(
+        getQueueTelemetry(), SpanKind.PRODUCER, 'focus', 'add', queue,
+        async (_span, carrier) => carrier,
+      );
+      expect(JSON.parse(metadata!)).toEqual({ traceparent: expect.stringContaining(traceId) });
 
-  const workerIds = await bullTrace(
-    getQueueTelemetry(), SpanKind.CONSUMER, 'sync', 'process', 'platform-sync',
-    async () => {
-      logger.info('Processed job', { queue: 'platform-sync' });
-      return trace.getActiveSpan()?.spanContext();
+      await bullTrace(
+        getQueueTelemetry(), SpanKind.CONSUMER, 'focus', 'process', queue,
+        () => runConsumer({
+          name: 'trace-regression',
+          dedup: 'natural',
+          async handle() {
+            workerIds = trace.getActiveSpan()?.spanContext();
+            logger.info('Processed job', { queue });
+          },
+        }, envelope),
+        metadata,
+      );
     },
-    metadata,
-  );
+  });
+  expect(await relay.tick()).toBe(1);
+  expect((await OutboxEvent.findOne({ eventId: persisted.eventId }))?.status).toBe('published');
   expect(JSON.parse(output.mock.calls.at(-1)![0] as string)).toMatchObject({
     traceId, spanId: workerIds?.spanId, event: 'Processed job',
   });
@@ -78,6 +117,27 @@ it('restores a persisted W3C parent across BullMQ and correlates the worker log'
   expect(request?.parentSpanContext?.spanId).toBe('0123456789abcdef');
   expect(producer?.parentSpanContext?.spanId).toBe(request?.spanContext().spanId);
   expect(consumer?.parentSpanContext?.spanId).toBe(producer?.spanContext().spanId);
+});
+
+it('uses a valid explicit parent for background writes and isolates old rows from the relay caller', async () => {
+  const traceparent = '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01';
+  const traced = await runInTransaction(session => writeOutboxEvent(session, {
+    ...eventInput, traceContext: { traceparent, causationId: 'parent-event' },
+  }));
+  expect(traced.traceContext).toEqual({ traceparent, causationId: 'parent-event' });
+  const oldRow = await runInTransaction(session => writeOutboxEvent(session, eventInput));
+  await OutboxEvent.updateOne({ eventId: oldRow.eventId }, { $set: { traceContext: { traceparent: 'invalid' } } });
+
+  const observed = new Map<string, ReturnType<typeof captureTraceContext>>();
+  const relay = new OutboxRelay({
+    resolveQueues: () => ['domain-readiness'],
+    enqueue: async (_queue, jobId) => { observed.set(jobId, captureTraceContext()); },
+  });
+  await withTraceContext({ traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' },
+    () => relay.tick());
+
+  expect(observed.get(traced.eventId)).toEqual({ traceparent });
+  expect(observed.get(oldRow.eventId)).toEqual({});
 });
 
 it('rejects invalid traceparents and discards incoming baggage and tracestate', () => {

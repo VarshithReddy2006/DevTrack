@@ -141,7 +141,12 @@ export interface JdScoreJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | JdParseJobData | JdScoreJobData;
+export interface DossierRenderJobData {
+  userId: string;
+  requestId?: string;
+}
+
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | JdParseJobData | JdScoreJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -158,6 +163,7 @@ export const QueueNames = {
   
   // Render pool (WORKER_TYPE=render)
   OG_RENDER: 'domain-og-render',
+  DOSSIER_RENDER: 'dossier-render',
 
   // AI pool (WORKER_TYPE=ai): job description parsing and match scoring
   JD_PARSE: 'jd-parse',
