@@ -42,6 +42,9 @@ export interface IUserSettings extends Document {
     showGithub: boolean;
     showTimeline: boolean;
   };
+  leagues: {
+    participate: boolean;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -92,6 +95,10 @@ const userSettingsSchema = new Schema<IUserSettings>(
       showDsaProgress: { type: Boolean, default: true },
       showGithub: { type: Boolean, default: true },
       showTimeline: { type: Boolean, default: true },
+    },
+    // Weekly leagues are opt-in: standings show username and avatar to other participants.
+    leagues: {
+      participate: { type: Boolean, default: false },
     },
   },
   {

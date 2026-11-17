@@ -4,10 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { createWorkerRuntime, parseWorkerType, WORKER_TYPES, workerDefinitions } from './worker-runtime.js';
 
 const mocks = vi.hoisted(() => {
-  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation'];
+  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover'];
   return {
     workers: Object.fromEntries(names.map(name => [name, { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }])),
     schedule: vi.fn().mockResolvedValue(undefined),
+    scheduleRollover: vi.fn().mockResolvedValue(undefined),
     closeQueue: vi.fn().mockResolvedValue(undefined),
   };
 });
@@ -29,6 +30,8 @@ vi.mock('../shared/jobs/profileRebuildWorker.js', () => ({ startProfileRebuildWo
 vi.mock('./worker-dataset-ingestion.js', () => ({ startDatasetIngestionWorker: mocks.workers.dataset.start, stopDatasetIngestionWorker: mocks.workers.dataset.stop }));
 
 vi.mock('../shared/jobs/streakRecalcWorker.js', () => ({ startStreakRecalcWorker: mocks.workers.streak.start, stopStreakRecalcWorker: mocks.workers.streak.stop }));
+vi.mock('../modules/leagues/workers/leagueScore.worker.js', () => ({ startLeagueScoreWorker: mocks.workers.leagueScore.start, stopLeagueScoreWorker: mocks.workers.leagueScore.stop }));
+vi.mock('../modules/leagues/workers/weeklyRollover.worker.js', () => ({ startWeeklyRolloverWorker: mocks.workers.leagueRollover.start, stopWeeklyRolloverWorker: mocks.workers.leagueRollover.stop, scheduleWeeklyRollover: mocks.scheduleRollover }));
 vi.mock('../shared/jobs/notificationWorker.js', () => ({ startNotificationWorker: mocks.workers.notifications.start, stopNotificationWorker: mocks.workers.notifications.stop }));
 vi.mock('./worker-resume-ats.js', () => ({ startResumeATSWorker: mocks.workers.sessionAts.start, stopResumeATSWorker: mocks.workers.sessionAts.stop }));
 vi.mock('./worker-resume-embedding.js', () => ({ startResumeEmbeddingWorker: mocks.workers.sessionEmbedding.start, stopResumeEmbeddingWorker: mocks.workers.sessionEmbedding.stop }));
@@ -54,7 +57,7 @@ beforeEach(() => { vi.clearAllMocks(); });
 describe('standalone worker selection and lifecycle', () => {
   const resume = ['generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation'];
   const cases: [string | undefined, string[]][] = [
-    ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications']], ['maintenance', ['maintenance']],
+    ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications', 'leagueScore']], ['maintenance', ['maintenance', 'leagueRollover']],
     ['readiness', ['dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
     ['resume-intelligence', resume], ['dataset', ['dataset']],
     ['all', Object.keys(mocks.workers)], [undefined, Object.keys(mocks.workers)], ['', Object.keys(mocks.workers)],
@@ -70,6 +73,7 @@ describe('standalone worker selection and lifecycle', () => {
       expect(worker.stop).not.toHaveBeenCalled();
     }
     expect(mocks.schedule).toHaveBeenCalledTimes(expected.includes('maintenance') ? 1 : 0);
+    expect(mocks.scheduleRollover).toHaveBeenCalledTimes(expected.includes('leagueRollover') ? 1 : 0);
     await Promise.all([runtime.stop(), runtime.stop()]);
     for (const [name, worker] of Object.entries(mocks.workers)) {
       expect(worker.stop).toHaveBeenCalledTimes(expected.includes(name) ? 1 : 0);
@@ -132,6 +136,14 @@ describe('standalone worker selection and lifecycle', () => {
     await expect(runtime.start()).rejects.toThrow('schedule failed');
     await runtime.stop();
     expect(mocks.workers.maintenance.stop).toHaveBeenCalledOnce();
+  });
+
+  it('treats a failed rollover schedule as startup failure and closes the rollover worker', async () => {
+    mocks.scheduleRollover.mockRejectedValueOnce(new Error('rollover schedule failed'));
+    const runtime = createWorkerRuntime('maintenance', services());
+    await expect(runtime.start()).rejects.toThrow('rollover schedule failed');
+    await runtime.stop();
+    expect(mocks.workers.leagueRollover.stop).toHaveBeenCalledOnce();
   });
 
   it('propagates loader failures and drains earlier consumers', async () => {
