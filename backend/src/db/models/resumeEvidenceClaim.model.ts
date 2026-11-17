@@ -22,6 +22,13 @@ export interface IEvidenceSource {
   metadata: Record<string, unknown>;
 }
 
+export interface EvidenceEdge {
+  sourceModel: 'VerifiedProject' | 'PlatformStats' | 'ResumeSession';
+  sourceId: string;
+  relationship: 'verified_repository' | 'synced_platform_stats' | 'resume_origin';
+  weight: number;
+}
+
 export interface IResumeEvidenceClaim extends Document {
   userId: Schema.Types.ObjectId;
   resumeProfileId?: Types.ObjectId;
@@ -34,6 +41,7 @@ export interface IResumeEvidenceClaim extends Document {
   variantId: string | null;
   claimText: string;
   evidenceSources: IEvidenceSource[];
+  lineage?: EvidenceEdge[];
   verificationStatus: VerificationStatus;
   provenance: ProvenanceType[];
   confidence: number;
@@ -69,6 +77,13 @@ const evidenceSourceSchema = new Schema<IEvidenceSource>(
   },
   { _id: false }
 );
+
+const evidenceEdgeSchema = new Schema<EvidenceEdge>({
+  sourceModel: { type: String, enum: ['VerifiedProject', 'PlatformStats', 'ResumeSession'], required: true },
+  sourceId: { type: String, required: true },
+  relationship: { type: String, enum: ['verified_repository', 'synced_platform_stats', 'resume_origin'], required: true },
+  weight: { type: Number, min: 0, max: 100, required: true },
+}, { _id: false });
 
 const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
   {
@@ -113,6 +128,7 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
       type: [evidenceSourceSchema],
       default: [],
     },
+    lineage: { type: [evidenceEdgeSchema], default: undefined, select: false },
     verificationStatus: {
       type: String,
       enum: VERIFICATION_STATUSES,

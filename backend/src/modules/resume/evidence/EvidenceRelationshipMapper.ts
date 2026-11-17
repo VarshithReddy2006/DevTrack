@@ -1,14 +1,21 @@
-// src/modules/resume-intelligence/evidence/EvidenceRelationshipMapper.ts
-import { logger } from '../../../shared/logger.js';
-import type { Types } from 'mongoose';
+import type { EvidenceEdge } from '../../../db/models/resumeEvidenceClaim.model.js';
+import type { ResolvedEvidence } from './ClaimLineageResolver.js';
 
-/**
- * EvidenceRelationshipMapper
- * 
- * Maps relationships between different pieces of evidence.
- */
+const relationships = {
+  VerifiedProject: { relationship: 'verified_repository', weight: 90 },
+  PlatformStats: { relationship: 'synced_platform_stats', weight: 70 },
+  ResumeSession: { relationship: 'resume_origin', weight: 25 },
+} as const;
+
 export class EvidenceRelationshipMapper {
-  async mapRelationships(userId: Types.ObjectId): Promise<void> {
-    logger.info(`[RelationshipMapper] Mapping evidence relationships for user ${userId}`);
+  mapRelationships(sources: ResolvedEvidence[]): EvidenceEdge[] {
+    const edges = new Map<string, EvidenceEdge>();
+    for (const source of sources) {
+      edges.set(`${source.sourceModel}:${source.sourceId}`, {
+        ...source,
+        ...relationships[source.sourceModel],
+      });
+    }
+    return [...edges.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, edge]) => edge);
   }
 }

@@ -1,13 +1,9 @@
-import { logger } from '../../../shared/logger.js';
-import type { Types } from 'mongoose';
+import type { EvidenceEdge, VerificationStatus } from '../../../db/models/resumeEvidenceClaim.model.js';
 
-/**
- * VerificationConfidenceEngine
- * 
- * Calculates confidence scores based on evidence strength and provenance.
- */
 export class VerificationConfidenceEngine {
-  async recalculateConfidence(userId: Types.ObjectId | any): Promise<void> {
-    logger.info(`[ConfidenceEngine] Recalculating confidence for user ${userId}`);
+  calculate(edges: EvidenceEdge[], status: VerificationStatus): number {
+    if (status === 'flagged') return 0;
+    // Repeated or correlated references contribute at most the strongest source weight.
+    return edges.reduce((score, edge) => Math.max(score, edge.weight), 0);
   }
 }

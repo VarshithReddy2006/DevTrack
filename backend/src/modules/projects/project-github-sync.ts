@@ -43,13 +43,13 @@ function count(value: unknown): number {
   return value;
 }
 
-async function request(path: string): Promise<Response> {
+export async function requestGitHub(path: string, fetcher: typeof fetch = fetch): Promise<Response> {
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   };
   if (env.GITHUB_TOKEN) headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
-  return fetch(`https://api.github.com${path}`, {
+  return fetcher(`https://api.github.com${path}`, {
     headers,
     redirect: 'error',
     signal: AbortSignal.timeout(10_000),
@@ -57,7 +57,7 @@ async function request(path: string): Promise<Response> {
 }
 
 async function listCount(path: string, allowEmptyRepository = false): Promise<{ total: number; first: unknown }> {
-  const response = await request(`${path}${path.includes('?') ? '&' : '?'}per_page=1`);
+  const response = await requestGitHub(`${path}${path.includes('?') ? '&' : '?'}per_page=1`);
   if (allowEmptyRepository && response.status === 409) return { total: 0, first: null };
   if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
   const items: unknown = await response.json();
@@ -78,7 +78,7 @@ async function listCount(path: string, allowEmptyRepository = false): Promise<{ 
 
 export async function fetchGitHubProjectMetrics(repository: GitHubRepository): Promise<GitHubProjectMetrics> {
   const base = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
-  const response = await request(base);
+  const response = await requestGitHub(base);
   if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
   const data: unknown = await response.json();
   if (!isRecord(data) || data.private !== false || typeof data.default_branch !== 'string') {
@@ -133,11 +133,11 @@ export async function fetchGitHubRepositoryEvidence(repository: GitHubRepository
 }) {
   const base = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
   const json = async (path: string): Promise<unknown> => {
-    const response = await request(path);
+    const response = await requestGitHub(path);
     if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
     return response.json();
   };
-  const response = await request(base);
+  const response = await requestGitHub(base);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
   const data: unknown = await response.json();
