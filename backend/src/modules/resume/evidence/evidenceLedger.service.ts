@@ -58,6 +58,8 @@ export async function upsertClaim(userId: Types.ObjectId, input: EvidenceClaimIn
   const key = { userId, subjectType: input.subjectType, subjectKey };
   const update = {
     $setOnInsert: key,
+    ...(input.subjectType === 'resume_claim' && input.evidenceSources !== undefined
+      ? { $unset: { lineage: '' } } : {}),
     $set: {
       resumeProfileId: input.subjectType === 'resume_claim' ? input.resumeProfileId : undefined,
       claimText: input.claimText,
