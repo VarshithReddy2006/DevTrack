@@ -111,6 +111,20 @@ const resumeProgressionPayload = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
+// Mirrors the schemas the studio UI parses in useInterviewSession.ts.
+const interviewTurnDeltaPayload = z.object({
+  sessionId: z.string(),
+  turnIndex: z.number().int().min(0),
+  stateVersion: z.number().int().nonnegative(),
+  delta: z.string(),
+  seq: z.number().int().nonnegative(),
+});
+
+const interviewSessionCompletedPayload = z.object({
+  sessionId: z.string(),
+  mode: z.enum(['ai', 'basic_mode']).optional(),
+});
+
 function validateEventPayload(type: string, payload: unknown): Record<string, unknown> {
   let schema: z.ZodSchema<any>;
   switch (type) {
@@ -155,6 +169,12 @@ function validateEventPayload(type: string, payload: unknown): Record<string, un
       break;
     case 'resume_progression':
       schema = resumeProgressionPayload;
+      break;
+    case 'interview.turn.delta':
+      schema = interviewTurnDeltaPayload;
+      break;
+    case 'interview.session.completed':
+      schema = interviewSessionCompletedPayload;
       break;
     default:
       return payload as Record<string, unknown>;
@@ -225,6 +245,9 @@ export type SseEventType =
   | 'revision_reviewed'
   | 'streak_updated'
   | 'league_week_finalized'
+  // AI mock interview studio
+  | 'interview.turn.delta'
+  | 'interview.session.completed'
   // System
   | 'heartbeat';
 
@@ -919,6 +942,39 @@ class EventBus extends EventEmitter {
       completed: missionData.completed,
       progressPercent: Math.round((missionData.currentCount / missionData.targetCount) * 100),
     });
+  }
+
+  // ─── AI mock interview events ─────────────────────────────────────────────
+
+  /**
+   * One streamed piece of the interviewer's reply. Sent straight to the user's open
+   * connections without an SSE id and without the Redis replay stream: a reply can be
+   * hundreds of tokens, which would push every other event out of the 100-entry backfill
+   * window and move the client's Last-Event-ID onto ids that are not replayable. A client
+   * that misses deltas orders and de-duplicates them by `seq` and reads the final reply
+   * from the session snapshot.
+   */
+  emitInterviewTurnDelta(
+    userId: string,
+    payload: { sessionId: string; turnIndex: number; stateVersion: number; delta: string; seq: number },
+  ): void {
+    this.publish(
+      {
+        type: 'interview.turn.delta',
+        timestamp: new Date().toISOString(),
+        userId,
+        payload: validateEventPayload('interview.turn.delta', payload),
+      },
+      userId,
+    );
+  }
+
+  /** The final scorecard is stored; sent as a normal envelope so a reconnecting client replays it. */
+  async emitInterviewSessionCompleted(
+    userId: string,
+    payload: { sessionId: string; mode?: 'ai' | 'basic_mode' },
+  ): Promise<void> {
+    await this.publishEnvelope(userId, 'interview.session.completed', payload);
   }
 
   // ─── Helper to publish envelope with sequence number ─────────────────────
