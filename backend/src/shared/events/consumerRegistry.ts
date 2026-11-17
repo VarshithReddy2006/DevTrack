@@ -9,6 +9,8 @@ export type DedupStrategy = 'natural' | 'inbox';
 export interface ConsumerDefinition<P = unknown> {
   name: string;
   pool?: string;
+  /** BullMQ queue this consumer's jobs are delivered on (used by the outbox relay to route events). */
+  queue?: string;
   dedup: DedupStrategy;
   handle: (event: DomainEventEnvelope<any, P>, session?: ClientSession) => Promise<void>;
 }
@@ -36,6 +38,15 @@ export class ConsumerRegistry {
    */
   getConsumers(eventType: string): ConsumerDefinition<any>[] {
     return this.registry.get(eventType) || [];
+  }
+
+  /**
+   * Distinct queues that have a consumer for this event type, in registration order.
+   * Consumers without a `queue` are in-process only and are not listed.
+   */
+  getQueues(eventType: string): string[] {
+    const queues = this.getConsumers(eventType).flatMap(c => (c.queue ? [c.queue] : []));
+    return [...new Set(queues)];
   }
 
   /**
@@ -82,6 +93,10 @@ export function registerConsumer<P = unknown>(
 
 export function getConsumersForEvent(eventType: string): ConsumerDefinition<any>[] {
   return consumerRegistry.getConsumers(eventType);
+}
+
+export function getQueuesForEvent(eventType: string): string[] {
+  return consumerRegistry.getQueues(eventType);
 }
 
 export function clearConsumerRegistry(): void {

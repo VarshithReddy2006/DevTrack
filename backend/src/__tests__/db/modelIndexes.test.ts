@@ -59,6 +59,7 @@ import '../../db/models/publicProfile.model.js';
 import '../../db/models/readinessBenchmarks.model.js';
 import '../../db/models/readinessCore.model.js';
 import '../../db/models/readinessDsa.model.js';
+import '../../db/models/readinessInput.model.js';
 import '../../db/models/readinessProjects.model.js';
 import '../../db/models/readinessRoadmap.model.js';
 import '../../db/models/readinessSkills.model.js';
