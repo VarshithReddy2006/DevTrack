@@ -19,7 +19,12 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, character => HTML_ENTITIES[character]!);
 }
 
-export async function renderExportPdf(html: string): Promise<Buffer> {
+export interface RenderPdfOptions {
+  /** Print only the first page, so a one-page document can never spill onto a second. */
+  singlePage?: boolean;
+}
+
+export async function renderExportPdf(html: string, options: RenderPdfOptions = {}): Promise<Buffer> {
   if (activeRenders >= MAX_ACTIVE_RENDERS) {
     throw Object.assign(new Error('PDF renderer is busy. Try again shortly.'), { statusCode: 503 });
   }
@@ -47,6 +52,7 @@ export async function renderExportPdf(html: string): Promise<Buffer> {
         const pdf = Buffer.from(await page.pdf({
           format: 'A4',
           printBackground: true,
+          ...(options.singlePage ? { pageRanges: '1' } : {}),
           timeout: RENDER_TIMEOUT_MS,
         }));
         if (pdf.subarray(0, 5).toString() !== '%PDF-') throw new Error('Invalid export PDF');

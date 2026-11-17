@@ -117,6 +117,29 @@ describe('EventBus Resilience & Degraded Mode (No Redis)', () => {
     bus.shutdown();
   });
 
+  it('sends the keepalive as a named heartbeat event the browser can see, not a comment line', () => {
+    vi.useFakeTimers();
+    try {
+      const bus = new EventBus();
+      const { client, enqueuedChunks } = createMockClient('idle', 'idle');
+      bus.register(client);
+
+      bus.startHeartbeat();
+      expect(enqueuedChunks).toHaveLength(0);
+      vi.advanceTimersByTime(25_000);
+
+      expect(enqueuedChunks).toEqual(['event: heartbeat\ndata: {}\n\n']);
+      expect(enqueuedChunks[0].startsWith(':')).toBe(false);
+
+      bus.stopHeartbeat();
+      vi.advanceTimersByTime(60_000);
+      expect(enqueuedChunks).toHaveLength(1);
+      bus.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('skips Redis PubSub and does not instantiate ioredis when REDIS_URL is absent', () => {
     delete process.env.REDIS_URL;
 
