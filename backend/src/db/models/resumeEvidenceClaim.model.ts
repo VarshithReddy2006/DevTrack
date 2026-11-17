@@ -3,8 +3,8 @@ import { Schema, model, type Document, type Types } from 'mongoose';
 import { EVIDENCE_LEDGER_INDEX } from './evidenceLedgerIndex.js';
 
 export const VERIFICATION_STATUSES = ['verified', 'partial', 'unverified', 'flagged'] as const;
-export const EVIDENCE_SUBJECT_TYPES = ['resume_claim', 'repo', 'dsa_rating', 'focus_consistency', 'certification'] as const;
-export const EVIDENCE_SOURCES = ['github', 'leetcode', 'codeforces', 'devtrack_focus', 'user'] as const;
+export const EVIDENCE_SUBJECT_TYPES = ['resume_claim', 'repo', 'dsa_rating', 'focus_consistency', 'revision_retention', 'certification'] as const;
+export const EVIDENCE_SOURCES = ['github', 'leetcode', 'codeforces', 'devtrack_focus', 'devtrack_revision', 'user'] as const;
 
 // A missing subject type identifies claims written by legacy versions.
 export const resumeClaimScope = { subjectType: { $in: ['resume_claim', null] } };
