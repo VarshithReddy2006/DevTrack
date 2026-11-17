@@ -122,7 +122,6 @@ it('hides badges and shows an under-review marker on the public profile while fl
   for (const [user, isFlagged] of [[flagged, true], [clean, false]] as const) {
     await PublicProfile.create({
       userId: user._id, username: user.username, slug: user.username,
-      published: true, visibility: 'public', sections: { streak: true },
       snapshot: { version: 2, achievements },
       antiGaming: { isFlagged, suspicionScore: isFlagged ? 80 : 0, flags: isFlagged ? ['abnormal_xp_velocity'] : [] },
       published: true,
