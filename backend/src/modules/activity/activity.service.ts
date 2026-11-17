@@ -163,23 +163,24 @@ export async function getActivitiesByDate(userId: string, date: string): Promise
 
 export async function createActivity(
   userId: string,
-  payload: Omit<ApiActivityEntry, 'id' | 'occurredAt'> & { occurredAt?: string | Date }
+  payload: Omit<ApiActivityEntry, 'id' | 'occurredAt'> & { occurredAt?: string | Date },
+  session?: ClientSession,
 ): Promise<ApiActivityEntry> {
   const occurredAt = payload.occurredAt ? new Date(payload.occurredAt) : new Date();
 
-  const activity = await ActivityEvent.create({
+  const [activity] = await ActivityEvent.create([{
     userId: new Types.ObjectId(userId),
     ...payload,
     occurredAt,
-  });
+  }], { session });
 
   // Update daily activity
   const dateKey = getStartOfDay(occurredAt);
   try {
-    await upsertDailyActivityAtomic(new Types.ObjectId(userId), dateKey, payload.type);
+    await upsertDailyActivityAtomic(new Types.ObjectId(userId), dateKey, payload.type, session);
   } finally {
     // The activity event already exists even if updating the daily count fails.
-    await cacheManager.invalidateDashboard(userId);
+    if (!session) await cacheManager.invalidateDashboard(userId);
   }
 
   // Removed retention hook
@@ -218,7 +219,8 @@ export async function incrementDailyActivity(
 async function upsertDailyActivityAtomic(
   userId: Types.ObjectId,
   dateKey: Date,
-  activityType: string
+  activityType: string,
+  session?: ClientSession,
 ): Promise<void> {
   const filter = { userId, date: dateKey };
   const updatePipeline = [
@@ -277,10 +279,11 @@ async function upsertDailyActivityAtomic(
       await DailyActivity.findOneAndUpdate(filter, updatePipeline, {
         upsert: true,
         new: true,
+        session,
       });
       break;
     } catch (err: any) {
-      if (err?.code === 11000 && attempts < 2) {
+      if (!session && err?.code === 11000 && attempts < 2) {
         attempts++;
         continue;
       }

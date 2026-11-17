@@ -223,7 +223,7 @@ export class FocusController {
     res.status(200).json({
       success: true,
       message: 'Focus session completed',
-      data: (result as any).session || result,
+      data: result.session,
     });
   }
 }

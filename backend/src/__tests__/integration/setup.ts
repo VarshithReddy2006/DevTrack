@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { beforeAll, afterAll, beforeEach } from 'vitest';
 import { createIntegrationDatabase } from './database.js';
 
@@ -7,7 +7,7 @@ import { createIntegrationDatabase } from './database.js';
 // fixture owns both a fresh MongoDB process and a unique database per test file.
 const database = await createIntegrationDatabase(
   mongoose,
-  () => MongoMemoryServer.create({ binary: { version: '7.0.14' } }),
+  () => MongoMemoryReplSet.create({ binary: { version: '7.0.14' }, replSet: { count: 1 } }),
   process.env.MONGODB_URI,
 );
 

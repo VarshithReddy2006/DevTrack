@@ -4,10 +4,16 @@
 // Manages deep work session persistence, quality scoring, and session history.
 // ============================================================================
 
-import { Types } from 'mongoose';
-import { FocusSession, UnifiedRuntimeState } from '../../db/models/index.js';
+import { Types, type ClientSession, type HydratedDocument } from 'mongoose';
+import { FocusSession, UnifiedRuntimeState, User, UserXp, type IFocusSession } from '../../db/models/index.js';
+import { runInTransaction } from '../../db/transaction.js';
 import { logger } from '../../shared/logger.js';
-import { FOCUS_HEARTBEAT_SECONDS } from './focusXpDecision.js';
+import { writeOutboxEvent } from '../../shared/events/outbox.js';
+import { focusSessionCompletedV1Schema } from '../../shared/events/eventContract.js';
+import { getTraceMetadata } from '../../shared/tracing/tracing.js';
+import { eventBus } from '../../shared/sse/index.js';
+import { ensureUserXp, readFocusXpForDay } from '../xp/focusXpLedger.js';
+import { computeActiveSec, decideFocusXp, FOCUS_HEARTBEAT_SECONDS } from './focusXpDecision.js';
 
 export interface FocusSessionResult {
   sessionId: string;
@@ -16,6 +22,21 @@ export interface FocusSessionResult {
   plannedDurationMinutes: number;
   coveredHeartbeatIntervals: number;
   activeDurationMs: number;
+  session: HydratedDocument<IFocusSession>;
+  replayed: boolean;
+}
+
+function completionResult(session: HydratedDocument<IFocusSession>, replayed: boolean): FocusSessionResult {
+  return {
+    sessionId: String(session._id),
+    qualityScore: session.focusQualityScore,
+    actualDuration: session.actualDurationMinutes,
+    plannedDurationMinutes: session.plannedDurationMinutes,
+    coveredHeartbeatIntervals: session.coveredHeartbeatIntervals ?? 0,
+    activeDurationMs: session.activeDurationMs,
+    session,
+    replayed,
+  };
 }
 
 export interface FocusTiming {
@@ -330,7 +351,7 @@ export class FocusEngine {
       _id: new Types.ObjectId(sessionId),
       userId: new Types.ObjectId(userId),
     });
-    if (!session) return null;
+    if (!session || !['running', 'paused', 'active'].includes(session.status)) return null;
 
     const now = new Date();
     const pauses = Array.isArray(session.pauses) ? [...session.pauses] : [];
@@ -346,7 +367,7 @@ export class FocusEngine {
     });
 
     const abandoned = await FocusSession.findOneAndUpdate(
-      { _id: session._id, userId: session.userId },
+      { _id: session._id, userId: session.userId, status: session.status },
       {
         $set: {
           status: 'abandoned',
@@ -385,12 +406,36 @@ export class FocusEngine {
   }
 
   /**
-   * Completes a focus session and calculates the quality score.
+   * Atomically records completion, reserves XP and writes the domain event.
    */
   async completeSession(sessionId: string, userId: string): Promise<FocusSessionResult | null> {
-    const session = await FocusSession.findOne({ _id: sessionId, userId: new Types.ObjectId(userId) });
-    if (!session || !['running', 'paused', 'active'].includes(session.status)) return null;
+    const ownerId = new Types.ObjectId(userId);
+    const filter = { _id: sessionId, userId: ownerId };
+    const initial = await FocusSession.findOne(filter);
+    if (initial?.status === 'completed') return completionResult(initial, true);
+    if (!initial || !['running', 'paused', 'active'].includes(initial.status)) return null;
 
+    await ensureUserXp(ownerId);
+    const traceContext = getTraceMetadata();
+    const { result, runtime } = await runInTransaction(async dbSession => {
+      const session = await FocusSession.findOne(filter).session(dbSession);
+      if (session?.status === 'completed') return { result: completionResult(session, true), runtime: null };
+      if (!session || !['running', 'paused', 'active'].includes(session.status)) return { result: null, runtime: null };
+      return this.persistCompletion(session, dbSession, traceContext);
+    });
+    if (runtime) {
+      try {
+        await eventBus.emitRuntimeStatePatch(userId, { sessionContext: runtime.sessionContext });
+      } catch (error) {
+        logger.warn('[focus] Runtime patch delivery failed after completion', { userId, error });
+      }
+    }
+    return result;
+  }
+
+  private async persistCompletion(
+    session: HydratedDocument<IFocusSession>, dbSession: ClientSession, traceContext: Record<string, string>,
+  ) {
     const completedAt = new Date();
     const pauses = Array.isArray(session.pauses) ? [...session.pauses] : [];
     for (const p of pauses) {
@@ -423,9 +468,14 @@ export class FocusEngine {
 
     const qualityScore = Math.min(100, Math.max(0, Math.round(score)));
 
-    // Flip the status atomically. If another request already completed (or
-    // cancelled) this session between the read above and now, the filter no
-    // longer matches and exactly one caller gets a result.
+    // Serialize decisions with legacy XP workers that may still settle this day's prior sessions.
+    await UserXp.updateOne({ userId: session.userId }, { $inc: { focusReservationVersion: 1 } }, { session: dbSession });
+    const prior = await readFocusXpForDay(session.userId, completedAt, dbSession);
+    const decision = decideFocusXp({
+      plannedSec: session.$isDefault('plannedSec') ? session.plannedDurationMinutes * 60 : session.plannedSec,
+      activeSec: computeActiveSec(activeDurationMs),
+      coveredHeartbeatIntervals: session.coveredHeartbeatIntervals ?? 0,
+    }, prior);
     const completed = await FocusSession.findOneAndUpdate(
       { _id: session._id, userId: session.userId, status: session.status },
       {
@@ -439,27 +489,44 @@ export class FocusEngine {
           activeDurationMs,
           lastResumedAt: null,
           focusQualityScore: qualityScore,
+          xp: { amount: decision.xpAmount, reason: decision.reason, capApplied: decision.capApplied },
         },
       },
-      { new: true }
+      { new: true, session: dbSession }
     );
-    if (!completed) return null;
+    if (!completed) throw new Error('Focus session disappeared during completion');
 
-    return {
-      sessionId: completed._id.toString(),
-      qualityScore,
-      actualDuration: actualDurationMinutes,
-      plannedDurationMinutes: completed.plannedDurationMinutes,
+    const user = await User.findById(session.userId).select('timezone').session(dbSession).lean();
+    const payload = focusSessionCompletedV1Schema.parse({
+      sessionId: String(completed._id),
+      plannedDurationMinutes: session.plannedDurationMinutes,
       coveredHeartbeatIntervals: completed.coveredHeartbeatIntervals ?? 0,
       activeDurationMs,
-      session: completed,
-    } as any;
+      completedAt: completedAt.toISOString(),
+      mode: completed.mode,
+      timezone: user?.timezone || 'UTC',
+      qualified: decision.qualified,
+    });
+    await writeOutboxEvent(dbSession, {
+      type: 'focus.session.completed', schemaVersion: 1, aggregateType: 'focus_session',
+      aggregateId: payload.sessionId, userId: String(session.userId), payload, traceContext,
+    });
+    const runtime = await UnifiedRuntimeState.findOneAndUpdate(
+      { userId: session.userId, 'sessionContext.sessionId': payload.sessionId },
+      { $set: {
+        'sessionContext.isActive': false, 'sessionContext.status': 'completed',
+        'sessionContext.activeDurationMs': activeDurationMs, 'sessionContext.lastResumedAt': null,
+        'sessionContext.lastHeartbeat': completedAt,
+      } },
+      { new: true, session: dbSession },
+    );
+    return { result: completionResult(completed, false), runtime };
   }
 
   /**
    * Aborts a focus session (e.g. user manually cancelled early).
    */
-  async abortSession(sessionId: string, userId: string): Promise<void> {
+  async abortSession(sessionId: string, userId: string): Promise<boolean> {
     const userObjId = new Types.ObjectId(userId);
     const sessionObjId = new Types.ObjectId(sessionId);
     const done = await FocusSession.findOneAndUpdate(
@@ -479,6 +546,7 @@ export class FocusEngine {
         logger.warn('[focus] Failed to invalidate dashboard cache on abort', { userId, error: err instanceof Error ? err.message : String(err) });
       }
     }
+    return Boolean(done);
   }
 
   /**

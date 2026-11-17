@@ -48,7 +48,7 @@ export async function handleFocusSessionCompleted(
   const day = dayKey(completedAt);
   if (!isInWindow(day, now)) return;
 
-  const qualified = decideFocusXp({
+  const qualified = payload.qualified ?? decideFocusXp({
     plannedSec: payload.plannedDurationMinutes * 60,
     activeSec: computeActiveSec(payload.activeDurationMs),
     coveredHeartbeatIntervals: payload.coveredHeartbeatIntervals ?? 0,

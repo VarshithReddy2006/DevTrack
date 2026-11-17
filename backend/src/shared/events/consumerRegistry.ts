@@ -12,7 +12,11 @@ export interface ConsumerDefinition<P = unknown> {
   /** BullMQ queue this consumer's jobs are delivered on (used by the outbox relay to route events). */
   queue?: string;
   dedup: DedupStrategy;
+  /** Keep the inbox entry for events that can be replayed after the default TTL. */
+  retainInbox?: boolean;
   handle: (event: DomainEventEnvelope<any, P>, session?: ClientSession) => Promise<void>;
+  /** Retryable post-commit work also runs when the inbox reports a duplicate. */
+  afterCommit?: (event: DomainEventEnvelope<any, P>) => Promise<void>;
 }
 
 export class ConsumerRegistry {

@@ -136,6 +136,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `dataset-ingestion` | Dataset scan and ingest (ops) |
 | `domain-og-render` | 1200x630 OG share cards (satori + resvg), cached by content hash in `RenderArtifact` |
 | `dossier-render` | Verified Developer Dossier PDFs (headless Chromium, network blocked), stored via `ObjectStorage` |
+| `interview-score` | Mock interview answer evaluation: streams `interview.turn.delta` events, rubric scoring on the last turn, checklist (basic mode) fallback. The consumer is implemented but not registered in a worker role yet; it needs the InterviewSession model |
 | `jd-parse`, `jd-score` | Job target analysis: taxonomy extraction, model-assisted metadata and STAR rewrites, `jobtarget.parsed` outbox event (`ai` role) |
 
 ### Worker topology

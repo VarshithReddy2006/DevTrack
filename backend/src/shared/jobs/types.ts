@@ -141,12 +141,23 @@ export interface JdScoreJobData {
   requestId?: string;
 }
 
+/**
+ * One answer to evaluate. `stateVersion` is the session version at which the answer was
+ * accepted (state SCORING); the worker only writes a result while the session is still there.
+ */
+export interface InterviewScoreJobData {
+  sessionId: string;
+  turnIndex: number;
+  stateVersion: number;
+  requestId?: string;
+}
+
 export interface DossierRenderJobData {
   userId: string;
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | JdParseJobData | JdScoreJobData;
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -165,12 +176,17 @@ export const QueueNames = {
   OG_RENDER: 'domain-og-render',
   DOSSIER_RENDER: 'dossier-render',
 
-  // AI pool (WORKER_TYPE=ai): job description parsing and match scoring
+  // AI pool (WORKER_TYPE=ai): job description parsing, match scoring, interview scoring
   JD_PARSE: 'jd-parse',
   JD_SCORE: 'jd-score',
+  INTERVIEW_SCORE: 'interview-score',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',
+  DOMAIN_FOCUS_XP: 'domain-focus-xp',
+  DOMAIN_FOCUS_STREAK: 'domain-focus-streak',
+  DOMAIN_FOCUS_MISSIONS: 'domain-focus-missions',
+  DOMAIN_FOCUS_ACTIVITY: 'domain-focus-activity',
 
   // Readiness Decoupled Pipelines
   READINESS_DSA: 'readiness-dsa',

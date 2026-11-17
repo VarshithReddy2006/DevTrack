@@ -10,6 +10,7 @@ export interface IUserXp extends Document {
   currentLevel: number;
   xpToNextLevel: number;
   lastXpGainedAt: Date | null;
+  focusReservationVersion?: number;
   lifetimeStats: {
     totalProblemsSolved: number;
     easySolved: number;
@@ -31,6 +32,7 @@ const userXpSchema = new Schema<IUserXp>(
     currentLevel: { type: Number, default: 1, min: 1 },
     xpToNextLevel: { type: Number, default: 100, min: 0 },
     lastXpGainedAt: { type: Date, default: null },
+    focusReservationVersion: Number,
     lifetimeStats: {
       totalProblemsSolved: { type: Number, default: 0, min: 0 },
       easySolved: { type: Number, default: 0, min: 0 },
