@@ -1,10 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const packageRoot = new URL('../packages/ats-core/', import.meta.url);
+const packageRoot = new URL('./node_modules/@devtrack/ats-core/', import.meta.url);
 const tsconfig = new URL('tsconfig.json', packageRoot);
 const compiledEntry = new URL('dist/index.js', packageRoot);
 // The runtime image copies the compiled workspace without source or build tools.
@@ -23,4 +23,11 @@ const result = spawnSync(process.execPath, [
   compiler, '-p', fileURLToPath(tsconfig),
 ], { stdio: 'inherit' });
 if (result.error) throw result.error;
+if (result.status === 0) {
+  // TypeScript skips emitting JSON from the installed package under node_modules.
+  copyFileSync(
+    new URL('src/taxonomy/v1.json', packageRoot),
+    new URL('dist/taxonomy/v1.json', packageRoot),
+  );
+}
 process.exitCode = result.status ?? 1;

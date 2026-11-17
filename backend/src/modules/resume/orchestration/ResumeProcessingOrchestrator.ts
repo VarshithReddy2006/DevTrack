@@ -203,7 +203,7 @@ export class ResumeProcessingOrchestrator {
           success = true;
         } catch (err) {
           attempt++;
-          logger.warn(`[ProcessingOrchestrator] Execution attempt ${attempt} for stage ${nextStage} failed: ${err instanceof Error ? err.message : String(err)}`);
+          logger.warn('[ProcessingOrchestrator] Stage execution failed', { attempt, stage: nextStage, error: err });
           if (attempt >= 3) throw err;
           await new Promise(resolve => setTimeout(resolve, 500 * attempt)); // retry backoff
         }
@@ -712,7 +712,7 @@ export class ResumeProcessingOrchestrator {
         }
       }
     } catch (e) {
-      logger.warn(`[ProcessingOrchestrator] Longitudinal delta tracking failed: ${e instanceof Error ? e.message : String(e)}`);
+      logger.warn('[ProcessingOrchestrator] Longitudinal delta tracking failed', { error: e });
     }
   }
 
@@ -921,7 +921,7 @@ export class ResumeProcessingOrchestrator {
           eventPayload
         );
       } catch (err) {
-        logger.warn(`[ProcessingOrchestrator] Failed to stream progress event: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn('[ProcessingOrchestrator] Failed to stream progress event', { error: err });
       }
     }
   }

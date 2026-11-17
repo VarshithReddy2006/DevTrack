@@ -111,7 +111,7 @@ export class UploadService {
         },
       });
     } catch (err: any) {
-      logger.error(`[UploadService] Database persistence failed for session: ${err.message}`);
+      logger.error('[UploadService] Database persistence failed for session', err);
       // Clean up raw stored file
       try {
         await this.storage.remove(uploadPath);
@@ -140,7 +140,7 @@ export class UploadService {
         throw new Error('Redis database services are offline. Asynchronous queue submissions are disabled.');
       }
     } catch (err: any) {
-      logger.error(`[UploadService] Failed to queue job for session ${sessionId}: ${err.message}`);
+      logger.error('[UploadService] Failed to queue job', err, { sessionId });
       // Update session failure status in DB
       await ResumeSession.updateOne(
         { sessionId },

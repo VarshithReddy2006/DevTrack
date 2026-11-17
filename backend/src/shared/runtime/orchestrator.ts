@@ -228,7 +228,7 @@ export function shutdown(server?: Server): Promise<void> {
   return shutdownPromise;
 }
 
-export function registerShutdownSignals(server: Server): void {
+export function registerShutdownSignals(server: Server, afterShutdown?: () => Promise<void>): void {
   const handleSignal = () => {
     if (shutdownRequested) return;
 
@@ -238,7 +238,7 @@ export function registerShutdownSignals(server: Server): void {
       process.exit(1);
     }, 15_000);
 
-    void shutdown(server).then(
+    void shutdown(server).then(() => afterShutdown?.()).then(
       () => {
         clearTimeout(watchdog);
         process.exit(0);

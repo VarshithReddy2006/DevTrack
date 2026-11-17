@@ -93,6 +93,14 @@ docker compose -f docker-compose.prod.yml logs -f
 
 > **Port note:** `docker-compose.prod.yml` publishes the API on host port **4000** by default and routes it to container port **3001**. Override only the host port with `API_PORT`. Development publishes container port 3001 directly.
 
+### Distributed traces
+
+Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to the collector's full HTTP/JSON trace ingest URL, such as `http://otel-collector:4318/v1/traces`. You can also set `OTEL_EXPORTER_OTLP_ENDPOINT` to the base collector URL. Set `OTEL_SERVICE_NAME` per deployment role to distinguish API and worker spans. Without an endpoint, the API and workers propagate trace IDs locally and skip exporting spans. Set `OTEL_SDK_DISABLED=true` to disable the SDK.
+
+For custom process entry points, preload the built SDK with `node --import ./dist/instrumentation.js ...` before loading instrumented libraries. Exported spans keep trace IDs, timings, operation names, and status codes. The exporter drops request URLs, database arguments, Redis payloads, and exception bodies.
+
+When the transactional outbox from issue #296 is available, persist `captureTraceContext()` in the event's `traceContext` field. Enqueue within `withTraceContext(row.traceContext, () => queue.add(...))` so BullMQ derives its metadata from the originating request.
+
 
 ---
 
@@ -221,11 +229,12 @@ Builds images from `docker-compose.prod.yml`, starts the containers, and checks 
 ## Frontend (Vercel)
 
 1. Import the GitHub repo at https://vercel.com/new
-2. Set root directory to `frontend/`
+2. Leave the root directory at the repository root so the build can access `packages/contracts`.
 3. Framework preset: **Vite**
-4. Build command: `npm run build`
-5. Output directory: `dist`
-6. Inject environment variables:
+4. Install command: `npm ci --prefix frontend --include=dev`
+5. Build command: `npm run build --prefix frontend`
+6. Output directory: `frontend/dist`
+7. Inject environment variables:
    - `VITE_API_BASE_URL=https://your-api.render.com/api`
    - `VITE_CLERK_PUBLISHABLE_KEY=pk_live_...`
 
@@ -244,7 +253,7 @@ Rollback: Vercel Dashboard - Deployments - select last working build - Promote t
 ### 2. Backend API Service
 
 1. Name: `devtrack-api`
-2. Root directory: leave blank to use the repository root. The backend imports the ATS workspace from `packages/ats-core`.
+2. Root directory: leave blank to use the repository root. The backend requires both `packages/ats-core` and `packages/contracts`.
 3. Build command: `npm ci --prefix backend --include=dev && npm run build --prefix backend`
 4. Start command: `cd backend && node dist/index.js`
 5. Environment: `Node`

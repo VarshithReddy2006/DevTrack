@@ -2,6 +2,7 @@
 import { Queue } from 'bullmq';
 import { getRedisClient } from '../../shared/redis/index.js';
 import { logger } from '../../shared/logger.js';
+import { getQueueTelemetry } from '../../shared/tracing/queueTelemetry.js';
 import { RetryPolicy } from './RetryPolicy.js';
 import { QueueNames } from '../../shared/jobs/types.js';
 
@@ -16,6 +17,7 @@ export class QueueRegistry {
   static createQueueConfig(defaultJobOptions?: Record<string, unknown>) {
     return {
       connection: getRedisClient(),
+      telemetry: getQueueTelemetry(),
       defaultJobOptions: {
         attempts: RetryPolicy.MAX_ATTEMPTS,
         backoff: RetryPolicy.getStandardBackoff(),
