@@ -10,6 +10,7 @@ import { ContestList } from '../components/dsa/ContestList';
 import { InsightsCard } from '../components/dsa/InsightsCard';
 import { Icon } from '../components/shared/Icon';
 import { NetworkErrorPanel } from '../components/shared/NetworkErrorPanel';
+import { Link } from 'react-router-dom';
 
 const HeatmapCard = React.lazy(() =>
   import('../components/dsa/HeatmapCard').then((m) => ({ default: m.HeatmapCard }))
@@ -137,13 +138,9 @@ const DsaPage: React.FC = () => {
         status="success"
         error={null}
         actions={(
-          <button
-            type="button"
-            className="dt-btn dt-btn-primary dt-btn-md px-6 shadow-dt-floating"
-          >
-            <Icon name="plus" size={14} className="text-white" />
-            Log Packet
-          </button>
+          <Link to="/dsa/revision" className="dt-btn dt-btn-primary dt-btn-md px-6 shadow-dt-floating">
+            Review due cards
+          </Link>
         )}
       >
         <div className="mx-auto w-full max-w-[1200px] flex flex-col gap-6 pb-16 relative">

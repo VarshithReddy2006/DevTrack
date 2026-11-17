@@ -5,11 +5,15 @@ import type { IUserSettings } from '../../db/models/userSettings.model.js';
 
 export function mapToPublicProfileDTO(profile: IPublicProfile, privacy?: Partial<IUserSettings['privacy']>) {
   const snapshot = profile.snapshot;
-  const showStreak = privacy?.showStreak !== false;
-  const showGithub = privacy?.showGithub !== false;
-  const showDsa = privacy?.showDsaProgress !== false;
-  const showProjects = privacy?.showProjects !== false;
-  const showActivity = privacy?.showActivity !== false;
+  // A section needs the owner's publication opt-in and must not be switched off in privacy settings.
+  const { sections } = profile;
+  const showStreak = sections?.streak === true && privacy?.showStreak !== false;
+  const showGithub = sections?.github === true && privacy?.showGithub !== false;
+  const showDsa = sections?.dsa === true && privacy?.showDsaProgress !== false;
+  const showProjects = sections?.projects === true && privacy?.showProjects !== false;
+  const showActivity = sections?.activity === true && privacy?.showActivity !== false;
+  // Badges are derived from the activity counters the anti-gaming audit distrusts, so hide them while flagged.
+  const underReview = profile.antiGaming?.isFlagged === true;
 
   return {
     username: profile.username,
@@ -49,7 +53,8 @@ export function mapToPublicProfileDTO(profile: IPublicProfile, privacy?: Partial
       totalPRs: snapshot.github.totalPRs,
     } : undefined,
     projects: showProjects ? snapshot.projects : [],
-    achievements: snapshot.achievements.filter(({ category }) => {
+    trust: { underReview },
+    achievements: underReview ? [] : snapshot.achievements.filter(({ category }) => {
       if (category === 'streak') return showStreak;
       if (category === 'projects') return showProjects;
       if (category === 'problems' || category === 'contest') return showDsa;

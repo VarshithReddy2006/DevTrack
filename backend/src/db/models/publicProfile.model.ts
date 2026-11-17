@@ -1,11 +1,24 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
+export const PUBLIC_PROFILE_SECTIONS = ['streak', 'dsa', 'github', 'projects', 'activity'] as const;
+export type PublicProfileSection = typeof PUBLIC_PROFILE_SECTIONS[number];
+
 export interface IPublicProfile extends Document {
   userId: Types.ObjectId;
   username: string;
   slug: string;
   visibility: 'public' | 'private' | 'recruiter_only';
   isIndexable: boolean;
+  /** Explicit opt-in. Nothing is served publicly unless the owner completed the publish flow. */
+  published: boolean;
+  /** Which parts of the profile the owner chose to show. Every section starts hidden. */
+  sections: Record<PublicProfileSection, boolean>;
+  /** Bumped on every publish and unpublish. */
+  publicationVersion: number;
+  publication: {
+    consentVersion: string | null;
+    publishedAt: Date | null;
+  };
 
   snapshot: {
     computedAt: Date;
@@ -111,8 +124,15 @@ const PublicProfileSchema = new Schema<IPublicProfile>(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
     username: { type: String, required: true, unique: true },
     slug: { type: String, required: true, unique: true, lowercase: true },
-    visibility: { type: String, enum: ['public', 'private', 'recruiter_only'], default: 'public' },
-    isIndexable: { type: Boolean, default: true },
+    visibility: { type: String, enum: ['public', 'private', 'recruiter_only'], default: 'private' },
+    isIndexable: { type: Boolean, default: false },
+    published: { type: Boolean, default: false },
+    sections: Object.fromEntries(PUBLIC_PROFILE_SECTIONS.map(section => [section, { type: Boolean, default: false }])),
+    publicationVersion: { type: Number, default: 0 },
+    publication: {
+      consentVersion: { type: String, default: null },
+      publishedAt: { type: Date, default: null },
+    },
 
     snapshot: {
       computedAt: { type: Date, default: Date.now },

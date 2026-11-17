@@ -5,6 +5,7 @@ import { scheduleMaintenanceTasks, startMaintenanceWorker, stopMaintenanceWorker
 const queue = vi.hoisted(() => ({
   add: vi.fn().mockResolvedValue(undefined),
   removeRepeatable: vi.fn().mockResolvedValue(true),
+  upsertJobScheduler: vi.fn().mockResolvedValue(undefined),
   on: vi.fn(),
   close: vi.fn().mockResolvedValue(undefined),
   process: vi.fn(),
@@ -14,6 +15,7 @@ vi.mock('bullmq', () => ({
   Queue: class {
     add = queue.add;
     removeRepeatable = queue.removeRepeatable;
+    upsertJobScheduler = queue.upsertJobScheduler;
     close = queue.close;
   },
   Worker: class {

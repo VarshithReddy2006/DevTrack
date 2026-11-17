@@ -12,7 +12,7 @@
  * Run after tsc: `tsc && node fix-esm-imports.mjs`
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, extname } from 'path';
 
 const DIST_DIR = './dist';
@@ -79,3 +79,16 @@ function walkAndFix(dir) {
 console.log(`[fix-esm-imports] Patching relative imports in ${DIST_DIR}...`);
 const { fixed, total } = walkAndFix(DIST_DIR);
 console.log(`[fix-esm-imports] Done. Patched ${fixed} of ${total} files.`);
+
+// Ship the versioned modules unchanged so the ledger hashes the executed file bytes.
+const migrationSource = './src/db/migrations/versioned';
+const migrationDist = join(DIST_DIR, 'db/migrations/versioned');
+mkdirSync(migrationDist, { recursive: true });
+for (const entry of readdirSync(migrationDist, { withFileTypes: true })) {
+  if (entry.isFile() && entry.name.endsWith('.mjs')) unlinkSync(join(migrationDist, entry.name));
+}
+for (const entry of readdirSync(migrationSource, { withFileTypes: true })) {
+  if (entry.isFile() && entry.name.endsWith('.mjs')) {
+    copyFileSync(join(migrationSource, entry.name), join(migrationDist, entry.name));
+  }
+}

@@ -20,8 +20,6 @@ vi.mock('../../shared/jobs/index.js', () => ({
   QueueNames: { PLATFORM_SYNC: 'platform-sync', XP_PROCESSING: 'xp-processing' },
 }));
 vi.mock('../../shared/jobs/workers.js', () => ({ startAllWorkers: state.start, stopAllWorkers: state.stop }));
-vi.mock('../../shared/syncScheduler.js', () => ({ startSyncScheduler: vi.fn(), stopSyncScheduler: vi.fn() }));
-vi.mock('../../shared/scheduler/missionScheduler.js', () => ({ startMissionScheduler: vi.fn(), stopMissionScheduler: vi.fn() }));
 vi.mock('../../shared/runtime/infrastructureRegistry.js', () => ({
   setApiStatus: vi.fn(), setMongoStatus: vi.fn(), setRedisStatus: vi.fn(), setQueuesStatus: vi.fn(),
   setPlatformSyncWorkerStatus: state.setSync, setXpWorkerStatus: state.setXp, setSchedulerStatus: vi.fn(), setSseStatus: vi.fn(),
@@ -54,6 +52,16 @@ it('starts the shared registry and drains it before closing queue and Redis hand
   expect(state.flush.mock.invocationCallOrder[0]).toBeGreaterThan(state.queuesClose.mock.invocationCallOrder[0]);
   expect(state.redisClose).toHaveBeenCalledAfter(state.flush);
   expect(state.redisClose).toHaveBeenCalledAfter(state.auditFlush);
+});
+it('reports the scheduler healthy from the queues alone, the API starts no cron timers', async () => {
+  const intervals = vi.spyOn(globalThis, 'setInterval');
+  const result = await startup(express());
+  expect(result.phases.scheduler).toBe(true);
+  expect(intervals).not.toHaveBeenCalled();
+});
+it('keeps the scheduler degraded while the queues behind the schedules are unavailable', async () => {
+  state.ready = false;
+  expect((await startup(express())).phases.scheduler).toBe(false);
 });
 it.each(['disabled', 'offline'])('does not start consumers when %s', async reason => {
   if (reason === 'disabled') vi.stubEnv('ENABLE_WORKERS', 'false'); else state.ready = false;
@@ -102,7 +110,10 @@ it.each(['SIGTERM', 'SIGINT'] as const)('drains resources in order when it recei
   const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   let finishMongoClose!: () => void;
   state.mongoClose.mockReturnValueOnce(new Promise<void>(resolve => { finishMongoClose = resolve; }));
-  registerShutdownSignals(server);
+  let finishTelemetry!: () => void;
+  const telemetryDone = new Promise<void>(resolve => { finishTelemetry = resolve; });
+  const flushTelemetry = vi.fn(() => telemetryDone);
+  registerShutdownSignals(server, flushTelemetry);
   const sigtermHandler = process.listeners('SIGTERM').at(-1)!;
   const sigintHandler = process.listeners('SIGINT').at(-1)!;
 
@@ -112,18 +123,22 @@ it.each(['SIGTERM', 'SIGINT'] as const)('drains resources in order when it recei
     handler(signal);
     const draining = shutdown();
     await vi.waitFor(() => expect(state.mongoClose).toHaveBeenCalledOnce());
+    expect(flushTelemetry).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
     finishMongoClose();
     await draining;
+    await vi.waitFor(() => expect(flushTelemetry).toHaveBeenCalledOnce());
+    expect(exit).not.toHaveBeenCalled();
+    finishTelemetry();
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(0));
 
     expect(httpClose).toHaveBeenCalledOnce();
     expect(state.stop).toHaveBeenCalledExactlyOnceWith(5000);
     const calls = [
       httpClose, state.sseDrain, state.stop, state.queuesClose, state.flush,
-      state.sseClose, state.redisClose, state.mongoClose, exit,
+      state.sseClose, state.redisClose, state.mongoClose, flushTelemetry, exit,
     ].map(mock => mock.mock.invocationCallOrder[0]);
     expect(calls).toEqual([...calls].sort((a, b) => a - b));
-    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
   } finally {
     process.off('SIGTERM', sigtermHandler);
     process.off('SIGINT', sigintHandler);
