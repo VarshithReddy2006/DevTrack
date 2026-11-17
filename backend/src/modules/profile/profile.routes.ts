@@ -4,6 +4,7 @@ import { asyncHandler, authMiddleware, validateBody } from '../../middleware/ind
 import * as controller from './profile.controller.js';
 import * as publication from './publication.controller.js';
 import { getPublicOgImage } from './ogImage.controller.js';
+import * as dossier from './dossier.controller.js';
 import { publishProfileSchema } from './publication.schemas.js';
 import { z } from 'zod';
 
@@ -47,6 +48,10 @@ router.delete('/tech-stack/:tag', authMiddleware, asyncHandler(controller.remove
 router.get('/publication', authMiddleware, asyncHandler(publication.getPublication));
 router.put('/publication', authMiddleware, validateBody(publishProfileSchema), asyncHandler(publication.publishProfile));
 router.delete('/publication', authMiddleware, asyncHandler(publication.unpublishProfile));
+router.post('/dossier', authMiddleware, asyncHandler(dossier.requestDossierPdf));
+router.get('/dossier', authMiddleware, asyncHandler(dossier.getDossierPdfStatus));
+// Authorised by its HMAC signature, not a session, so it can be opened from a plain link.
+router.get('/dossier/download', asyncHandler(dossier.downloadDossierPdf));
 router.get('/public/:username', asyncHandler(controller.getPublicProfile as any));
 router.get('/public/:username/og.png', asyncHandler(getPublicOgImage));
 

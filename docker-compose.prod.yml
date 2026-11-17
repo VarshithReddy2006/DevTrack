@@ -8,7 +8,7 @@
 #   worker-xp      — XP processing BullMQ worker
 #   worker-resume  — Resume intelligence consumers
 #   worker-dataset — Dataset ingestion consumer
-#   worker-render  — OG image rendering (satori + resvg)
+#   worker-render  — OG images (satori + resvg) and dossier PDFs (Chromium)
 #   worker-maint   — Maintenance/cleanup worker
 #   redis          — Redis 7 for queues, caching, SSE pub/sub
 #   mongo          — MongoDB 7 for persistent storage
@@ -49,6 +49,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - UPLOAD_DIR=/app/uploads
+      - OBJECT_STORAGE_SIGNING_SECRET=${OBJECT_STORAGE_SIGNING_SECRET:?Set OBJECT_STORAGE_SIGNING_SECRET for signed dossier links}
     volumes:
       - resume_artifacts:/app/uploads
     networks:
@@ -178,7 +179,8 @@ services:
           cpus: '0.5'
 
   # ─── Render Worker ──────────────────────────────────────────────────────
-  # CPU and memory heavy (satori + resvg), so it never shares a process with the API.
+  # CPU and memory heavy (satori + resvg, headless Chromium), so it never shares a process with the API.
+  # It writes dossier PDFs into the same volume the API reads them from.
   worker-render:
     <<: *backend-base
     command: ["node", "dist/worker-entrypoint.js"]
@@ -188,11 +190,15 @@ services:
       - MONGODB_URI=${MONGODB_URI:-mongodb://${MONGO_USER:-devtrack}:${MONGO_PASS:-devtrack}@mongo:27017/devtrack?authSource=admin}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - UPLOAD_DIR=/app/uploads
+      - OBJECT_STORAGE_SIGNING_SECRET=${OBJECT_STORAGE_SIGNING_SECRET:?Set OBJECT_STORAGE_SIGNING_SECRET for signed dossier links}
+    volumes:
+      - resume_artifacts:/app/uploads
     deploy:
       replicas: 1
       resources:
         limits:
-          memory: 512M
+          memory: 1G
           cpus: '1.0'
 
   # ─── Maintenance Worker ─────────────────────────────────────────────────

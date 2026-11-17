@@ -79,6 +79,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../modules/profile/workers/ogRender.worker.js');
     return { start: m.startOgRenderWorker, stop: m.stopOgRenderWorker };
   } },
+  { role: 'render', queueName: 'dossier-render', load: async () => {
+    const m = await import('../modules/profile/workers/dossierRender.worker.js');
+    return { start: m.startDossierRenderWorker, stop: m.stopDossierRenderWorker };
+  } },
   { role: 'xp', queueName: 'streak-recalc', load: async () => {
     const m = await import('../shared/jobs/streakRecalcWorker.js');
     return { start: m.startStreakRecalcWorker, stop: m.stopStreakRecalcWorker };
