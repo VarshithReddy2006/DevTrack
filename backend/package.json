@@ -27,6 +27,7 @@
     "migrate:evidence-ledger": "tsx src/db/migrations/run-evidence-ledger.ts",
     "migrate:public-profile-opt-in": "tsx src/db/migrations/run-public-profile-opt-in.ts",
     "migrate:leagues": "tsx src/db/migrations/run-leagues.ts",
+    "migrate:embedding-user-hash": "tsx src/db/migrations/run-embedding-user-hash.ts",
     "migrate:daily-challenge-tiers": "tsx src/db/migrations/run-daily-challenge-tiers.ts",
     "test:safety": "vitest run -c vitest.safety.config.ts",
     "test:unit": "npm run test:safety && vitest run",

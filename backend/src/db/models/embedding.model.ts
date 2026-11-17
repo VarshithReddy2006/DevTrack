@@ -1,5 +1,22 @@
 // src/db/models/embedding.model.ts
 import { Schema, model, type Document, type Types } from 'mongoose';
+import { EMBEDDING_USER_HASH_INDEX } from './embeddingIndexes.js';
+
+// Legacy types are still written by the resume pipeline and exist on stored rows, so they stay valid.
+export const LEGACY_EMBEDDING_CONTENT_TYPES = ['resume', 'project', 'skill', 'other'] as const;
+export const EMBEDDING_CONTENT_TYPES = [
+  ...LEGACY_EMBEDDING_CONTENT_TYPES,
+  'resume_bullet',
+  'project_summary',
+  'job_requirement',
+  'interview_answer',
+] as const;
+export type EmbeddingContentType = (typeof EMBEDDING_CONTENT_TYPES)[number];
+
+// Only these can live in the shared (global) dataset. Everything else is user content.
+export const SHARED_EMBEDDING_CONTENT_TYPES: readonly EmbeddingContentType[] = ['skill', 'other'];
+export const isSharedEmbeddingContentType = (type: EmbeddingContentType): boolean =>
+  SHARED_EMBEDDING_CONTENT_TYPES.includes(type);
 
 export interface IEmbedding extends Document {
   sessionId: string;
@@ -18,7 +35,7 @@ export interface IEmbedding extends Document {
   // Content metadata
   content: string;
   contentHash: string; // SHA-256 of the owner, chunk identity, and content
-  contentType: 'resume' | 'project' | 'skill' | 'other';
+  contentType: EmbeddingContentType;
   contentId?: string;
   
   // Embedding version
@@ -88,18 +105,17 @@ const embeddingSchema = new Schema<IEmbedding>(
     contentHash: {
       type: String,
       required: true,
-      unique: true,
     },
     
     contentType: {
       type: String,
       required: true,
-      enum: ['resume', 'project', 'skill', 'other'],
+      enum: EMBEDDING_CONTENT_TYPES,
       validate: {
         validator: function (this: IEmbedding, type: IEmbedding['contentType']) {
-          return this.scope !== 'global' || (type !== 'resume' && type !== 'project');
+          return this.scope !== 'global' || isSharedEmbeddingContentType(type);
         },
-        message: 'Resume and project embeddings require a user owner',
+        message: 'Private embeddings require a user owner',
       },
     },
     
@@ -145,11 +161,12 @@ const embeddingSchema = new Schema<IEmbedding>(
 );
 
 // Indexes
+// Same text from two users must not collide, so uniqueness is per owner (global rows have userId null).
+embeddingSchema.index(EMBEDDING_USER_HASH_INDEX.key, EMBEDDING_USER_HASH_INDEX.options);
 embeddingSchema.index({ scope: 1, userId: 1, sessionId: 1, chunkIndex: 1, updatedAt: -1 });
 embeddingSchema.index({ scope: 1, userId: 1, contentType: 1, createdAt: -1 });
 embeddingSchema.index({ sessionId: 1 });
 embeddingSchema.index({ sessionId: 1, chunkIndex: 1 });
-embeddingSchema.index({ userId: 1 });
 embeddingSchema.index({ contentType: 1 });
 embeddingSchema.index({ generatedAt: -1 });
 embeddingSchema.index({ embeddingVersion: 1 });
