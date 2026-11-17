@@ -17,9 +17,9 @@ export interface TraceCarrier {
   traceparent?: string;
 }
 
-export function captureTraceContext(): TraceCarrier {
+export function captureTraceContext(parent = context.active()): TraceCarrier {
   const carrier: Record<string, string> = {};
-  traceContextPropagator.inject(context.active(), carrier, { set: (target, key, value) => { target[key] = value; } });
+  traceContextPropagator.inject(parent, carrier, { set: (target, key, value) => { target[key] = value; } });
   return carrier.traceparent ? { traceparent: carrier.traceparent } : {};
 }
 

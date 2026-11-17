@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import { z } from 'zod';
 import { OutboxEvent, type IOutboxEvent } from '../../db/models/outboxEvent.model.js';
+import { captureTraceContext, extractTraceContext } from '../tracing/propagation.js';
 
 const DOT_CASE = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
 
@@ -29,6 +30,14 @@ export async function writeOutboxEvent(session: ClientSession, input: OutboxEven
     throw new Error('writeOutboxEvent must be called inside an active transaction session');
   }
   const data = outboxEventInputSchema.parse(input);
-  const [doc] = await OutboxEvent.create([{ ...data, eventId: randomUUID(), status: 'pending' }], { session });
+  const active = captureTraceContext();
+  const { traceparent, correlationId, causationId } = data.traceContext;
+  const carrier = active.traceparent ? active : captureTraceContext(extractTraceContext({ traceparent }));
+  const traceContext = {
+    ...carrier,
+    ...(correlationId ? { correlationId } : {}),
+    ...(causationId ? { causationId } : {}),
+  };
+  const [doc] = await OutboxEvent.create([{ ...data, traceContext, eventId: randomUUID(), status: 'pending' }], { session });
   return doc;
 }

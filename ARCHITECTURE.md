@@ -135,6 +135,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `system-maintenance` | Scheduled cleanup and reconciliation, daily/weekly mission generation, platform sync sweep (all BullMQ repeatables) |
 | `dataset-ingestion` | Dataset scan and ingest (ops) |
 | `domain-og-render` | 1200x630 OG share cards (satori + resvg), cached by content hash in `RenderArtifact` |
+| `dossier-render` | Verified Developer Dossier PDFs (headless Chromium, network blocked), stored via `ObjectStorage` |
 | `interview-score` | Mock interview answer evaluation: streams `interview.turn.delta` events, rubric scoring on the last turn, checklist (basic mode) fallback. The consumer is implemented but not registered in a worker role yet; it needs the InterviewSession model |
 
 ### Worker topology
@@ -151,7 +152,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `worker-readiness` | `readiness` | Six Readiness intelligence consumers |
 | `worker-resume` | `resume-intelligence` | Resume consumers and profile rebuild |
 | `worker-dataset` | `dataset` | Dataset ingestion |
-| `worker-render` | `render` | OG image rendering (CPU and memory heavy, isolated from the API) |
+| `worker-render` | `render` | OG image and dossier PDF rendering (CPU and memory heavy, isolated from the API) |
 | `worker-maint` | `maintenance` | Maintenance |
 
 The standalone dispatcher accepts exactly `sync`, `xp`, `readiness`, `maintenance`,

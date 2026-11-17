@@ -574,7 +574,9 @@ class EventBus extends EventEmitter {
     if (this.heartbeatInterval) return;
 
     this.heartbeatInterval = setInterval(() => {
-      const payload = encoder.encode(`: heartbeat\n\n`);
+      // A named event, not a `: comment` line: browsers never hand SSE comments to the page, so
+      // the client could not tell an idle healthy stream from a dead one.
+      const payload = encoder.encode(`event: heartbeat\ndata: {}\n\n`);
       let failed = 0;
 
       for (const client of this.clients.values()) {

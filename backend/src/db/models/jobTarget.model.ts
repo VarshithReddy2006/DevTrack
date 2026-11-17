@@ -1,0 +1,41 @@
+// src/db/models/jobTarget.model.ts — a job description a user wants to be matched against.
+// The URL is only stored here; fetching happens later in the isolated worker-ai process.
+import { Schema, model, type Document, type Types } from 'mongoose';
+import { cascadeEmbeddingDeletes } from './embeddingCascade.js';
+
+export type JobTargetStatus = 'submitted' | 'fetching' | 'ready' | 'failed';
+
+export interface IJobTarget extends Document {
+  userId: Types.ObjectId;
+  /** Pasted description text, or null when the user supplied a URL. */
+  text: string | null;
+  /** Public job posting URL, or null when the user pasted text. */
+  url: string | null;
+  title: string | null;
+  status: JobTargetStatus;
+  failureReason: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const jobTargetSchema = new Schema<IJobTarget>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    text: { type: String, default: null },
+    url: { type: String, default: null },
+    title: { type: String, default: null },
+    status: { type: String, enum: ['submitted', 'fetching', 'ready', 'failed'], default: 'submitted', required: true },
+    failureReason: { type: String, default: null },
+  },
+  { timestamps: true },
+);
+
+jobTargetSchema.index({ userId: 1, createdAt: -1 });
+
+// Deleting a target removes its embeddings, keyed on owner and target id.
+cascadeEmbeddingDeletes(jobTargetSchema, ({ userId, _id }) => ({
+  userId: userId as Types.ObjectId | string | null,
+  sessionId: _id ? String(_id) : null,
+}));
+
+export const JobTarget = model<IJobTarget>('JobTarget', jobTargetSchema);

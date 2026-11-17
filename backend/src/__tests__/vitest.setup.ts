@@ -40,6 +40,8 @@ vi.mock('ioredis', () => {
   class MockRedis {
     status = 'ready';
     ping = vi.fn().mockResolvedValue('PONG');
+    get = vi.fn().mockResolvedValue(null);
+    set = vi.fn().mockResolvedValue('OK');
     hget = vi.fn().mockResolvedValue(null);
     hset = vi.fn().mockResolvedValue(1);
     hexists = vi.fn().mockResolvedValue(false);

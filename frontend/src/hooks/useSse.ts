@@ -208,6 +208,7 @@ const activeCallbacks = new Set<HookCallbackRegistry>();
 let globalEventSource: EventSource | null = null;
 let globalReconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 let globalHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+// Last time this stream proved it was alive (open, data event or named heartbeat event).
 let globalLastMessage = 0;
 let globalConsecutiveFailures = 0;
 let globalDisconnectedAt: number | null = null;
@@ -215,6 +216,14 @@ let userStoreSubscribed = false;
 let previousAuth = false;
 
 const STALE_STATE_THRESHOLD_MS = 30_000;
+
+function stopHeartbeatWatchdog(): void {
+  if (globalHeartbeatTimer !== null) {
+    clearInterval(globalHeartbeatTimer);
+    globalHeartbeatTimer = null;
+  }
+  globalLastMessage = 0;
+}
 
 async function resolveAuthToken(): Promise<string | null> {
   if (typeof window !== 'undefined' && window.Clerk && window.Clerk.session) {
@@ -313,10 +322,15 @@ export async function connectGlobalSse(
   const url = `${envUrl}${SSE_PATH}?${urlParams.toString()}`;
   const es = new EventSource(url);
   globalEventSource = es;
+  // The watchdog only judges a stream once it has seen a `heartbeat` event on it. A server that
+  // only sends `: heartbeat` comment lines (which browsers never hand to the page) would
+  // otherwise look dead after a quiet minute and get reconnected in a loop.
+  let serverSendsHeartbeatEvents = false;
 
   es.onopen = () => {
     globalConsecutiveFailures = 0;
     const now = Date.now();
+    globalLastMessage = now;
     store.connectedAt = now;
     store.totalReconnects = store.reconnectAttempt > 0 ? store.totalReconnects + 1 : store.totalReconnects;
     store.consecutiveFailures = 0;
@@ -342,15 +356,23 @@ export async function connectGlobalSse(
 
     if (globalHeartbeatTimer) clearInterval(globalHeartbeatTimer);
     globalHeartbeatTimer = setInterval(() => {
+      if (es !== globalEventSource || !serverSendsHeartbeatEvents) return;
       const elapsed = Date.now() - globalLastMessage;
-      if (globalLastMessage > 0 && elapsed > HEARTBEAT_INTERVAL_MS * 2) {
+      if (elapsed > HEARTBEAT_INTERVAL_MS * 2) {
         console.warn('[SSE] Heartbeat dead, initiating reconnect.', { elapsed });
         es.close();
         globalEventSource = null;
+        stopHeartbeatWatchdog();
         scheduleReconnect(true, updateStatus, updateDegraded);
       }
     }, HEARTBEAT_INTERVAL_MS);
   };
+
+  // The server keepalive is a named `heartbeat` event (a bare `: comment` never reaches the page).
+  es.addEventListener('heartbeat', () => {
+    serverSendsHeartbeatEvents = true;
+    globalLastMessage = Date.now();
+  });
 
   es.onmessage = (ev) => {
     globalLastMessage = Date.now();
@@ -425,6 +447,7 @@ export async function connectGlobalSse(
   };
 
   es.onerror = () => {
+    stopHeartbeatWatchdog();
     globalConsecutiveFailures += 1;
     store.consecutiveFailures = globalConsecutiveFailures;
 
@@ -454,10 +477,7 @@ export function disconnectGlobalSse(
 ) {
   const updateStatus = setSseStatus || ((status) => useUIStore.getState().setSseStatus(status));
 
-  if (globalHeartbeatTimer !== null) {
-    clearInterval(globalHeartbeatTimer);
-    globalHeartbeatTimer = null;
-  }
+  stopHeartbeatWatchdog();
   if (globalReconnectTimeout !== null) {
     clearTimeout(globalReconnectTimeout);
     globalReconnectTimeout = null;

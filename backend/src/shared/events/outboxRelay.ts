@@ -5,6 +5,7 @@
 // the next claim picks it up again.
 import { OutboxEvent, type IOutboxEvent } from '../../db/models/outboxEvent.model.js';
 import type { DomainEventEnvelope } from './eventContract.js';
+import { withTraceContext } from '../tracing/propagation.js';
 
 export const OUTBOX_LEASE_MS = 30_000;
 export const OUTBOX_MAX_ATTEMPTS = 10;
@@ -89,7 +90,10 @@ export class OutboxRelay {
     try {
       const envelope = toEnvelope(event);
       const queues = this.opts.resolveQueues(event.type);
-      for (const queue of queues) await this.opts.enqueue(queue, event.eventId, envelope);
+      // BullMQ derives its job telemetry from the context active during queue.add.
+      await withTraceContext({ traceparent: event.traceContext?.traceparent }, async () => {
+        for (const queue of queues) await this.opts.enqueue(queue, event.eventId, envelope);
+      });
       await OutboxEvent.updateOne(
         { _id: event._id, status: 'processing' },
         { $set: { status: 'published', publishedAt: this.now(), leaseExpiresAt: null, lastError: null } },

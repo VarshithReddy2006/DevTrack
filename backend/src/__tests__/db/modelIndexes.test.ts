@@ -41,6 +41,7 @@ import '../../db/models/feedbackReport.model.js';
 import '../../db/models/fineTuneRun.model.js';
 import '../../db/models/focusSession.model.js';
 import '../../db/models/intelligenceRecommendation.model.js';
+import '../../db/models/jobTarget.model.js';
 import '../../db/models/leagueStanding.model.js';
 import '../../db/models/mlBaseline.model.js';
 import '../../db/models/mlExperiment.model.js';
