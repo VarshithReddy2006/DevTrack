@@ -22,10 +22,7 @@ export function reportError(error: unknown, context: ErrorContext = {}): void {
   const errorObj = error instanceof Error ? error : new Error(String(error));
 
   // 1. Log locally with structured metadata
-  logger.error(`[MONITORING] Error reported: ${errorObj.message}`, {
-    stack: errorObj.stack,
-    ...context,
-  });
+  logger.error('[MONITORING] Error reported', errorObj, { ...context });
 
   // 2. Production-only integrations
   if (env.IS_PROD) {

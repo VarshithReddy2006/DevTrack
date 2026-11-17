@@ -2,6 +2,7 @@
 import { Worker, Job, WorkerOptions } from 'bullmq';
 import { getRedisClient } from '../../shared/redis/index.js';
 import { logger } from '../../shared/logger.js';
+import { getQueueTelemetry } from '../../shared/tracing/queueTelemetry.js';
 import { ErrorClassifier, NonRetryableError } from './ErrorClassifier.js';
 import { DeadLetterHandler } from './DeadLetterHandler.js';
 import { RetryPolicy } from './RetryPolicy.js';
@@ -68,6 +69,7 @@ export class WorkerFactory {
       },
       {
         connection: getRedisClient(),
+        telemetry: getQueueTelemetry(),
         concurrency: workerOptions.concurrency || 3,
         settings: {
           backoffStrategy: RetryPolicy.getCustomBackoffLogic()

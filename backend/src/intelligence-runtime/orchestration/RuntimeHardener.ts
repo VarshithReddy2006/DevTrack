@@ -34,7 +34,7 @@ export class RuntimeHardener {
       return await executionBlock();
     } catch (error: any) {
       metricsTracker.recordFailure('worker', `${workerName}_crash`);
-      logger.error(`[RuntimeHardener] Worker ${workerName} crashed, isolating failure. Error: ${error.message}`);
+      logger.error('[RuntimeHardener] Worker crashed, isolating failure', error, { workerName });
       return null;
     }
   }

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Queue, Job, Worker, UnrecoverableError, type JobsOptions, type WorkerOptions } from 'bullmq';
 import { getRedisClient } from '../redis/client.js';
 import { logger } from '../logger.js';
+import { getQueueTelemetry } from '../tracing/queueTelemetry.js';
 import { QueueNames } from './types.js';
 import { NonRetryableError } from '../../infrastructure/queues/ErrorClassifier.js';
 
@@ -34,7 +35,7 @@ class DlqManager {
   constructor(private parentQueue: string) {
     // BullMQ rejects ':' in queue names. These entries wait for admin action;
     // there is intentionally no consumer for this queue.
-    this.queue = new Queue<DlqEntry>(`${parentQueue}-dlq`, { connection: getRedisClient() });
+    this.queue = new Queue<DlqEntry>(`${parentQueue}-dlq`, { connection: getRedisClient(), telemetry: getQueueTelemetry() });
   }
 
   async addFailedJob(job: Job, reason: string, attempts: number, maxAttempts: number, error?: Error): Promise<DlqEntry> {
@@ -167,7 +168,7 @@ export function createDlqWorker<T = any>(
       if (error instanceof NonRetryableError || error instanceof UnrecoverableError) job.discard();
       throw error;
     }
-  }, options);
+  }, { telemetry: getQueueTelemetry(), ...options });
   attachWorkerDlq(worker, queueName);
   return worker;
 }
