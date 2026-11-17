@@ -132,7 +132,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `profile-rebuild` | Profile stat reconstruction |
 | `readiness-*` | Readiness snapshot and domain rebuilds |
 | `resume-*` | Upload, ATS, semantic, embedding, credibility, variant, export |
-| `system-maintenance` | Scheduled cleanup and reconciliation |
+| `system-maintenance` | Scheduled cleanup and reconciliation, daily/weekly mission generation, platform sync sweep (all BullMQ repeatables) |
 | `dataset-ingestion` | Dataset scan and ingest (ops) |
 
 ### Worker topology

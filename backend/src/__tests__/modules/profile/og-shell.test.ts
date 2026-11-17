@@ -35,6 +35,7 @@ async function makeProfile(slug: string, indexable = true) {
     userId: new Types.ObjectId(),
     username: slug,
     slug,
+    published: true,
     visibility: 'public',
     isIndexable: indexable,
     snapshot: { identity: { displayName: 'Sam & Jules <Team>' } },
