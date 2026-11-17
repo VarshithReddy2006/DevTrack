@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ============================================================================
-# Multi-stage Dockerfile for DevTrack Frontend
+# Multi-stage Dockerfile for DevTrack Frontend (repository root build context)
 # ============================================================================
 
 # ── Stage 1: Build ──────────────────────────────────────────────────────────
@@ -8,13 +8,14 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
+COPY frontend/package*.json frontend/.npmrc ./
+COPY packages/contracts/ /packages/contracts/
 # Use `npm install` to avoid failing builds when package.json and lockfile
 # are out of sync inside the build environment. Developers should keep the
 # lockfile in sync locally/CI for deterministic installs.
 RUN npm install
 
-COPY . .
+COPY frontend/ ./
 
 # Build args for frontend environment variables
 ARG VITE_API_BASE_URL
@@ -31,7 +32,7 @@ FROM nginx:1.25-alpine AS production
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Copy nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Setup non-root user for Nginx
 RUN chown -R nginx:nginx /usr/share/nginx/html && \

@@ -16,7 +16,7 @@
     "worker:maintenance": "tsx src/worker-entrypoint.ts maintenance",
     "worker:resume-intelligence": "tsx src/worker-entrypoint.ts resume-intelligence",
     "worker:dataset": "tsx src/worker-entrypoint.ts dataset",
-    "postinstall": "node build-ats-core.mjs",
+    "postinstall": "node build-ats-core.mjs && node node_modules/@devtrack/contracts/build-for-app.mjs",
     "prebuild": "node build-ats-core.mjs",
     "build": "tsc -p tsconfig.json && node fix-esm-imports.mjs",
     "start": "node dist/index.js",
@@ -35,6 +35,7 @@
     "test:e2e:server": "tsx tests/e2e-resume-server.ts"
   },
   "dependencies": {
+    "@devtrack/contracts": "file:../packages/contracts",
     "@clerk/backend": "^3.8.2",
     "@clerk/express": "^2.1.22",
     "@devtrack/ats-core": "file:../packages/ats-core",
