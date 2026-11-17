@@ -46,7 +46,7 @@ export interface StreakDayItem {
 
 // ─── Core streak recorder ─────────────────────────────────────────────────────
 
-export async function recordActivity(payload: RecordActivityPayload): Promise<void> {
+export async function recordActivity(payload: RecordActivityPayload, options?: { trustedCompletion?: boolean }): Promise<void> {
   const { userId, streakType, source, activityDate = new Date(), timezone = 'UTC', metadata = {} } = payload;
   const userObjId = new Types.ObjectId(userId);
 
@@ -57,7 +57,7 @@ export async function recordActivity(payload: RecordActivityPayload): Promise<vo
   // ── Step 2: Anti-cheat validation ─────────────────────────────────────────
   const now = new Date();
   const daysDiff = Math.floor((now.getTime() - normalizedDate.getTime()) / (1000 * 60 * 60 * 24));
-  if (daysDiff > MAX_VALID_AGE_DAYS) {
+  if (!options?.trustedCompletion && daysDiff > MAX_VALID_AGE_DAYS) {
     logger.warn('[streak] Activity rejected: too old', {
       event: 'streak_rejected_old',
       userId,

@@ -154,6 +154,10 @@ export const QueueNames = {
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',
+  DOMAIN_FOCUS_XP: 'domain-focus-xp',
+  DOMAIN_FOCUS_STREAK: 'domain-focus-streak',
+  DOMAIN_FOCUS_MISSIONS: 'domain-focus-missions',
+  DOMAIN_FOCUS_ACTIVITY: 'domain-focus-activity',
 
   // Readiness Decoupled Pipelines
   READINESS_DSA: 'readiness-dsa',

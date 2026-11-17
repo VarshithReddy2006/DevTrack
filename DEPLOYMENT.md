@@ -228,6 +228,13 @@ Services: `mongo` (7), `redis` (7-alpine), `backend`, `frontend` (Nginx).
 - `worker-sync` (2 replicas), `worker-xp`, `worker-readiness`, `worker-resume`, `worker-dataset`, `worker-maint`
 - `mongo`, `redis` with health checks
 
+Focus completion requires a MongoDB replica set and an active `xp` worker. Set
+`MONGODB_URI` to a replica-set connection for production Compose deployments,
+whose bundled MongoDB service is standalone. Deploy the updated API and `xp`
+worker together so the worker can drain both existing XP jobs and newly
+committed focus events. A completed session returns its saved XP decision
+immediately. XP, streaks, missions, activity and readiness update asynchronously.
+
 Use `docker compose --env-file .env.production -f docker-compose.prod.yml ...`
 when `.env.production` supplies values used in Compose interpolation (for example
 `MONGODB_URI`, `MONGO_USER`, `MONGO_PASS`, or `API_PORT`). The file is also loaded

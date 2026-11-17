@@ -6,6 +6,7 @@
 // ============================================================================
 
 import mongoose, { Document, Schema } from 'mongoose';
+import type { FocusXpReason } from '../../modules/activity/focusXpDecision.js';
 
 export interface IFocusPause {
   startedAt: Date;
@@ -38,6 +39,7 @@ export interface IFocusSession extends Document {
   coveredHeartbeatIntervals?: number;
   lastCoveredHeartbeatInterval?: number;
   distractionEvents: number;
+  xp?: { amount: number; reason: FocusXpReason; capApplied: boolean };
 
   // Work Output (linked from activity tracking during session)
   filesModified?: number;
@@ -82,6 +84,10 @@ const FocusSessionSchema = new Schema<IFocusSession>(
     coveredHeartbeatIntervals: { type: Number, default: 0 },
     lastCoveredHeartbeatInterval: { type: Number, default: 0 },
     distractionEvents: { type: Number, default: 0 },
+    xp: {
+      type: new Schema({ amount: Number, reason: String, capApplied: Boolean }, { _id: false }),
+      default: undefined,
+    },
 
     filesModified: { type: Number, default: 0 },
     commitsMade: { type: Number, default: 0 },
@@ -130,6 +136,7 @@ FocusSessionSchema.pre(['findOneAndUpdate', 'updateOne', 'updateMany'], function
 // Indexes for history queries
 FocusSessionSchema.index({ userId: 1, startedAt: -1 });
 FocusSessionSchema.index({ userId: 1, status: 1 });
+FocusSessionSchema.index({ userId: 1, status: 1, completedAt: 1 });
 // Partial unique index enforcing strict one-open-session constraint per user
 FocusSessionSchema.index(
   { userId: 1, isOpen: 1 },

@@ -32,6 +32,15 @@ class DuplicateInboxError extends Error {
  */
 export async function runConsumer<P = unknown>(
   consumer: ConsumerDefinition<P>,
+  event: DomainEventEnvelope<any, P>,
+): Promise<RunConsumerResult> {
+  const result = await executeConsumer(consumer, event);
+  await consumer.afterCommit?.(event);
+  return result;
+}
+
+async function executeConsumer<P>(
+  consumer: ConsumerDefinition<P>,
   event: DomainEventEnvelope<any, P>
 ): Promise<RunConsumerResult> {
   const { name: consumerName, dedup } = consumer;
@@ -93,7 +102,7 @@ export async function runConsumer<P = unknown>(
                   ? new Types.ObjectId(event.userId)
                   : undefined,
                 processedAt: new Date(),
-                ttlExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                ttlExpiresAt: consumer.retainInbox ? undefined : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
                 result: { success: true },
               },
             ],
@@ -199,7 +208,7 @@ export async function executeInboxNonTransactional<P>(
         ? new Types.ObjectId(event.userId)
         : undefined,
       processedAt: new Date(),
-      ttlExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      ttlExpiresAt: consumer.retainInbox ? undefined : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       result: { success: true },
     });
   } catch (err: unknown) {
