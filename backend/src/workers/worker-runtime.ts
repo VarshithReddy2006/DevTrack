@@ -95,6 +95,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../modules/readiness/workers/domainReadiness.worker.js');
     return { start: m.startDomainReadinessWorker, stop: m.stopDomainReadinessWorker };
   } },
+  { role: 'xp', load: async () => {
+    const m = await import('./focus-completion.worker.js');
+    return m.createFocusCompletionWorkers();
+  } },
   { role: 'maintenance', queueName: 'league-rollover', load: async () => {
     const m = await import('../modules/leagues/workers/weeklyRollover.worker.js');
     return { start: async () => { m.startWeeklyRolloverWorker(); await m.scheduleWeeklyRollover(); }, stop: m.stopWeeklyRolloverWorker };

@@ -322,7 +322,8 @@ export class UnifiedRuntimeStateService {
     const state = await this.getRuntimeStateFresh(userId);
     if (!state?.sessionContext?.isActive || !state.sessionContext.sessionId) return null;
     const { focusEngine } = await import('../activity/focusEngine.service.js');
-    await focusEngine.abortSession(state.sessionContext.sessionId, userId);
+    const cancelled = await focusEngine.abortSession(state.sessionContext.sessionId, userId);
+    if (!cancelled) return null;
     const updated = await this.updateFromEvent({
       eventId: `focus_cancel_${userId}_${Date.now()}`,
       eventType: 'focus_session_cancelled', userId, timestamp: new Date(), data: {},
@@ -352,40 +353,19 @@ export class UnifiedRuntimeStateService {
     });
   }
 
-  /**
-   * Stops the user's focus session. `completed` is set only for the call that
-   * actually moved a running/paused session to completed, so callers can award
-   * XP and streak exactly once. Replays and stops with no session return
-   * `completed: null` and leave the runtime state alone.
-   */
   async stopFocusSession(userId: string): Promise<{ state: IUnifiedRuntimeState; completed: FocusSessionResult | null }> {
     const state = await this.getRuntimeStateFresh(userId);
-    const sessionId = state?.sessionContext?.sessionId;
-    let completed: FocusSessionResult | null = null;
-
-    if (sessionId) {
-      const { focusEngine } = await import('../activity/focusEngine.service.js');
-      completed = await focusEngine.completeSession(sessionId, userId);
-    }
-
-    // Nothing was running and the stored context is already inactive: no-op.
-    if (!completed && !state?.sessionContext?.isActive) {
+    const context = state?.sessionContext;
+    if (!state || !context?.isActive || !context.sessionId) {
       return { state: state ?? await this.rebuildRuntimeState(userId), completed: null };
     }
 
-    const updated = await this.updateFromEvent({
-      eventId: `focus_stop_${userId}_${Date.now()}`,
-      eventType: 'focus_session_stopped',
-      userId,
-      timestamp: new Date(),
-      data: {
-        stoppedAt: new Date(),
-        qualityScore: completed?.qualityScore ?? 100,
-        activeDurationMs: completed?.activeDurationMs ?? state?.sessionContext?.activeDurationMs ?? 0,
-      },
-    });
-    return { state: updated, completed };
+    const { focusEngine } = await import('../activity/focusEngine.service.js');
+    const completed = await focusEngine.completeSession(context.sessionId, userId);
+    const currentState = await this.getRuntimeState(userId);
+    return { state: currentState ?? state, completed: completed?.replayed ? null : completed };
   }
+
 
   async invalidateState(userId: string): Promise<void> {
     await UnifiedRuntimeState.deleteOne({ userId: new Types.ObjectId(userId) });

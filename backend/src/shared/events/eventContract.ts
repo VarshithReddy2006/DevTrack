@@ -2,6 +2,8 @@
 // Every event in the system MUST use this envelope format.
 // This ensures correlation/causation tracing, schema evolution, and replay safety.
 
+import { z } from 'zod';
+
 // ---------------------------------------------------------------------------
 // Canonical Event Envelope
 // ---------------------------------------------------------------------------
@@ -123,9 +125,23 @@ export interface FocusSessionCompletedPayload {
   plannedDurationMinutes: number;
   activeDurationMs: number;
   coveredHeartbeatIntervals?: number;
+  qualified?: boolean;
   /** ISO-8601; falls back to the envelope timestamp when absent. */
   completedAt?: string;
 }
+
+export const focusSessionCompletedV1Schema = z.object({
+  sessionId: z.string().regex(/^[a-f0-9]{24}$/),
+  plannedDurationMinutes: z.number().finite(),
+  activeDurationMs: z.number().finite().nonnegative(),
+  coveredHeartbeatIntervals: z.number().int().nonnegative(),
+  completedAt: z.string().datetime(),
+  mode: z.string().min(1),
+  timezone: z.string().min(1),
+  qualified: z.boolean(),
+});
+
+export type FocusSessionCompletedV1 = z.infer<typeof focusSessionCompletedV1Schema>;
 
 export interface RevisionReviewedPayload {
   cardId: string;

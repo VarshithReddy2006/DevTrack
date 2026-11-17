@@ -3,7 +3,6 @@ import type { Response } from 'express';
 import type { AuthenticatedRequest } from '../../middleware/auth.js';
 import * as service from './activity.service.js';
 import { focusEngine, type FocusHistoryOptions } from './focusEngine.service.js';
-import { computeActiveSec, decideFocusXp } from './focusXpDecision.js';
 import { successResponse, commonErrors, deleteResponse, mutationResponse } from '../../shared/response.js';
 
 /**
@@ -140,58 +139,6 @@ export async function stopFocusSession(req: AuthenticatedRequest, res: Response)
   if (!completed) {
     successResponse(res, state.sessionContext, 'No running focus session to stop');
     return;
-  }
-
-  // One session, one ledger key: a retry or double click collapses in the XP
-  // unique index and in the streak log's per-day source list.
-  const sourceId = `focus_${completed.sessionId}`;
-
-  // Record as an activity event
-  await service.createActivity(req.user!.id, {
-    type: 'focus_session',
-    title: 'Focus Session Completed',
-    description: `Completed a ${state.sessionContext.duration ?? 25} minute focus session.`,
-    platform: 'devtrack',
-    url: null,
-    tags: [],
-    metadata: {
-      duration: state.sessionContext.duration || 0,
-      mode: state.sessionContext.mode || 'pomodoro',
-    },
-  });
-
-  // Award XP
-  const { getXpProcessingQueue } = await import('../../shared/jobs/index.js');
-  const queue = getXpProcessingQueue();
-  await queue.add('focus-session-completed', {
-    userId: req.user!.id,
-    sourceType: 'focus_session',
-    sourceId,
-  });
-
-  // Fetch user's timezone from DB
-  const { User } = await import('../../db/models/index.js');
-  const userObj = await User.findById(req.user!.id).select('timezone').lean();
-  const timezone = (userObj as any)?.timezone || 'UTC';
-
-  // Record streak
-  const { recordActivity } = await import('../streak/streak.service.js');
-  await recordActivity({
-    userId: req.user!.id,
-    streakType: 'focus',
-    source: sourceId,
-    timezone,
-  });
-
-  // The winning stop records mission progress based on qualification even when
-  // the asynchronous XP award is capped.
-  if (decideFocusXp({
-    plannedSec: completed.plannedDurationMinutes * 60,
-    activeSec: computeActiveSec(completed.activeDurationMs),
-    coveredHeartbeatIntervals: completed.coveredHeartbeatIntervals,
-  }, []).qualified) {
-    const { updateMissionProgress } = await import('../missions/missionProgress.service.js');
-    await updateMissionProgress(req.user!.id, 'streak_day');
   }
 
   successResponse(res, state.sessionContext, 'Focus session stopped and recorded');
