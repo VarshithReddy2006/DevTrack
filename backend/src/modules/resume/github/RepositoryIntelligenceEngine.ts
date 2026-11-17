@@ -1,76 +1,96 @@
-// src/modules/resume-intelligence/github/RepositoryIntelligenceEngine.ts
-import { logger } from '../../../shared/logger.js';
+import { z } from 'zod';
+import { parseGitHubRepositoryUrl, requestGitHub } from '../../projects/project-github-sync.js';
 
-/**
- * RepositoryIntelligenceEngine
- * 
- * Deep engineering maturity analysis of GitHub repositories.
- */
-export class RepositoryIntelligenceEngine {
-  private infraDetector: InfraPatternDetector;
-  private archAnalyzer: ArchitectureMaturityAnalyzer;
-  private deployScanner: DeploymentEvidenceScanner;
-  private cicdExtractor: CICDSignalExtractor;
-  private complexityAnalyzer: EngineeringComplexityAnalyzer;
+const repositorySchema = z.object({
+  private: z.boolean(),
+  default_branch: z.string().min(1),
+  full_name: z.string().min(1),
+  language: z.string().nullable(),
+});
 
-  constructor() {
-    this.infraDetector = new InfraPatternDetector();
-    this.archAnalyzer = new ArchitectureMaturityAnalyzer();
-    this.deployScanner = new DeploymentEvidenceScanner();
-    this.cicdExtractor = new CICDSignalExtractor();
-    this.complexityAnalyzer = new EngineeringComplexityAnalyzer();
+const treeSchema = z.object({
+  sha: z.string().min(1),
+  truncated: z.boolean(),
+  tree: z.array(z.object({ path: z.string().min(1), type: z.string() })),
+});
+
+async function readGitHubResponse(response: Response): Promise<unknown> {
+  if (response.status === 429 || (response.status === 403
+      && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))) {
+    throw new Error('GitHub API rate limit exceeded');
   }
+  if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
+  return response.json();
+}
 
-  /**
-   * Analyze a repository for deep engineering maturity
-   */
-  async analyzeRepository(repoUrl: string): Promise<any> {
-    logger.info(`[GithubIntelligence] Deep analysis for ${repoUrl}`);
-    
-    // In a real implementation, we would fetch repo content via GitHub API
-    const repoContent = { files: [], structure: {} };
+function analyzePaths(paths: string[]) {
+  const architecture = [
+    ['Controllers', /(^|\/)controllers?\//i],
+    ['Models', /(^|\/)models?\//i],
+    ['Views', /(^|\/)views?\//i],
+    ['Routes', /(^|\/)routes?\//i],
+    ['Services', /(^|\/)services?\//i],
+  ] as const;
+  const deployments = [
+    ['Vercel', /(^|\/)vercel\.json$/i],
+    ['Netlify', /(^|\/)netlify\.toml$/i],
+    ['Render', /(^|\/)render\.ya?ml$/i],
+    ['Fly.io', /(^|\/)fly\.toml$/i],
+  ] as const;
+  const platforms = deployments.filter(([, pattern]) => paths.some(path => pattern.test(path)))
+    .map(([name]) => name);
+  const workflowCount = paths.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/i.test(path)).length;
+
+  return {
+    infra: {
+      hasDocker: paths.some(path => /(^|\/)(Dockerfile(?:\.[^/]+)?|(?:docker-)?compose(?:\.[^/]+)?\.ya?ml)$/i.test(path)),
+      hasKubernetes: paths.some(path => /(^|\/)(k8s|kubernetes)\/.+\.ya?ml$|(^|\/)(Chart\.yaml|kustomization\.ya?ml)$/i.test(path)),
+    },
+    architecture: {
+      patterns: architecture.filter(([, pattern]) => paths.some(path => pattern.test(path)))
+        .map(([name]) => name),
+      hasTests: paths.some(path => /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.[^/]+$/i.test(path)),
+    },
+    deployment: { evidenceFound: platforms.length > 0, platform: platforms[0] ?? null, platforms },
+    cicd: { workflowCount, platform: workflowCount ? 'GitHub Actions' : null },
+    complexity: {
+      fileCount: paths.length,
+      maxDirectoryDepth: paths.reduce((max, path) => Math.max(max, path.split('/').length - 1), 0),
+    },
+  };
+}
+
+export class RepositoryIntelligenceEngine {
+  constructor(private readonly fetcher: typeof fetch = fetch) {}
+
+  async analyzeRepository(repoUrl: string) {
+    const repository = parseGitHubRepositoryUrl(repoUrl);
+    if (!repository) return { status: 'unavailable', reason: 'invalid-url' } as const;
+
+    const base = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
+    const response = await requestGitHub(base, this.fetcher);
+    if (response.status === 404) return { status: 'unavailable', reason: 'repository-unavailable' } as const;
+
+    const data = repositorySchema.parse(await readGitHubResponse(response));
+    if (data.private) return { status: 'unavailable', reason: 'repository-unavailable' } as const;
+
+    const treeResponse = await requestGitHub(
+      `${base}/git/trees/${encodeURIComponent(data.default_branch)}?recursive=1`,
+      this.fetcher,
+    );
+    if (treeResponse.status === 404) return { status: 'unavailable', reason: 'tree-unavailable' } as const;
+
+    // GitHub returns 409 for the tree of an empty repository.
+    const tree = treeResponse.status === 409 ? null : treeSchema.parse(await readGitHubResponse(treeResponse));
+    const paths = tree?.tree.filter(entry => entry.type === 'blob').map(entry => entry.path) ?? [];
 
     return {
-      infra: await this.infraDetector.detectPatterns(repoContent),
-      architecture: await this.archAnalyzer.analyze(repoContent),
-      deployment: await this.deployScanner.scan(repoContent),
-      cicd: await this.cicdExtractor.extract(repoContent),
-      complexity: await this.complexityAnalyzer.calculate(repoContent),
+      status: tree?.truncated ? 'partial' as const : 'complete' as const,
+      repository: data.full_name,
+      language: data.language,
+      defaultBranch: data.default_branch,
+      treeSha: tree?.sha ?? null,
+      ...analyzePaths(paths),
     };
-  }
-}
-
-// src/modules/resume-intelligence/github/InfraPatternDetector.ts
-export class InfraPatternDetector {
-  async detectPatterns(content: any): Promise<any> {
-    return { hasDocker: true, hasKubernetes: false };
-  }
-}
-
-// src/modules/resume-intelligence/github/ArchitectureMaturityAnalyzer.ts
-export class ArchitectureMaturityAnalyzer {
-  async analyze(content: any): Promise<any> {
-    return { patterns: ['MVC', 'RestAPI'], maturity: 0.8 };
-  }
-}
-
-// src/modules/resume-intelligence/github/DeploymentEvidenceScanner.ts
-export class DeploymentEvidenceScanner {
-  async scan(content: any): Promise<any> {
-    return { evidenceFound: true, platform: 'Vercel' };
-  }
-}
-
-// src/modules/resume-intelligence/github/CICDSignalExtractor.ts
-export class CICDSignalExtractor {
-  async extract(content: any): Promise<any> {
-    return { workflowCount: 2, platform: 'GitHub Actions' };
-  }
-}
-
-// src/modules/resume-intelligence/github/EngineeringComplexityAnalyzer.ts
-export class EngineeringComplexityAnalyzer {
-  async calculate(content: any): Promise<any> {
-    return { cyclomaticComplexity: 15, depth: 0.75 };
   }
 }

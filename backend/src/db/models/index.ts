@@ -11,6 +11,7 @@ export * from './readinessSkills.model.js';
 export * from './readinessProjects.model.js';
 export * from './readinessRoadmap.model.js';
 export * from './readinessBenchmarks.model.js';
+export * from './readinessInput.model.js';
 export { IntelligenceRecommendation, type IIntelligenceRecommendation, type RecommendationCategory, type RecommendationState } from './intelligenceRecommendation.model.js';
 export * from './datasetIngestion.model.js';
 

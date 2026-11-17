@@ -362,6 +362,12 @@ Run `npm run migrate:leagues --prefix backend -- up` with `MONGODB_URI` explicit
 
 Live standings are Redis sorted sets named `league:{weekKey}:{division}:{cohortId}`, scored by the `league-score` queue. The `league-rollover` repeatable job (Sunday 00:00 UTC) is scheduled by the `maintenance` worker role and the score worker runs in the `xp` role. If Redis is flushed, the next standings read rebuilds the affected cohort from the `XpTransaction` ledger.
 
+### Embedding per-user uniqueness migration
+
+Run `npm run migrate:embedding-user-hash --prefix backend -- up` with `MONGODB_URI` explicitly set. It builds `uq_embeddings_user_hash` (`{ userId: 1, contentHash: 1 }`, unique) and then drops the old global `contentHash_1` unique index, so two users can embed the same text. Existing rows cannot violate the new index. `down` restores `contentHash_1` and fails with a duplicate key error if two owners now share a hash; it never deletes embeddings to make that pass.
+
+Semantic retrieval uses Atlas `$vectorSearch` when a queryable search index named `embeddings_vector_idx` exists on the `embeddings` collection (vector field `vector`, filter fields `scope`, `userId`, `dimensions`, `contentType`, `numDimensions` matching your embedding model). On a plain MongoDB container there is no such index and retrieval falls back to in-process cosine similarity over the caller's own embeddings, no setup needed.
+
 ## Security & Performance Hardening
 
 * **Tiered Rate Limiting:** High-sensitivity authentication and sync routes enforce strict windows (5 requests per 15 min), while dashboard reads allow higher throughput (`backend/src/middleware/rateLimitAdvanced.ts`).

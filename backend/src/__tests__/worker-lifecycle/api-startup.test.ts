@@ -110,7 +110,10 @@ it.each(['SIGTERM', 'SIGINT'] as const)('drains resources in order when it recei
   const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   let finishMongoClose!: () => void;
   state.mongoClose.mockReturnValueOnce(new Promise<void>(resolve => { finishMongoClose = resolve; }));
-  registerShutdownSignals(server);
+  let finishTelemetry!: () => void;
+  const telemetryDone = new Promise<void>(resolve => { finishTelemetry = resolve; });
+  const flushTelemetry = vi.fn(() => telemetryDone);
+  registerShutdownSignals(server, flushTelemetry);
   const sigtermHandler = process.listeners('SIGTERM').at(-1)!;
   const sigintHandler = process.listeners('SIGINT').at(-1)!;
 
@@ -120,18 +123,22 @@ it.each(['SIGTERM', 'SIGINT'] as const)('drains resources in order when it recei
     handler(signal);
     const draining = shutdown();
     await vi.waitFor(() => expect(state.mongoClose).toHaveBeenCalledOnce());
+    expect(flushTelemetry).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
     finishMongoClose();
     await draining;
+    await vi.waitFor(() => expect(flushTelemetry).toHaveBeenCalledOnce());
+    expect(exit).not.toHaveBeenCalled();
+    finishTelemetry();
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(0));
 
     expect(httpClose).toHaveBeenCalledOnce();
     expect(state.stop).toHaveBeenCalledExactlyOnceWith(5000);
     const calls = [
       httpClose, state.sseDrain, state.stop, state.queuesClose, state.flush,
-      state.sseClose, state.redisClose, state.mongoClose, exit,
+      state.sseClose, state.redisClose, state.mongoClose, flushTelemetry, exit,
     ].map(mock => mock.mock.invocationCallOrder[0]);
     expect(calls).toEqual([...calls].sort((a, b) => a - b));
-    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
   } finally {
     process.off('SIGTERM', sigtermHandler);
     process.off('SIGINT', sigintHandler);

@@ -10,8 +10,9 @@ import { LoginPage } from '../pages/LoginPage';
 import { SignupPage } from '../pages/SignupPage';
 import { LandingPage } from '../pages/LandingPage';
 import FocusPage from '../pages/FocusPage';
-import { INTERVIEW_STUDIO_FLAG, INTERVIEW_STUDIO_PATH } from '../features/interview/interview';
 import { FlagRoute } from './FlagRoute';
+import { INTERVIEW_STUDIO_FLAG, INTERVIEW_STUDIO_PATH } from '../features/interview/interview';
+import { JOB_TARGET_FLAG } from '../features/resume-tracker/jobTargets';
 
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const DsaPage = lazy(() => import('../pages/DsaPage'));
@@ -21,6 +22,7 @@ const LeaguesPage = lazy(() => import('../features/leagues/LeaguesPage'));
 const ProjectsPage = lazy(() => import('../pages/ProjectsPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
 const ProfilePage = lazy(() => import('../pages/ProfilePage'));
+const PortfolioSettingsPage = lazy(() => import('../pages/PortfolioSettingsPage'));
 const AdminPage = lazy(() => import('../pages/AdminPage'));
 const ReadinessPage = lazy(() => import('../pages/ReadinessPage'));
 const InterviewStudioPage = lazy(() => import('../pages/interview/InterviewStudioPage'));
@@ -29,12 +31,15 @@ const InterviewReviewPage = lazy(() => import('../pages/interview/InterviewRevie
 // Resume Tracker Workspace
 const ResumeEntryWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeEntryWorkspace').then(module => ({ default: module.ResumeEntryWorkspace })));
 const ResumeAnalysisWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeAnalysisWorkspace').then(module => ({ default: module.ResumeAnalysisWorkspace })));
+const JobTargetsWorkspace = lazy(() => import('../features/resume-tracker/pages/JobTargetsWorkspace').then(module => ({ default: module.JobTargetsWorkspace })));
+const JobTargetDetailWorkspace = lazy(() => import('../features/resume-tracker/pages/JobTargetDetailWorkspace').then(module => ({ default: module.JobTargetDetailWorkspace })));
 
 // Readiness Domain Workspaces
 const DSAIntelligencePage = lazy(() => import('../pages/readiness/DSAIntelligencePage'));
 const RoadmapIntelligencePage = lazy(() => import('../pages/readiness/RoadmapIntelligencePage'));
 const EvolutionIntelligencePage = lazy(() => import('../pages/readiness/EvolutionIntelligencePage'));
 const AIGuidancePage = lazy(() => import('../pages/readiness/AIGuidancePage'));
+const EvidenceLedgerPage = lazy(() => import('../pages/readiness/EvidenceLedgerPage'));
 const BetaDashboardPage = lazy(() => import('../pages/admin/BetaDashboardPage'));
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'));
 
@@ -200,6 +205,16 @@ export const AppRouter: React.FC = () => {
           }
         />
         <Route
+          path="/profile/portfolio"
+          element={
+            <ErrorBoundary pageName="Portfolio Settings">
+              <Suspense fallback={<PageFallback />}>
+                <PortfolioSettingsPage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
           path="/settings"
           element={
             <ErrorBoundary pageName="Settings">
@@ -259,6 +274,30 @@ export const AppRouter: React.FC = () => {
             </ErrorBoundary>
           }
         />
+        <Route
+          path="/resume/targets"
+          element={
+            <ErrorBoundary pageName="Job Targets">
+              <FlagRoute flagKey={JOB_TARGET_FLAG} redirectTo="/resume">
+                <Suspense fallback={<PageFallback />}>
+                  <JobTargetsWorkspace />
+                </Suspense>
+              </FlagRoute>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/resume/targets/:jobTargetId"
+          element={
+            <ErrorBoundary pageName="Job Target">
+              <FlagRoute flagKey={JOB_TARGET_FLAG} redirectTo="/resume">
+                <Suspense fallback={<PageFallback />}>
+                  <JobTargetDetailWorkspace />
+                </Suspense>
+              </FlagRoute>
+            </ErrorBoundary>
+          }
+        />
 
         {/* ─── Readiness Intelligence OS ─── */}
         <Route
@@ -307,6 +346,16 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="AI Guidance">
               <Suspense fallback={<PageFallback />}>
                 <AIGuidancePage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/readiness/evidence"
+          element={
+            <ErrorBoundary pageName="Evidence Ledger">
+              <Suspense fallback={<PageFallback />}>
+                <EvidenceLedgerPage />
               </Suspense>
             </ErrorBoundary>
           }

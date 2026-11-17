@@ -138,6 +138,9 @@ export const QueueNames = {
   LEAGUE_SCORE: 'league-score',
   LEAGUE_ROLLOVER: 'league-rollover',
   
+  // Domain event consumers (outbox relay delivers here)
+  DOMAIN_READINESS: 'domain-readiness',
+
   // Readiness Decoupled Pipelines
   READINESS_DSA: 'readiness-dsa',
   READINESS_PROJECTS: 'readiness-projects',

@@ -1,4 +1,5 @@
 // Standalone workers: reject invalid selectors before importing service modules.
+import { shutdownTelemetry } from './instrumentation.js';
 import { createWorkerRuntime } from './workers/worker-runtime.js';
 
 let disconnectDatabase: (() => Promise<void>) | undefined;
@@ -18,6 +19,7 @@ function shutdown(signal: string, code = 0): Promise<void> {
       log.error('[worker-entrypoint] Cleanup failed', error);
       exitCode = 1;
     }
+    await shutdownTelemetry().catch(error => log.error('[worker-entrypoint] Telemetry shutdown failed', error));
     process.exit(exitCode);
   })();
   return shutdownPromise;

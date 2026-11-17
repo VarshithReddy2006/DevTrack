@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { 
   Shield, 
   Code2, 
@@ -18,6 +18,8 @@ import { ATSScanTransition } from '../upload/ATSScanTransition';
 import { useSessionState } from '../state/useSessionState';
 import { useUIStore } from '../../../store/uiStore';
 import { analyticsService } from '../../../services/analyticsService';
+import { useFeatureFlags } from '../../flags/hooks/useFeatureFlags';
+import { JOB_TARGET_FLAG } from '../jobTargets';
 
 /* ────────────────────────────────────────────
    Intelligence Preview Cards Data
@@ -72,6 +74,7 @@ export const ResumeEntryWorkspace: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const navigate = useNavigate();
+  const { isEnabled } = useFeatureFlags();
   const { currentSession } = useSessionState();
   const { addToast } = useUIStore();
 
@@ -132,6 +135,11 @@ export const ResumeEntryWorkspace: React.FC = () => {
               <p className="text-[15px] text-dt-textSecondary font-medium mt-2 max-w-xl leading-relaxed">
                 Upload your resume and receive a professional ATS, credibility and role-fit assessment.
               </p>
+              {isEnabled(JOB_TARGET_FLAG) && (
+                <Link to="/resume/targets" className="mt-4 inline-flex items-center gap-2 rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50">
+                  <Target aria-hidden="true" size={16} /> Job targets
+                </Link>
+              )}
             </motion.div>
 
             {/* ═══════════════════════════════════════════

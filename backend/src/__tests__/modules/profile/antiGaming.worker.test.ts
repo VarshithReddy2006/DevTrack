@@ -124,6 +124,9 @@ it('hides badges and shows an under-review marker on the public profile while fl
       userId: user._id, username: user.username, slug: user.username,
       snapshot: { version: 2, achievements },
       antiGaming: { isFlagged, suspicionScore: isFlagged ? 80 : 0, flags: isFlagged ? ['abnormal_xp_velocity'] : [] },
+      published: true,
+      visibility: 'public',
+      sections: { streak: true, dsa: true, github: true, projects: true, activity: true },
     });
   }
 

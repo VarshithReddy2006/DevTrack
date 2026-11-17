@@ -1,0 +1,885 @@
+{
+  "version": 1,
+  "questions": [
+    {
+      "questionId": "be-101",
+      "role": "backend",
+      "difficulty": 1,
+      "topicKeys": ["requirements_scoping", "system_design", "api_design"],
+      "prompt": "Design a URL shortener that serves roughly 100 million new links a month and about 100 redirects per created link. Redirects must feel instant (p99 under 50 ms). Before drawing any boxes, tell me what you would clarify and what you would deliberately leave out of version one.",
+      "hints": [
+        "Separate functional requirements (create, redirect, expiry) from non-functional ones (latency, availability, durability).",
+        "Do the arithmetic: 100M writes a month is about 40 writes per second, and a 100:1 ratio makes this a read-heavy system.",
+        "Think about how the short code is generated (counter plus base62 versus hashing) and what a collision would cost you."
+      ],
+      "checklist": [
+        "States functional and non-functional requirements and asks about custom aliases, expiry and analytics before designing.",
+        "Estimates write and read QPS and storage, and concludes the system is read-heavy.",
+        "Explains short-code generation (base62 of a unique counter, or hash with collision handling) and its trade-offs.",
+        "Discusses 301 versus 302 redirects: 301 is cacheable by browsers but hides repeat clicks from analytics.",
+        "Puts a cache in front of the key-value store for hot links and names the single-table lookup as the core data path.",
+        "Scopes out analytics dashboards and abuse detection for a later version instead of designing everything at once."
+      ]
+    },
+    {
+      "questionId": "be-102",
+      "role": "backend",
+      "difficulty": 1,
+      "topicKeys": ["system_design", "message_queues", "requirements_scoping"],
+      "prompt": "Your product has 5 million users and needs one notification service that sends email, push and SMS on behalf of several other services. Walk me through the high-level architecture and how you would scope the first release.",
+      "hints": [
+        "Who are the callers? Decide on a single internal API that hides the delivery channel behind a notification type.",
+        "Sending is slow and unreliable, so the API should accept the request and hand the actual delivery to something asynchronous.",
+        "Think about user preferences, per-channel providers and what happens when a provider is down."
+      ],
+      "checklist": [
+        "Defines an internal API that accepts a notification type, recipient and payload, and returns quickly after persisting the request.",
+        "Uses a queue per channel (or per priority) so slow SMS providers do not block email, and workers scale independently.",
+        "Applies user preferences and quiet hours before sending, and stores templates separately from payload data.",
+        "Handles provider failure with retries and a fallback provider, and deduplicates with a request-level id.",
+        "Separates transactional messages (password reset) from bulk or marketing traffic so one cannot starve the other.",
+        "Names what is out of scope for release one, such as analytics, A/B templates or digest batching."
+      ]
+    },
+    {
+      "questionId": "be-201",
+      "role": "backend",
+      "difficulty": 2,
+      "topicKeys": ["data_modeling", "multi_tenancy", "database_indexing"],
+      "prompt": "Model the Postgres schema for a multi-tenant invoicing SaaS: tenants, customers, invoices, invoice lines and payments. Some tenants will be far larger than others. How do you isolate tenant data, represent money, and keep issued invoices trustworthy?",
+      "hints": [
+        "Compare three isolation models: shared tables with a tenant_id, schema per tenant, database per tenant.",
+        "Every hot query will filter by tenant, so think about which column comes first in your indexes.",
+        "What type would you refuse to use for money, and what should happen to an invoice after it is issued?"
+      ],
+      "checklist": [
+        "Compares shared-schema, schema-per-tenant and database-per-tenant in terms of isolation, operational cost and noisy neighbours.",
+        "Puts tenant_id on every table, uses composite foreign keys or row-level security so a query cannot cross tenants.",
+        "Leads composite indexes with tenant_id (for example tenant_id, created_at) and explains why.",
+        "Stores money as integer minor units or numeric with an explicit currency, never as floating point.",
+        "Makes issued invoices and their lines immutable (corrections via credit notes) and keeps a per-tenant sequential invoice number.",
+        "Mentions an escape hatch for very large tenants, such as moving them to their own database."
+      ]
+    },
+    {
+      "questionId": "be-202",
+      "role": "backend",
+      "difficulty": 2,
+      "topicKeys": ["pagination", "api_design", "database_indexing"],
+      "prompt": "An activity feed endpoint returns pages with LIMIT and OFFSET over a 50 million row table that receives constant inserts. Users report duplicate and missing items while scrolling, and deep pages are slow. Redesign the pagination.",
+      "hints": [
+        "What does the database actually do to serve OFFSET 1000000?",
+        "New rows inserted at the top shift every offset, which explains the duplicates and gaps.",
+        "A cursor can carry the sort key of the last row seen. What must be unique about that key?"
+      ],
+      "checklist": [
+        "Explains that OFFSET scans and discards rows, so cost grows linearly with the page number.",
+        "Explains that inserts between requests shift offsets and cause repeated or skipped items.",
+        "Proposes keyset (cursor) pagination, such as WHERE (created_at, id) < (:c, :id) ORDER BY created_at DESC, id DESC.",
+        "Uses a unique tiebreaker (the primary key) so rows with equal timestamps are never skipped.",
+        "Backs the query with a composite index that matches the ORDER BY, and returns an opaque encoded cursor.",
+        "Notes the trade-offs: no jump to page N, and an exact total count is expensive so it is often dropped or approximated."
+      ]
+    },
+    {
+      "questionId": "be-301",
+      "role": "backend",
+      "difficulty": 3,
+      "topicKeys": ["sql_query_optimization", "database_indexing"],
+      "prompt": "An orders endpoint went from p95 80 ms to 900 ms as the orders table grew past 20 million rows. The query joins orders to order_items, filters on status and a created_at range, and sorts by created_at. Walk me through how you diagnose and fix it.",
+      "hints": [
+        "Start from evidence: what tells you the plan that the database actually chose?",
+        "Look for a sequential scan, a sort spilling to disk, or a join order that changed after the data grew.",
+        "In a composite index, equality columns usually go before the range column. Does your index follow that?"
+      ],
+      "checklist": [
+        "Starts with EXPLAIN (ANALYZE, BUFFERS) and compares estimated versus actual row counts rather than guessing.",
+        "Checks table statistics (ANALYZE, autovacuum) because stale estimates can flip the plan.",
+        "Designs a composite index with the equality column (status) first, then the range or sort column (created_at).",
+        "Considers a covering index (INCLUDE) to enable index-only scans, and a partial index when one status dominates reads.",
+        "Checks for an N+1 pattern in the application layer and for a missing index on the order_items foreign key.",
+        "States the cost of the new index (slower writes, more storage) and validates the fix with before and after numbers."
+      ]
+    },
+    {
+      "questionId": "be-302",
+      "role": "backend",
+      "difficulty": 3,
+      "topicKeys": ["caching", "cache_invalidation"],
+      "prompt": "A product catalogue API is hammering the primary database. You add a Redis cache. Explain the caching pattern you would use, how entries get invalidated when a product changes, and what happens when a very popular entry expires.",
+      "hints": [
+        "Describe the read path and the write path separately. Who populates the cache?",
+        "Updating the cache on write and updating the database are two writes. Which is safer to do: update the cache entry or delete it?",
+        "Picture 5,000 requests arriving at the instant a hot key expires."
+      ],
+      "checklist": [
+        "Chooses cache-aside (lazy loading) and contrasts it with write-through and write-behind.",
+        "Invalidates by deleting the key after the database commit, and explains the race that makes updating the cached value risky.",
+        "Sets TTLs as a safety net, with random jitter so many keys do not expire together.",
+        "Handles the cache stampede with request coalescing (single flight), a short lock, or probabilistic early refresh.",
+        "Considers negative caching for missing products, with a short TTL.",
+        "Tracks hit ratio, eviction count and p99 latency to know whether the cache is actually helping."
+      ]
+    },
+    {
+      "questionId": "be-402",
+      "role": "backend",
+      "difficulty": 4,
+      "topicKeys": ["concurrency", "transactions_isolation"],
+      "prompt": "Two concurrent requests each withdraw 80 from an account holding 100. Both read the balance, both see enough funds, and the account ends at 20 instead of rejecting one of them. Show me how you would make this correct, and how the options differ.",
+      "hints": [
+        "Name the anomaly: two transactions read the same value and both write based on it.",
+        "You can make the check and the write one atomic statement, or make the second writer wait, or detect the conflict and retry.",
+        "What does the default isolation level in Postgres (read committed) allow here?"
+      ],
+      "checklist": [
+        "Identifies the lost update or write skew style race caused by read-then-write across separate statements.",
+        "Offers an atomic conditional update: UPDATE accounts SET balance = balance - 80 WHERE id = :id AND balance >= 80, and checks the affected row count.",
+        "Offers pessimistic locking with SELECT ... FOR UPDATE inside a transaction, and its cost under contention.",
+        "Offers optimistic concurrency with a version column and a retry on conflict.",
+        "Explains that serializable isolation also works but requires the application to retry serialization failures.",
+        "Adds a ledger of entries, instead of only a mutable balance, so the result can be audited and reconciled."
+      ]
+    },
+    {
+      "questionId": "be-401",
+      "role": "backend",
+      "difficulty": 4,
+      "topicKeys": ["idempotency", "retries_backoff", "failure_handling"],
+      "prompt": "A mobile client calls POST /payments, the request times out, and the client retries. Some customers were charged twice. Design the API behaviour so that retries are safe, including what the server stores and what it returns on a repeated request.",
+      "hints": [
+        "The client cannot know whether a timed-out request was processed. What can it send to let the server recognise a retry?",
+        "The server must remember the outcome of the first attempt. Where do you store it, and how do you handle two attempts arriving at the same time?",
+        "What should happen if the same key arrives with a different request body?"
+      ],
+      "checklist": [
+        "Requires a client-generated idempotency key (for example an Idempotency-Key header) on unsafe, non-idempotent endpoints.",
+        "Stores the key with a hash of the request and the final response, protected by a unique constraint so concurrent duplicates cannot both proceed.",
+        "Handles an in-flight duplicate (return 409 or wait) separately from a completed one (replay the stored response).",
+        "Rejects reuse of a key with a different payload with a client error.",
+        "Passes an idempotency key through to the payment provider so the charge itself is deduplicated.",
+        "Expires keys after a retention window and describes client retries with exponential backoff and jitter."
+      ]
+    },
+    {
+      "questionId": "be-403",
+      "role": "backend",
+      "difficulty": 4,
+      "topicKeys": ["background_jobs", "message_queues", "idempotency"],
+      "prompt": "A worker pool sends invoice emails from a job queue. A worker crashes halfway through a batch and some customers receive the same email twice, while one malformed job keeps failing and blocking others. How should the job system behave?",
+      "hints": [
+        "Think about when a job is acknowledged: before or after the work is done?",
+        "At-least-once delivery means duplicates are expected. Where do you deduplicate?",
+        "A job that fails forever needs somewhere to go other than back to the front of the queue."
+      ],
+      "checklist": [
+        "Explains acknowledgement semantics: ack after success gives at-least-once delivery, ack before gives at-most-once.",
+        "Describes the visibility timeout or lock lease that returns a crashed worker's job to the queue.",
+        "Makes the job idempotent, for example by recording a sent marker keyed by invoice id before or atomically with the send.",
+        "Limits attempts and applies exponential backoff with jitter for transient failures.",
+        "Moves poison messages to a dead-letter queue with alerting and a way to replay them after a fix.",
+        "Keeps jobs small and independent (one email per job) so failure of one does not block the batch."
+      ]
+    },
+    {
+      "questionId": "be-501",
+      "role": "backend",
+      "difficulty": 5,
+      "topicKeys": ["monitoring_slos", "observability"],
+      "prompt": "You own the checkout API of an online store. Define how you would measure its health and alert on it. What SLIs and SLOs would you pick, and how do you avoid waking the on-call engineer for things that do not matter?",
+      "hints": [
+        "Start from the user: what does a successful checkout look like, and what is unacceptably slow?",
+        "Averages hide tail latency. Which statistic would you track instead?",
+        "An SLO implies an error budget. How can the speed at which you burn it drive alerting?"
+      ],
+      "checklist": [
+        "Defines availability as good requests over valid requests, excluding client errors, and latency as a percentile (for example p99 under a threshold).",
+        "Sets an SLO such as 99.9 percent over 30 days, and states the error budget it implies (about 43 minutes of full downtime per 30 days).",
+        "Alerts on error budget burn rate with a fast window and a slow window instead of on raw CPU or single errors.",
+        "Collects rate, errors and duration (RED) metrics per endpoint, with low-cardinality labels.",
+        "Uses structured logs with a correlation id so an alert can be traced to concrete requests.",
+        "Describes how the budget is used in decisions, for example pausing risky releases when it is nearly spent."
+      ]
+    },
+    {
+      "questionId": "be-502",
+      "role": "backend",
+      "difficulty": 5,
+      "topicKeys": ["tradeoffs", "system_design", "scalability"],
+      "prompt": "Looking back: a team of eight engineers is deciding between keeping a monolith and splitting into microservices. Argue for a decision, name what it costs, and say what signals would make you change your mind later.",
+      "hints": [
+        "Team size and deployment independence matter as much as traffic.",
+        "Every network call you add replaces a function call. What new failure modes does that create?",
+        "Think about data ownership: what happens to a transaction that used to span two modules?"
+      ],
+      "checklist": [
+        "Gives a clear recommendation, typically a modular monolith with enforced module boundaries for a team this size.",
+        "Names the costs of microservices: network failure modes, distributed transactions, operational overhead, harder local development and debugging.",
+        "Names the costs of a monolith: shared deploy cadence, scaling the whole app, risk of boundary erosion.",
+        "Points out that splitting by team and data ownership works better than splitting by technical layer.",
+        "Lists concrete triggers to extract a service, such as different scaling profile, different release cadence, or compliance isolation.",
+        "Describes an incremental path such as the strangler fig pattern instead of a rewrite."
+      ]
+    },
+    {
+      "questionId": "ds-101",
+      "role": "distributed_systems",
+      "difficulty": 1,
+      "topicKeys": ["rate_limiting", "system_design", "requirements_scoping"],
+      "prompt": "Design a rate limiter for an API gateway that runs as a fleet of 20 instances. Each customer has a quota, for example 1,000 requests per minute. Start with the requirements and the algorithm you would pick, then explain how the limit is enforced across instances.",
+      "hints": [
+        "Clarify what is being limited: per user, per API key, per IP, per endpoint? And is the limit strict or approximate?",
+        "A fixed window counter allows a burst of up to twice the limit at a window boundary. Which algorithms avoid that?",
+        "If each instance counts locally, the effective limit is multiplied by the fleet size. What are your options?"
+      ],
+      "checklist": [
+        "Clarifies the identity being limited, the strictness of the limit and the expected overhead budget per request.",
+        "Compares fixed window, sliding window log, sliding window counter and token bucket, including the boundary burst problem of fixed windows.",
+        "Shares counters in a central store such as Redis and performs the read-modify-write atomically (a Lua script or atomic increment).",
+        "Discusses the alternative of local limits with periodic synchronisation, trading accuracy for latency and fewer round trips.",
+        "Decides what happens when the limiter store is unavailable (fail open versus fail closed) and justifies it.",
+        "Returns HTTP 429 with Retry-After and rate limit headers so well-behaved clients can back off."
+      ]
+    },
+    {
+      "questionId": "ds-102",
+      "role": "distributed_systems",
+      "difficulty": 1,
+      "topicKeys": ["system_design", "clock_synchronization", "requirements_scoping"],
+      "prompt": "Design a service or library that generates unique 64-bit ids across hundreds of machines without a central database round trip for each id. The ids should be roughly sortable by creation time. What are the pieces and what can go wrong?",
+      "hints": [
+        "How could you split 64 bits into a time part and a part that distinguishes machines?",
+        "Two machines can generate an id in the same millisecond. What guarantees they differ?",
+        "What happens if a machine's clock moves backwards after an NTP adjustment?"
+      ],
+      "checklist": [
+        "Proposes a Snowflake-style layout: a timestamp (about 41 bits of milliseconds), a worker id (about 10 bits) and a per-millisecond sequence (about 12 bits).",
+        "Explains that ids are roughly time-ordered, which helps index locality compared with random UUIDs.",
+        "Explains how worker ids are assigned uniquely, for example through a coordination service lease or configuration.",
+        "Handles sequence exhaustion within a millisecond by waiting for the next millisecond.",
+        "Handles clock moving backwards by refusing to issue ids until the clock catches up, or by failing loudly.",
+        "Compares alternatives: UUIDv7 or ULID, database ticket servers, and per-node counters with block allocation."
+      ]
+    },
+    {
+      "questionId": "ds-201",
+      "role": "distributed_systems",
+      "difficulty": 2,
+      "topicKeys": ["sharding", "partitioning", "replication"],
+      "prompt": "You are building a distributed key-value store that must grow from 5 to 50 nodes without taking downtime. How do you assign keys to nodes, and what happens to the data when a node is added or removed?",
+      "hints": [
+        "With hash(key) mod N, what fraction of keys moves when N changes by one?",
+        "Imagine nodes placed on a ring. Which keys does a new node take over?",
+        "Real clusters have nodes of different capacity and hot ranges. What does adding virtual nodes change?"
+      ],
+      "checklist": [
+        "Explains that modulo hashing remaps almost all keys when the node count changes.",
+        "Describes consistent hashing, where only roughly 1/N of the keys move when a node is added or removed.",
+        "Uses virtual nodes to even out load and to weight nodes by capacity.",
+        "Contrasts hash partitioning (even spread, poor range scans) with range partitioning (good scans, risk of hotspots).",
+        "Places replicas on distinct physical nodes or racks so one failure does not remove all copies.",
+        "Describes how clients or a coordinator learn the current partition map, and how data is streamed to the new node while serving traffic."
+      ]
+    },
+    {
+      "questionId": "ds-202",
+      "role": "distributed_systems",
+      "difficulty": 2,
+      "topicKeys": ["data_modeling", "partitioning", "scalability"],
+      "prompt": "A chat product has 50 million daily active users. The dominant query is: give me the latest 50 messages of this conversation, and then load older ones on scroll. Design the message storage model on a wide-column or partitioned store.",
+      "hints": [
+        "Start from the query, not the entity. What must be in the partition key so that one conversation is read from one place?",
+        "Messages need an order within a conversation. What makes a good clustering key?",
+        "What happens to a partition that belongs to a conversation with ten years of history?"
+      ],
+      "checklist": [
+        "Derives the table design from the access pattern: partition by conversation id, cluster by a time-sortable message id in descending order.",
+        "Uses a time-sortable unique message id so that ordering and uniqueness come from the same key.",
+        "Prevents unbounded partitions by adding a time bucket (for example per month) to the partition key.",
+        "Chooses a client-generated message id so that retries of a send are idempotent.",
+        "Explains that other access patterns (search, unread counts per user) need separate tables or services, not secondary scans.",
+        "Discusses the ordering guarantee: total order within one conversation only, and how concurrent senders are ordered."
+      ]
+    },
+    {
+      "questionId": "ds-301",
+      "role": "distributed_systems",
+      "difficulty": 3,
+      "topicKeys": ["distributed_caching", "caching", "scalability"],
+      "prompt": "Your Redis cluster is sharded by key. A celebrity posts and one profile key suddenly receives 200,000 reads per second, saturating a single node while the rest idle. Adding nodes does not help. What do you do?",
+      "hints": [
+        "Why does adding shards not fix a problem caused by a single key?",
+        "Can some of the reads be served before they ever reach Redis?",
+        "Could the same value live under several keys on different shards?"
+      ],
+      "checklist": [
+        "Explains that a key maps to exactly one shard, so scaling out the cluster does not spread a single hot key.",
+        "Detects hot keys with sampling or counters rather than guessing.",
+        "Adds a small in-process cache (local L1) with a very short TTL in front of Redis to absorb most reads.",
+        "Replicates hot values under suffixed keys (key#0 to key#N) and has readers pick one at random.",
+        "Coalesces concurrent misses so a refresh produces one backend load, not thousands.",
+        "States the cost: copies can be briefly stale, and writes must update or invalidate all replicas of the key."
+      ]
+    },
+    {
+      "questionId": "ds-302",
+      "role": "distributed_systems",
+      "difficulty": 3,
+      "topicKeys": ["replication", "consistency_models", "caching"],
+      "prompt": "A read-heavy app serves users on three continents from a single primary region, and users far away see 300 ms latency. You add read replicas in each region. What improves, and what new problems appear? How do you handle a user who saves a change and then immediately reloads the page?",
+      "hints": [
+        "Replicas make reads local, but where do writes still go?",
+        "Replication is usually asynchronous. What can a reader observe right after a write?",
+        "Name the consistency guarantee the user expects after their own write."
+      ],
+      "checklist": [
+        "Explains that reads become local but writes still travel to the primary, and that replication lag introduces stale reads.",
+        "Identifies the read-your-writes problem after a write, and a fix: read from the primary for a short time after a write, or route with a session token or log position.",
+        "Mentions monotonic reads as another guarantee, which sticky routing to one replica can provide.",
+        "Decides per endpoint how stale is acceptable: a public catalogue versus an account balance.",
+        "Uses a CDN or edge cache for cacheable responses to remove the cross-region hop completely.",
+        "Monitors replication lag and defines what the system does when a replica falls too far behind."
+      ]
+    },
+    {
+      "questionId": "ds-401",
+      "role": "distributed_systems",
+      "difficulty": 4,
+      "topicKeys": ["consensus", "consistency_models", "failure_handling"],
+      "prompt": "A five-node replicated store using a Raft-style leader election suffers a network partition: the old leader plus one follower on one side, and three nodes on the other. Describe what each side does, what clients experience, and what happens when the partition heals.",
+      "hints": [
+        "How many nodes are needed to commit a write or to win an election in a five-node cluster?",
+        "The old leader has not noticed it is isolated. Why can it not safely acknowledge writes?",
+        "When the partition heals, two nodes hold a log that the majority never saw."
+      ],
+      "checklist": [
+        "States that a majority (three of five) is required both to elect a leader and to commit entries.",
+        "The three-node side times out, elects a new leader in a higher term and continues serving writes.",
+        "The two-node side cannot commit writes, so the old leader must not acknowledge them as durable.",
+        "Uses terms (epochs) so a stale leader that rejoins steps down, and its uncommitted entries are overwritten.",
+        "Relates this to CAP: during a partition the minority side chooses consistency over availability, so its clients see errors or timeouts.",
+        "Mentions client behaviour: redirect to the new leader, retry with idempotency, and reads that go through the leader or use a read-index or lease to avoid stale reads."
+      ]
+    },
+    {
+      "questionId": "ds-402",
+      "role": "distributed_systems",
+      "difficulty": 4,
+      "topicKeys": ["circuit_breaker", "retries_backoff", "backpressure", "failure_handling"],
+      "prompt": "Service A calls service B. B becomes slow, not down. Within minutes A runs out of threads, then its callers start failing, and eventually the whole product is down. Explain the failure chain and the defences you would put in place.",
+      "hints": [
+        "A slow dependency is worse than a dead one. Why?",
+        "What bounds how long A waits for B, and how many calls can be in flight at once?",
+        "If every caller retries three times, what happens to the load on an already struggling B?"
+      ],
+      "checklist": [
+        "Explains how unbounded waiting ties up threads or connections and turns one slow dependency into a cascading failure.",
+        "Sets explicit timeouts on every remote call and propagates a deadline so downstream work is abandoned when the caller has given up.",
+        "Uses bulkheads (separate pools per dependency) to limit the blast radius.",
+        "Applies a circuit breaker with closed, open and half-open states to fail fast and let B recover.",
+        "Limits retries with exponential backoff, jitter and a retry budget, and explains retry amplification across layers.",
+        "Adds load shedding or backpressure, plus a graceful fallback such as a cached or degraded response."
+      ]
+    },
+    {
+      "questionId": "ds-403",
+      "role": "distributed_systems",
+      "difficulty": 4,
+      "topicKeys": ["concurrency", "leader_election", "failure_handling"],
+      "prompt": "A job must run on exactly one node at a time. You implement a distributed lock with a Redis key that has a 30 second expiry. A node pauses for 40 seconds because of a long garbage collection, wakes up and still believes it holds the lock. What goes wrong and how do you fix it?",
+      "hints": [
+        "While the node was paused, what happened to the lock and to other nodes?",
+        "The paused node cannot tell time has passed. So who needs to detect the stale holder?",
+        "Think of a number that grows every time the lock is granted."
+      ],
+      "checklist": [
+        "Describes how the lease expired, a second node acquired the lock, and now two nodes act as the holder.",
+        "Explains that a lease based on timeouts cannot protect correctness against pauses, clock drift or delayed messages.",
+        "Introduces fencing tokens: a monotonically increasing number issued with each grant that the protected resource checks and uses to reject stale writers.",
+        "Distinguishes locks used for efficiency (duplicate work is harmless) from locks used for correctness (it is not).",
+        "For correctness locks, relies on a consensus-backed system such as etcd or ZooKeeper, or on conditional writes in the storage layer.",
+        "Mentions making the guarded operation idempotent so an occasional double run is safe."
+      ]
+    },
+    {
+      "questionId": "ds-501",
+      "role": "distributed_systems",
+      "difficulty": 5,
+      "topicKeys": ["tracing", "observability", "monitoring_slos"],
+      "prompt": "A user-facing request passes through 12 microservices and p99 latency regressed after a release. Logs from each service look fine in isolation. How do you set up observability so you can find the responsible hop quickly, and how do you keep the cost under control?",
+      "hints": [
+        "What single identifier would connect work done in different services for one request?",
+        "How does that identifier cross process boundaries, including queues?",
+        "Recording every trace is expensive. What do you keep, and what do you throw away?"
+      ],
+      "checklist": [
+        "Uses distributed tracing with trace context propagated on every call (for example the W3C traceparent header, and message headers for queues).",
+        "Records spans with useful attributes (route, status, dependency) and reads the critical path to see which hop dominates.",
+        "Explains sampling: head-based is cheap but may miss rare slow requests, tail-based keeps slow or failed traces.",
+        "Includes the trace id in structured logs so logs and traces can be joined.",
+        "Links metrics to traces (exemplars) and keeps metric label cardinality low.",
+        "Compares before and after the release by version tag to isolate the regression."
+      ]
+    },
+    {
+      "questionId": "ds-502",
+      "role": "distributed_systems",
+      "difficulty": 5,
+      "topicKeys": ["event_driven", "message_queues", "exactly_once", "tradeoffs"],
+      "prompt": "Retrospective: your order workflow (payment, inventory, shipping) was built on synchronous RPC calls and is brittle. A colleague proposes moving it to Kafka events. Make the case, state the delivery guarantees you actually get, and describe what gets harder.",
+      "hints": [
+        "What coupling does asynchronous messaging remove, and what does it introduce?",
+        "Be precise about delivery: at-most-once, at-least-once or exactly-once, and where each is realistic.",
+        "A write to your database and a publish to Kafka are two systems. How do you keep them consistent?"
+      ],
+      "checklist": [
+        "Explains the benefits: temporal decoupling, buffering of spikes, independent consumers and replay.",
+        "States that practical delivery is at-least-once, so consumers must be idempotent, and that exactly-once effects come from idempotence plus transactions within a bounded scope.",
+        "Explains ordering: guaranteed only within a partition, so the partition key (for example order id) matters.",
+        "Uses the transactional outbox pattern, or change data capture, to publish events atomically with the database write.",
+        "Describes the saga pattern with compensating actions in place of a distributed transaction.",
+        "Names the costs: eventual consistency in the user experience, harder debugging, schema evolution of events and operating the broker."
+      ]
+    },
+    {
+      "questionId": "fe-101",
+      "role": "frontend_architect",
+      "difficulty": 1,
+      "topicKeys": ["requirements_scoping", "micro_frontends", "system_design"],
+      "prompt": "You are the frontend architect for an enterprise analytics dashboard used by 200 customers. Six teams will contribute features over the next year. How do you structure the application, and would you choose micro frontends? Tell me what you would clarify first.",
+      "hints": [
+        "What problem are you solving: team autonomy, independent deployment, or just code organisation?",
+        "A modular monorepo gives many of the benefits of micro frontends at much lower runtime cost. What does it not give you?",
+        "Any shared runtime dependency, such as the framework version or the design system, is a coordination point."
+      ],
+      "checklist": [
+        "Clarifies the real constraints: team boundaries, release independence, performance budgets, browser support and customer-specific theming.",
+        "Compares a modular monorepo (clear module boundaries, one deploy) with micro frontends (independent deploys, for example via module federation or iframes).",
+        "Names the costs of micro frontends: duplicated dependencies, runtime integration bugs, inconsistent UX and harder performance control.",
+        "Defines a shell with shared concerns (routing, auth, layout, error handling) and feature modules with explicit public interfaces.",
+        "Proposes a shared design system and tokens so six teams still produce one product.",
+        "Sets guardrails: performance budgets and lint rules that enforce module boundaries."
+      ]
+    },
+    {
+      "questionId": "fe-102",
+      "role": "frontend_architect",
+      "difficulty": 1,
+      "topicKeys": ["ssr_hydration", "web_vitals", "requirements_scoping"],
+      "prompt": "An e-commerce site has a home page, category pages, product pages, a cart and an account area. Choose a rendering strategy for each: client-side, server-side, static generation or incremental regeneration. Justify the choices with user experience and operational cost.",
+      "hints": [
+        "Which pages are the same for everyone and which are personalised?",
+        "Which pages need search engine indexing and a fast first paint?",
+        "Server rendering sends HTML quickly, but the page is not interactive until it hydrates. What does that cost?"
+      ],
+      "checklist": [
+        "Chooses per page rather than one strategy for the whole site.",
+        "Uses static generation or incremental regeneration with CDN caching for category and product pages that are mostly identical for every visitor.",
+        "Uses client-side rendering, or server rendering without indexing needs, for the cart and account areas that are private and interactive.",
+        "Explains hydration cost and mitigations such as streaming, partial or selective hydration and less client JavaScript.",
+        "Links choices to LCP, INP and SEO, and to caching and invalidation of stale prices or stock.",
+        "Handles personalisation on cached pages by loading small dynamic fragments on the client or at the edge."
+      ]
+    },
+    {
+      "questionId": "fe-201",
+      "role": "frontend_architect",
+      "difficulty": 2,
+      "topicKeys": ["state_management", "data_modeling"],
+      "prompt": "A large app keeps everything in one global store: server responses, form drafts, modal flags and selected rows. Bugs from stale data and unnecessary re-renders are common. How would you reorganise state management?",
+      "hints": [
+        "Not all state is the same kind. What are the categories, and who owns each?",
+        "Data that comes from the server is a cache of remote truth, not application state.",
+        "What can be derived instead of stored, and what belongs in the URL?"
+      ],
+      "checklist": [
+        "Separates server state (fetched data), client UI state, form state and URL state, and gives each the right tool.",
+        "Uses a query or cache library for server state with cache keys, background refetch, deduplication and invalidation after mutations.",
+        "Keeps state as local as possible and lifts it only when needed, instead of one global store for everything.",
+        "Derives data with selectors instead of duplicating it, and normalises entities that are referenced from many places.",
+        "Puts shareable view state (filters, selected tab, page) in the URL so it survives reloads and can be linked.",
+        "Uses optimistic updates for responsive mutations, with rollback on failure."
+      ]
+    },
+    {
+      "questionId": "fe-202",
+      "role": "frontend_architect",
+      "difficulty": 2,
+      "topicKeys": ["pagination", "rendering_performance", "state_management"],
+      "prompt": "Design the frontend data layer for an admin table with 100,000 rows, server-side filtering and sorting, a live search box and row selection. Users also want to keep their selection when they change pages. How does data flow from the input to the screen?",
+      "hints": [
+        "Which part of the work should happen on the server, and which in the browser?",
+        "A user types quickly. What can go wrong with responses that arrive out of order?",
+        "Rendering 100,000 DOM nodes is not an option. What are the alternatives?"
+      ],
+      "checklist": [
+        "Moves filtering, sorting and pagination to the server and sends them as query parameters.",
+        "Debounces the search input and cancels in-flight requests (AbortController) so stale responses cannot overwrite newer ones.",
+        "Uses the query parameters as cache keys so going back to a page or filter is instant.",
+        "Renders only the visible rows with list virtualisation, or keeps page size small.",
+        "Stores selection as a set of row ids, separate from the page data, so it survives page and sort changes.",
+        "Handles loading, empty and error states, and keeps the previous data visible while the next page loads."
+      ]
+    },
+    {
+      "questionId": "fe-301",
+      "role": "frontend_architect",
+      "difficulty": 3,
+      "topicKeys": ["bundle_optimization", "web_vitals", "cdn"],
+      "prompt": "Your landing page has an LCP of 4.8 seconds on mid-range phones over 4G, and the JavaScript bundle is 2.1 MB uncompressed. How do you find out what is wrong and how do you fix it, in order of impact?",
+      "hints": [
+        "Measure before optimising. What is the difference between lab data and field data?",
+        "What does the browser need for the first paint, and what is it downloading that it does not need yet?",
+        "The LCP element is often an image. What decides when the browser starts fetching it?"
+      ],
+      "checklist": [
+        "Starts with measurement: real user monitoring or field data for LCP and INP, plus Lighthouse or a throttled lab trace to find the cause.",
+        "Analyses the bundle (for example with a bundle visualiser) to find large and duplicated dependencies.",
+        "Splits code by route and lazy loads below-the-fold or rarely used features, and removes unused code with tree shaking.",
+        "Optimises the LCP resource: discoverable in the HTML, preloaded or high fetch priority, modern formats and responsive sizes.",
+        "Defers or removes third-party scripts and avoids render-blocking CSS and JavaScript.",
+        "Serves compressed assets (Brotli) with long-lived cache headers from a CDN, and adds a performance budget in CI."
+      ]
+    },
+    {
+      "questionId": "fe-302",
+      "role": "frontend_architect",
+      "difficulty": 3,
+      "topicKeys": ["rendering_performance", "state_management"],
+      "prompt": "Typing in a search box above a list of 5,000 items feels sluggish: characters appear late. The list is rendered by a React component tree. How do you investigate and what would you change?",
+      "hints": [
+        "Which components re-render on every keystroke, and do they need to?",
+        "Is the typed value needed by the list immediately, or can the list update slightly later?",
+        "Memoisation has a cost too. How do you know it is worth adding?"
+      ],
+      "checklist": [
+        "Profiles first (browser performance panel and the React profiler) and finds long tasks and wasted renders.",
+        "Moves state down so only the input re-renders on each keystroke, instead of the whole page.",
+        "Separates urgent updates (the input value) from non-urgent ones (the filtered list), for example with a transition or deferred value.",
+        "Virtualises the list so only visible rows are in the DOM.",
+        "Applies memoisation selectively to expensive components and computations, with stable props and keys, verified by measurement.",
+        "Debounces any network search and avoids layout thrashing from reading layout inside write loops."
+      ]
+    },
+    {
+      "questionId": "fe-401",
+      "role": "frontend_architect",
+      "difficulty": 4,
+      "topicKeys": ["offline_first", "failure_handling", "data_modeling"],
+      "prompt": "Field technicians use your web app in basements and rural areas with flaky or no connectivity. They fill forms, take photos and need their work saved. Design the offline behaviour, including what happens when two people edited the same record.",
+      "hints": [
+        "Where do the app's code and the app's data live when there is no network?",
+        "A write made offline needs to be replayed later. What can go wrong with replay?",
+        "When two edits conflict, who decides, and by what rule?"
+      ],
+      "checklist": [
+        "Uses a service worker to cache the app shell and assets with an appropriate strategy (cache first for static files, network first or stale-while-revalidate for data).",
+        "Stores data locally in IndexedDB and treats the local store as the source the UI reads from.",
+        "Queues mutations in an outbox and replays them in order on reconnect with backoff, using idempotency keys so replays are safe.",
+        "Defines a conflict strategy (last write wins, field-level merge, or a user prompt) and explains when each is acceptable.",
+        "Handles large photo uploads with resumable or chunked uploads and clear per-item status in the UI.",
+        "Considers local schema migrations, storage quota and eviction, and clearing sensitive data on logout."
+      ]
+    },
+    {
+      "questionId": "fe-402",
+      "role": "frontend_architect",
+      "difficulty": 4,
+      "topicKeys": ["deployment", "failure_handling", "cdn"],
+      "prompt": "After each release, some users with the app already open see a blank screen or a chunk loading error when they navigate. Reloading fixes it. Explain why it happens and how you would deploy so it stops happening.",
+      "hints": [
+        "What file names do lazy-loaded chunks have, and what happens to the old files when you deploy?",
+        "The user's open page still points to the previous build. Which files does it request?",
+        "Think about which assets can be cached forever and which can never be."
+      ],
+      "checklist": [
+        "Explains version skew: the open page requests old content-hashed chunks that the new deployment has deleted.",
+        "Uses content-hashed file names with immutable, long-lived cache headers for assets, and no-cache for the HTML entry point.",
+        "Keeps previous assets available for a retention period after a deploy, instead of replacing the whole folder.",
+        "Deploys atomically so users never get new HTML with missing assets or the reverse.",
+        "Adds an error boundary and a reload on chunk load failure, or a version check that prompts the user to refresh.",
+        "Handles service worker updates carefully so an old worker does not keep serving an old build."
+      ]
+    },
+    {
+      "questionId": "fe-403",
+      "role": "frontend_architect",
+      "difficulty": 4,
+      "topicKeys": ["security", "auth"],
+      "prompt": "A security review finds that your SPA stores its access token in localStorage and renders user-written comments as HTML. Explain the risk, and describe how you would harden the application.",
+      "hints": [
+        "Any script that runs on your page can read localStorage. How could a script end up on your page?",
+        "Cookies have their own risk when used for authentication. Which one?",
+        "Defence in depth: prevent injection, limit what injected code can do."
+      ],
+      "checklist": [
+        "Explains that stored XSS lets an attacker run script in the page and steal tokens from localStorage.",
+        "Never inserts untrusted content as raw HTML, and sanitises with a vetted library when rich text is required.",
+        "Moves the session to a cookie with HttpOnly, Secure and SameSite attributes so scripts cannot read it.",
+        "Notes that cookie-based auth needs CSRF protection, such as SameSite plus tokens or origin checks.",
+        "Adds a Content Security Policy (nonces or hashes, no unsafe-inline) to reduce the impact of injected scripts.",
+        "Reviews third-party scripts, uses subresource integrity where possible and keeps dependencies patched."
+      ]
+    },
+    {
+      "questionId": "fe-501",
+      "role": "frontend_architect",
+      "difficulty": 5,
+      "topicKeys": ["observability", "web_vitals", "monitoring_slos"],
+      "prompt": "Support keeps saying the app is slow or broken for some users and engineering cannot reproduce it. Design the frontend observability that would tell you what real users experience and let you act on it.",
+      "hints": [
+        "Your laptop on office wifi is not your users' devices. How do you measure the real ones?",
+        "A stack trace from a minified bundle is not useful. What is missing?",
+        "Which averages hide the problem, and which percentile do web vitals use?"
+      ],
+      "checklist": [
+        "Collects real user metrics for Core Web Vitals (LCP, INP, CLS) and reads them at the 75th percentile, segmented by device, network and route.",
+        "Captures JavaScript errors and failed network calls with release version and uploaded source maps so stack traces are readable.",
+        "Tags every event with release and feature flag state so regressions map to a deploy.",
+        "Links frontend events to backend traces with a propagated trace or request id.",
+        "Applies sampling and masks personal data in any session replay or logs.",
+        "Turns the data into action with alerts on regressions, a performance budget in CI and a clear owner for triage."
+      ]
+    },
+    {
+      "questionId": "fe-502",
+      "role": "frontend_architect",
+      "difficulty": 5,
+      "topicKeys": ["design_systems", "accessibility", "tradeoffs"],
+      "prompt": "Retrospective: three product teams each built their own buttons, modals and form controls. Management wants a shared component library. Argue how you would run it, what it costs, and how you make sure accessibility improves rather than just consistency.",
+      "hints": [
+        "A library that nobody wants to use is worse than none. What makes teams adopt it?",
+        "How do you ship breaking changes to many consumers without freezing them?",
+        "Which accessibility requirements can be built into a component once, and which still depend on the consumer?"
+      ],
+      "checklist": [
+        "Starts with design tokens and a small set of well-built primitives, driven by real usage across teams, instead of a big upfront catalogue.",
+        "Builds accessibility in: keyboard navigation, focus management for modals, correct roles and labels, and visible focus states, tested automatically and manually.",
+        "Versions the library with semantic versioning and offers codemods and a deprecation policy for migrations.",
+        "Provides escape hatches such as composition and style overrides so teams are not blocked.",
+        "Sets up governance: contribution process, a dedicated owner and documentation with live examples.",
+        "Protects quality with visual regression tests, bundle size checks and tree-shakeable exports."
+      ]
+    },
+    {
+      "questionId": "fs-101",
+      "role": "fullstack",
+      "difficulty": 1,
+      "topicKeys": ["requirements_scoping", "system_design", "websockets_scaling"],
+      "prompt": "Design a Trello-style kanban board where several people see each other's changes live. Walk me through the scope you would build first, the overall architecture across frontend, API and database, and how real-time updates reach other users.",
+      "hints": [
+        "Decide which operations need to be real time and which can be plain requests.",
+        "A request-response API can handle writes while another channel pushes updates. What channel could that be?",
+        "How would you store the order of cards so that moving one card does not rewrite the whole column?"
+      ],
+      "checklist": [
+        "Scopes version one: boards, columns, cards, drag and drop, and live updates, with permissions and activity history as later work.",
+        "Uses REST (or similar) for create, update and load, and WebSockets or server-sent events to push change events to other viewers.",
+        "Models boards, columns and cards with a position field, and explains a fractional or gap-based ordering to avoid renumbering.",
+        "Applies changes optimistically on the client and reconciles with the server event stream.",
+        "Checks authorisation on the server for every board action and for subscription to a board's events.",
+        "Mentions how a client that reconnects recovers missed events, for example by refetching or replaying from a version number."
+      ]
+    },
+    {
+      "questionId": "fs-102",
+      "role": "fullstack",
+      "difficulty": 1,
+      "topicKeys": ["file_uploads", "system_design", "security"],
+      "prompt": "Users need to upload videos of up to 2 GB. Currently the files go through your Node API to object storage, and the server runs out of memory and times out. Redesign the upload flow end to end.",
+      "hints": [
+        "Does the file need to pass through your API server at all?",
+        "A single 2 GB request is fragile on a poor connection. What would make it resumable?",
+        "Anything a user uploads is untrusted. What do you check, and when?"
+      ],
+      "checklist": [
+        "Moves the bytes off the API: the API issues a short-lived pre-signed URL and the client uploads directly to object storage.",
+        "Uses multipart or resumable uploads in chunks with retry per chunk, and shows progress in the UI.",
+        "Validates size and type on the server side too, for example content type and file signature, not just the file extension.",
+        "Confirms completion with a callback or an event and only then marks the record as available.",
+        "Processes files asynchronously through a queue for scanning and transcoding, with a status the UI can display.",
+        "Cleans up abandoned partial uploads with a lifecycle rule and limits per-user storage and rate."
+      ]
+    },
+    {
+      "questionId": "fs-201",
+      "role": "fullstack",
+      "difficulty": 2,
+      "topicKeys": ["data_modeling", "api_design", "pagination"],
+      "prompt": "Add threaded comments with replies and emoji reactions to a posts page. Design the database tables and the API, including how you fetch a thread efficiently and how you count reactions.",
+      "hints": [
+        "How can a row point to its parent, and how do you read a whole subtree in few queries?",
+        "A user should be able to react with a given emoji once. How does the database enforce that?",
+        "Counting reactions on every read gets slow. What are the options?"
+      ],
+      "checklist": [
+        "Compares adjacency list (parent id), materialised path and closure table for trees, with their read and write trade-offs.",
+        "Limits display depth or flattens deep replies, and paginates top-level comments and replies separately.",
+        "Enforces one reaction per user, comment and emoji with a unique constraint, and makes toggling idempotent.",
+        "Keeps a denormalised reaction count updated atomically, or cached, and explains the consistency cost.",
+        "Uses soft deletion with a placeholder so replies of a deleted comment are not orphaned.",
+        "Shares request and response types between frontend and backend (schema or generated client) so the contract cannot drift."
+      ]
+    },
+    {
+      "questionId": "fs-202",
+      "role": "fullstack",
+      "difficulty": 2,
+      "topicKeys": ["authentication_sessions", "auth", "security"],
+      "prompt": "Design the authentication flow for a single page app with its own API, with a mobile app planned for later. Compare the options for sessions and tokens, and explain login, refresh, logout and authorisation checks.",
+      "hints": [
+        "Who is allowed to see the user's password, and who should only ever see tokens?",
+        "Short-lived access tokens are safe to lose. How does the user stay logged in anyway?",
+        "A token proves who the user is, not what they may do. Where is that decided?"
+      ],
+      "checklist": [
+        "Uses an established flow such as OAuth 2.0 / OpenID Connect authorisation code with PKCE, instead of handling passwords in each client.",
+        "Compares server-side sessions with stateless JWTs, including the revocation difficulty of long-lived JWTs.",
+        "Uses short-lived access tokens with rotating refresh tokens, and detects refresh token reuse to revoke the session.",
+        "Stores tokens safely for the browser (HttpOnly cookie) and explains CORS and CSRF consequences.",
+        "Implements logout and revocation on the server, not only by deleting client state.",
+        "Enforces authorisation (roles and ownership) in the API for every request and never relies on hidden UI elements."
+      ]
+    },
+    {
+      "questionId": "fs-301",
+      "role": "fullstack",
+      "difficulty": 3,
+      "topicKeys": ["websockets_scaling", "scalability", "backpressure"],
+      "prompt": "Your live-updates service holds 200,000 concurrent WebSocket connections across several Node.js servers behind a load balancer. A message in one chat room must reach members connected to different servers. What limits do you hit, and how do you scale and operate it?",
+      "hints": [
+        "Each connection costs memory and a file descriptor. What is the capacity of one server?",
+        "Two users in one room may be connected to different machines. How does a message reach both?",
+        "After a deploy, 200,000 clients reconnect at the same moment. What happens?"
+      ],
+      "checklist": [
+        "Estimates per-connection memory and the file descriptor limit, and sizes servers accordingly.",
+        "Uses a pub/sub backplane (for example Redis pub/sub or NATS) so a server can fan out messages published by any other server.",
+        "Configures heartbeats (ping and pong) and load balancer idle timeouts to detect dead connections.",
+        "Handles slow consumers with bounded send buffers and dropping or disconnecting them instead of growing memory.",
+        "Drains connections gradually on deploy and has clients reconnect with exponential backoff and jitter to avoid a reconnect storm.",
+        "Stores presence and subscriptions with TTLs so crashed servers do not leave phantom users."
+      ]
+    },
+    {
+      "questionId": "fs-302",
+      "role": "fullstack",
+      "difficulty": 3,
+      "topicKeys": ["caching", "graphql", "sql_query_optimization"],
+      "prompt": "A dashboard page makes one API call that internally runs six queries one after another, and some of them run once per row in a list. The page takes 3 seconds. How do you speed it up on the server and on the client?",
+      "hints": [
+        "Which of the six queries depend on each other, and which could run at the same time?",
+        "A query inside a loop is a classic pattern. What is it called and how do you remove it?",
+        "Which of the data on the page changes rarely enough to cache?"
+      ],
+      "checklist": [
+        "Traces the request first to see where the time goes instead of guessing.",
+        "Runs independent queries in parallel and keeps only genuinely dependent ones sequential.",
+        "Removes the N+1 pattern by batching (a single query with IN or a join, or a DataLoader-style batcher).",
+        "Pre-aggregates expensive summaries with a materialised view or a periodically computed table.",
+        "Adds HTTP caching (Cache-Control, ETag) or a server cache for slow-changing data, with an invalidation story.",
+        "On the client, loads the above-the-fold data first and streams or lazy loads the rest, and sets timeouts for each dependency."
+      ]
+    },
+    {
+      "questionId": "fs-401",
+      "role": "fullstack",
+      "difficulty": 4,
+      "topicKeys": ["state_management", "idempotency", "failure_handling"],
+      "prompt": "A comment box uses optimistic updates: the comment appears immediately and the request is sent in the background. In practice, users sometimes see duplicate comments, comments that vanish, or comments out of order after a flaky connection. Explain the causes and fix the design.",
+      "hints": [
+        "What identity does the comment have before the server has created it?",
+        "If the request fails, what does the user see, and what can they do about it?",
+        "A retry and the original request might both succeed."
+      ],
+      "checklist": [
+        "Gives each pending comment a client-generated temporary id and replaces it with the server id when confirmed, instead of appending a second copy.",
+        "Sends the client id as an idempotency key so a retried request cannot create a duplicate.",
+        "On failure, marks the item as failed with an inline retry action rather than silently removing it, or rolls back with an explanation.",
+        "Orders by a server timestamp or sequence and reconciles after a refetch so out-of-order responses cannot reorder the list.",
+        "Cancels or ignores stale responses to avoid older data overwriting newer data.",
+        "Re-syncs from the server after reconnect so the local view converges to the true state."
+      ]
+    },
+    {
+      "questionId": "fs-402",
+      "role": "fullstack",
+      "difficulty": 4,
+      "topicKeys": ["data_migration", "schema_evolution", "deployment"],
+      "prompt": "You must split a users.name column into first_name and last_name on a live Postgres database with a 200 million row table, with zero downtime and several app versions running during the rollout. Describe the migration and deployment plan.",
+      "hints": [
+        "During a rolling deploy, old and new code both run against the same database. What does that imply for each step?",
+        "Which database operations take locks that block writes for a long time?",
+        "How do you move 200 million rows without one giant transaction?"
+      ],
+      "checklist": [
+        "Applies the expand and contract (parallel change) pattern in separate deploys: add nullable columns, dual write, backfill, switch reads, then drop the old column.",
+        "Makes every step backward compatible with the previous app version so a rolling deploy and a rollback are both safe.",
+        "Backfills in small batches by primary key range with throttling, outside a single large transaction.",
+        "Avoids long locks: creates indexes concurrently and adds constraints in a way that does not rewrite or block the table (for example adding NOT VALID, then validating).",
+        "Verifies the result with row counts or checksums comparing the old and new columns before cutting over.",
+        "Uses a feature flag for the read switch, and keeps the old column until the new path has proven itself."
+      ]
+    },
+    {
+      "questionId": "fs-403",
+      "role": "fullstack",
+      "difficulty": 4,
+      "topicKeys": ["event_driven", "idempotency", "security"],
+      "prompt": "You receive webhooks from a payment provider. They can be delivered more than once, out of order, or after a delay, and anyone on the internet can post to your endpoint. Design the webhook receiver.",
+      "hints": [
+        "How does your endpoint know the request really came from the provider?",
+        "The provider retries if you do not answer quickly with a success status. What does that imply about how much work you do inside the request?",
+        "An older event can arrive after a newer one. How do you avoid applying it?"
+      ],
+      "checklist": [
+        "Verifies the signature (HMAC over the raw request body with a shared secret) using a constant-time comparison, and checks the timestamp to limit replay.",
+        "Parses the body only after verifying the raw bytes, since re-serialised JSON can differ from what was signed.",
+        "Persists the event and returns a 2xx quickly, then processes it asynchronously through a queue.",
+        "Deduplicates by the provider's event id with a unique constraint so repeated deliveries are no-ops.",
+        "Handles out-of-order events by checking object versions or timestamps, or by fetching the current state from the provider API.",
+        "Provides a dead-letter store and a manual replay path, and alerts when events keep failing."
+      ]
+    },
+    {
+      "questionId": "fs-501",
+      "role": "fullstack",
+      "difficulty": 5,
+      "topicKeys": ["observability", "tracing", "monitoring_slos"],
+      "prompt": "A user says: I clicked save, it spun, and then nothing happened. Show me how your system is instrumented end to end, from the browser through the API to the database, so that support can find that exact failure in minutes.",
+      "hints": [
+        "What identifier could the user or support copy from the screen to find the request on the server?",
+        "Where in the stack could the time have gone: browser, network, API, database?",
+        "Logs, metrics and traces answer different questions. Which one do you use to start?"
+      ],
+      "checklist": [
+        "Generates or accepts a request or trace id at the edge, returns it in a response header and shows it in error messages for support.",
+        "Emits structured JSON logs that include the id, user and tenant references and the route, with sensitive data redacted.",
+        "Collects RED metrics per route and alerts on a user-facing SLO instead of on host-level resource metrics.",
+        "Instruments the database layer with slow query logging and spans for each query.",
+        "Reports frontend errors and failed requests to a tracker with the same id, so one search joins the browser to the server.",
+        "Defines a triage flow: metric alert, trace of a slow or failed request, then log detail, and records what was learned in a runbook."
+      ]
+    },
+    {
+      "questionId": "fs-502",
+      "role": "fullstack",
+      "difficulty": 5,
+      "topicKeys": ["api_design", "graphql", "tradeoffs"],
+      "prompt": "Retrospective: your team has to choose between REST, GraphQL and a typed RPC layer for a product with a web app, a mobile app and a small public API. Give a recommendation, the costs of each option and how you would reduce regret if you are wrong.",
+      "hints": [
+        "Who are the clients: your own frontend, mobile, third parties? Their needs differ.",
+        "Caching, authorisation and error handling work differently in each style. Which differences matter most here?",
+        "Which decision is hard to reverse, and which can be hidden behind an adapter?"
+      ],
+      "checklist": [
+        "Gives a clear recommendation tied to the actual clients, for example REST for the public API and a typed layer or GraphQL for the first-party clients.",
+        "Explains the strengths of GraphQL (client-chosen fields, fewer round trips, a typed schema) and its costs (resolver N+1 needing batching, harder HTTP caching, query cost and depth limits).",
+        "Explains the strengths of REST (HTTP caching, simplicity, broad tooling) and its costs (over-fetching, many round trips, versioning).",
+        "Considers typed RPC for end-to-end type safety inside one codebase, and its limit for third-party consumers.",
+        "Addresses authorisation at the field or resource level, rate limiting and pagination conventions in the chosen style.",
+        "Reduces regret by keeping business logic in a service layer independent of the transport, and by versioning or evolving the schema additively."
+      ]
+    }
+  ]
+}

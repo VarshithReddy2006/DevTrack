@@ -1,7 +1,7 @@
 // src/modules/streak/streak.routes.ts — Streak API routes
 import { Router } from 'express';
 import { authMiddleware, type AuthenticatedRequest } from '../../middleware/auth.js';
-import { streakController } from './index.js';
+import { streakController } from './streak.controller.js';
 
 const router = Router();
 

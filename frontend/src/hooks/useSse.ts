@@ -40,6 +40,7 @@ export type SseEventType =
   | 'resume_progression'
   | 'interview.turn.delta'
   | 'interview.session.completed'
+  | 'jobtarget.parsed'
   | 'heartbeat';
 
 // ---------------------------------------------------------------------------

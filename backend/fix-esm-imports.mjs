@@ -92,3 +92,13 @@ for (const entry of readdirSync(migrationSource, { withFileTypes: true })) {
     copyFileSync(join(migrationSource, entry.name), join(migrationDist, entry.name));
   }
 }
+
+// tsc does not emit the question bank JSON (it is read at runtime with fs), so copy it next to the compiled module.
+const questionBankSource = './src/modules/interview/questionBank';
+const questionBankDist = join(DIST_DIR, 'modules/interview/questionBank');
+mkdirSync(questionBankDist, { recursive: true });
+for (const entry of readdirSync(questionBankSource, { withFileTypes: true })) {
+  if (entry.isFile() && entry.name.endsWith('.json')) {
+    copyFileSync(join(questionBankSource, entry.name), join(questionBankDist, entry.name));
+  }
+}
