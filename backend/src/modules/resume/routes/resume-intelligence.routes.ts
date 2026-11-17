@@ -20,12 +20,13 @@ import {
 
 // With ats-live-editor off the body is parsed by the v1 schema, which drops the v2 fields.
 async function validateVariantBody(req: Request, res: Response, next: NextFunction): Promise<void> {
+  let liveEditor = false;
   try {
-    const liveEditor = await isFlagEnabled(ATS_LIVE_EDITOR_FLAG, (req as any).user.id);
-    validateRequest({ body: liveEditor ? GenerateVariantRequestV2Schema : GenerateVariantSchema })(req, res, next);
-  } catch (error) {
-    next(error);
+    liveEditor = await isFlagEnabled(ATS_LIVE_EDITOR_FLAG, (req as any).user.id);
+  } catch {
+    // Flag store unavailable: behave as if the flag is off so the v1 path keeps working.
   }
+  validateRequest({ body: liveEditor ? GenerateVariantRequestV2Schema : GenerateVariantSchema })(req, res, next);
 }
 
 export function createResumeIntelligenceRoutes(auth = authMiddleware): Router {
