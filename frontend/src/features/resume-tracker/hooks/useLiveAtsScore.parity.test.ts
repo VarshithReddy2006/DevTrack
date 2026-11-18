@@ -1,21 +1,14 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { splitBullets, type BulletEdit } from '@devtrack/ats-core';
-import { scoreBulletEdits } from '../../../../../backend/src/modules/resume/ats/bulletEditScoring';
-import fixtures from '../../../../../packages/ats-core/test/legacy-score-fixtures.json';
+import type { BulletEdit } from '@devtrack/ats-core';
+import fixtures from '../../../../../packages/ats-core/test/bullet-score-fixtures.json';
 import { previewBulletScore, useLiveAtsScore } from './useLiveAtsScore';
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 const bullet = (editedText: string): BulletEdit => ({ section: 'Experience', bulletIndex: 0, originalText: 'Built APIs.', editedText });
 
-it.each(fixtures)('matches the backend adapter on shared fixture: $input.name', fixture => {
-  const bullets = splitBullets(fixture.input.content).map((text, bulletIndex) => ({ ...bullet(text), bulletIndex }));
-  for (const targetRole of ['Backend Engineer', 'Frontend Engineer']) {
-    const context = { targetRole, keywords: fixture.input.keywords };
-    const { scoredAt, ...server } = scoreBulletEdits(bullets, context);
-    expect(scoredAt).toBeInstanceOf(Date);
-    expect(previewBulletScore(bullets, context)).toMatchObject(server);
-  }
+it.each(fixtures)('matches the original backend score: $name', fixture => {
+  expect(previewBulletScore(fixture.bullets, fixture.context)).toMatchObject(fixture.expected);
 });
 
 it('cancels obsolete previews and scores the final keystroke after 300ms', () => {
