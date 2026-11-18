@@ -18,12 +18,13 @@ test('edits locally, saves through the real API and restores the persisted varia
   await page.getByRole('link', { name: 'Edit resume bullets' }).click();
   const editor = page.getByRole('textbox', { name: 'Resume bullets' });
   await expect(editor).toBeVisible();
-  const requests: string[] = [];
-  const listener = (request: { url(): string }) => { if (request.url().includes('/api/')) requests.push(request.url()); };
+  const resumeRequests: string[] = [];
+  // Shell XP polling is independent; typing must not call the resume/scoring API.
+  const listener = (request: { url(): string }) => { if (new URL(request.url()).pathname.startsWith('/api/resume')) resumeRequests.push(request.url()); };
   page.on('request', listener);
   await editor.fill(resumeText);
   await expect(page.getByRole('button', { name: 'Save as variant' })).toBeEnabled();
-  expect(requests).toEqual([]);
+  expect(resumeRequests).toEqual([]);
   page.off('request', listener);
   await expect(page.locator('.bullet-action-verb').first()).toBeVisible();
   await expect(page.locator('.bullet-metric').first()).toHaveText('20');
