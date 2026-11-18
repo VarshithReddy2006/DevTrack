@@ -10,6 +10,7 @@ WORKDIR /app
 
 COPY frontend/package*.json frontend/.npmrc ./
 COPY packages/contracts/ /packages/contracts/
+COPY packages/ats-core/ /packages/ats-core/
 # Use `npm install` to avoid failing builds when package.json and lockfile
 # are out of sync inside the build environment. Developers should keep the
 # lockfile in sync locally/CI for deterministic installs.

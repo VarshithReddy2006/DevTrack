@@ -13,6 +13,8 @@ import FocusPage from '../pages/FocusPage';
 import { FlagRoute } from './FlagRoute';
 import { INTERVIEW_STUDIO_FLAG, INTERVIEW_STUDIO_PATH } from '../features/interview/interview';
 import { JOB_TARGET_FLAG } from '../features/resume-tracker/jobTargets';
+import { ATS_LIVE_EDITOR_FLAG } from '../services/resumeEditorService';
+import { EditorNavigationGuard } from '../features/resume-tracker/context/EditorNavigationGuard';
 
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const DsaPage = lazy(() => import('../pages/DsaPage'));
@@ -30,6 +32,7 @@ const InterviewReviewPage = lazy(() => import('../pages/interview/InterviewRevie
 
 // Resume Tracker Workspace
 const ResumeEntryWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeEntryWorkspace').then(module => ({ default: module.ResumeEntryWorkspace })));
+const ResumeEditorWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeEditorWorkspace').then(module => ({ default: module.ResumeEditorWorkspace })));
 const ResumeAnalysisWorkspace = lazy(() => import('../features/resume-tracker/pages/ResumeAnalysisWorkspace').then(module => ({ default: module.ResumeAnalysisWorkspace })));
 const JobTargetsWorkspace = lazy(() => import('../features/resume-tracker/pages/JobTargetsWorkspace').then(module => ({ default: module.JobTargetsWorkspace })));
 const JobTargetDetailWorkspace = lazy(() => import('../features/resume-tracker/pages/JobTargetDetailWorkspace').then(module => ({ default: module.JobTargetDetailWorkspace })));
@@ -86,7 +89,7 @@ const ProtectedLayout: React.FC = () => {
 
 export const AppRouter: React.FC = () => {
   return (
-    <Routes>
+    <EditorNavigationGuard><Routes>
       {/* Public Routes */}
       <Route
         path="/"
@@ -265,6 +268,16 @@ export const AppRouter: React.FC = () => {
           }
         />
         <Route
+          path="/resume/editor"
+          element={
+            <ErrorBoundary pageName="Resume bullet editor">
+              <Suspense fallback={<PageFallback />}>
+                <FlagRoute flagKey={ATS_LIVE_EDITOR_FLAG} redirectTo="/resume"><ResumeEditorWorkspace /></FlagRoute>
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
           path="/resume/analysis/:sessionId"
           element={
             <ErrorBoundary pageName="Resume Analysis">
@@ -403,6 +416,6 @@ export const AppRouter: React.FC = () => {
           </ErrorBoundary>
         }
       />
-    </Routes>
+    </Routes></EditorNavigationGuard>
   );
 };
