@@ -5,6 +5,8 @@ import { rateLimiters } from '../../middleware/rateLimitAdvanced.js';
 import { objectIdSchema, validateContract } from '../../middleware/validation.js';
 import { BulletEditSchema } from './dto/index.js';
 import { BulletRevisionService } from './bulletRevision.service.js';
+import { scoreDifferentialSchema, scoreDifferentialService } from './scoreDifferential.service.js';
+import { authenticateScoreDifferential } from './scoreDifferential.auth.js';
 
 const version = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1);
 const resumeParams = z.object({ resumeId: objectIdSchema });
@@ -16,6 +18,11 @@ const saveBody = z.object({
 const restoreParams = resumeParams.extend({ version: z.string().regex(/^(0|[1-9]\d*)$/).transform(Number).pipe(version) });
 
 export const bulletRevisionRoutes = Router();
+bulletRevisionRoutes.post('/diff-score', authenticateScoreDifferential, rateLimiters.resumeRead,
+  validateContract({ body: scoreDifferentialSchema }, (req, res) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ success: true, data: scoreDifferentialService.compare(req.validBody) });
+  }));
 const user = (req: AuthenticatedRequest) => req.user!.id;
 bulletRevisionRoutes.get('/:resumeId/revisions', authMiddleware, rateLimiters.resumeRead, validateContract({ params: resumeParams }, async (req, res) => {
   const { resumeId } = req.validParams;

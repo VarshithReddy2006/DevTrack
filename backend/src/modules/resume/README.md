@@ -53,5 +53,63 @@ the score at save time; restores are rescored against current profile/keywords.
 
 Validation from `backend/`: `npm run build` and
 `npm test -- src/__tests__/modules/resume/bulletRevision.test.ts src/__tests__/modules/resume/variant-v2.test.ts`.
+
+## Stateless score preview
+
+`POST /api/v2/resume/diff-score` (also v1 and the deprecated `/api` alias) accepts:
+
+```json
+{
+  "originalBullets": ["Built reliable APIs for customers across multiple regions"],
+  "revisedBullets": ["Built reliable Node.js APIs for customers across multiple regions"],
+  "targetKeywords": ["Node.js"]
+}
+```
+
+The response is `{ success: true, data: { originalScore, revisedScore, delta,
+keywordChanges: { added, removed }, brevityScore, originalBrevityScore } }`.
+`delta` is a signed JSON integer; clients can add a `+` display prefix. Brevity
+scores describe each list's bullet length and fluff phrases. All scores are
+0–100; empty bullet lists score zero. The calculation comes directly from the
+browser-compatible `@devtrack/ats-core` utility; its README documents the complete
+heuristics, including keyword stuffing penalties. This preview does not save
+edits or change the full-resume scoring used by the revision ledger.
+
+Zod rejects unknown fields, missing arrays, non-string entries, more than 100
+bullets per list, bullets over 1,000 characters, combined original/revised text
+over 50,000 characters, more than 100 keywords, and empty or over-80-character
+keywords. Keyword labels are trimmed. Responses are private/no-store.
+
+The route verifies a Clerk Bearer **session** token without loading or syncing a
+MongoDB user. Its handler and scoring utility perform zero MongoDB operations.
+Only caller-supplied text is processed; there is no stored resume/ownership lookup.
+The existing expensive-generation limiter is not consumed. The shared read limiter
+uses its IP fallback (120/minute), and the router's existing read-ingress IP guard
+applies (600/minute); other API routes retain their existing limits. Those guards
+use Redis; the scoring calculation itself has no external dependencies.
+
+For networkless authentication, set `CLERK_JWT_KEY` to your Clerk instance's PEM
+public key. The origin in the token must match `CORS_ORIGIN` when configured.
+Without `CLERK_JWT_KEY`, verification uses `CLERK_SECRET_KEY` and Clerk's JWKS
+fetch/cache. That remote authentication latency is outside the pure scoring
+budget. No private key is needed by the server.
+
+Run `npm run test:score-differential` from `backend/` for database-free route tests
+using real JWT verification with a locally generated RSA fixture key. Invalid
+signatures, expired/future tokens, unauthorized origins, invalid input, version
+aliases, rate-limit handling, and forbidden MongoDB access are covered.
+`npm run test:unit` includes these tests through their dedicated configuration.
+Run `npm run test -w @devtrack/ats-core` from the repository root for pure-engine,
+legacy-score, and browser-bundle regression tests.
+
+For an opt-in local benchmark, set `ATS_BENCHMARK=1` and run
+`npm run test:score-differential`. It measures 1,000 calculations and 1,000 local
+HTTP requests for both a typical input and a near-limit 50,000-character/100-keyword
+input, after warmup, using Node's HTTP client with one keep-alive connection. It
+requires pure p95 < 15ms and local HTTP p95 < 20ms. HTTP measurements include actual
+RSA JWT verification and JSON parsing/serialization,
+but stub Redis rate-limit calls and exclude internet/proxy/TLS overhead. Production
+latency, live Clerk enrollment, and browser editor integration require separate
+verification. The endpoint does not add an editor debounce or UI.
 Tests use owned temporary MongoDB replica sets and stub authentication/rate-limit
 boundaries; no live Clerk or AI credentials are required.

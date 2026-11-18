@@ -9,7 +9,8 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const history = (req.method === 'GET' || req.method === 'HEAD') && /^\/resume\/[^/]+\/revisions\/?$/i.test(req.path);
     const restore = req.method === 'POST' && /^\/resume\/[^/]+\/revisions\/[^/]+\/restore\/?$/i.test(req.path);
     const save = req.method === 'PUT' && /^\/resume\/[^/]+\/sections\/[^/]+\/bullets\/?$/i.test(req.path);
-    return analytics || history || restore || save ? routes(req, res, next) : next();
+    const diffScore = req.method === 'POST' && /^\/resume\/diff-score\/?$/i.test(req.path);
+    return analytics || history || restore || save || diffScore ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

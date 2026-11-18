@@ -4,7 +4,11 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function checkKeywordCoverage(content: string, targetKeywords: readonly string[]): KeywordCoverage[] {
+export function checkKeywordCoverage(
+  content: string,
+  targetKeywords: readonly string[],
+  { includeContext = true }: { includeContext?: boolean } = {},
+): KeywordCoverage[] {
   return targetKeywords.map(keyword => {
     const keywordLower = keyword.toLowerCase();
     // \b does not work next to symbols (c++, c#, .net), so use lookarounds
@@ -15,12 +19,14 @@ export function checkKeywordCoverage(content: string, targetKeywords: readonly s
 
     // Extract context (surrounding text)
     const context: string[] = [];
-    const sentences = content.split(/[.!?]+/);
-    sentences.forEach(sentence => {
-      if (sentence.toLowerCase().includes(keywordLower)) {
-        context.push(sentence.trim());
-      }
-    });
+    if (includeContext) {
+      const sentences = content.split(/[.!?]+/);
+      sentences.forEach(sentence => {
+        if (sentence.toLowerCase().includes(keywordLower)) {
+          context.push(sentence.trim());
+        }
+      });
+    }
 
     return {
       keyword,
