@@ -4,9 +4,12 @@ import { asyncHandler, authMiddleware } from '../../middleware/index.js';
 import {
   getDueCardsController,
   submitReviewController,
+  getRevisionAnalyticsController,
 } from './revision.controller.js';
 
 const router = Router();
+
+router.get('/analytics', authMiddleware, asyncHandler(getRevisionAnalyticsController));
 
 // GET /api/v1/revision/due — fetch user's due revision cards
 router.get('/due', authMiddleware, asyncHandler(getDueCardsController));

@@ -7,6 +7,21 @@ import {
   RevisionCardStaleError,
 } from './revision.service.js';
 import type { ReviewRating } from './sm2.js';
+import { RevisionAnalyticsService } from './revisionAnalytics.service.js';
+
+export async function getRevisionAnalyticsController(
+  req: AuthenticatedRequest,
+  res: Response
+): Promise<Response> {
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
+  }
+  const data = await RevisionAnalyticsService.getAnalytics(userId);
+  // Analytics is private and the server-side Redis cache is scoped to the user.
+  res.setHeader('Cache-Control', 'private, no-store');
+  return res.json({ success: true, data });
+}
 
 export async function getDueCardsController(
   req: AuthenticatedRequest,
