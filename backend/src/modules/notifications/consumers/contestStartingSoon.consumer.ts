@@ -3,6 +3,7 @@ import { UserSettings } from '../../../db/models/userSettings.model.js';
 import { eventBus } from '../../../shared/sse/eventBus.js';
 import { getRedisClient, isRedisConfigured } from '../../../shared/redis/client.js';
 import { logger } from '../../../shared/logger.js';
+import { sendContestPush } from '../pushNotification.service.js';
 
 export interface ContestStartingSoonEvent {
   eventId: string;
@@ -44,7 +45,7 @@ export async function handleContestStartingSoon(
   const optedInSettings = await UserSettings.find({
     'notifications.contestAlerts': true,
   })
-    .select('userId platforms')
+    .select('userId platforms notifications.pushNotifications')
     .lean();
 
   let notificationsCreated = 0;
@@ -90,6 +91,14 @@ export async function handleContestStartingSoon(
 
     if (result.upsertedCount > 0) {
       notificationsCreated++;
+      if (settings.notifications?.pushNotifications !== false) {
+        try {
+          await sendContestPush(userId, event);
+        } catch {
+          // Do not expose provider credentials or stop alerts for other users.
+          logger.warn('[contest-alert-consumer] Web Push delivery failed', { userId, contestId });
+        }
+      }
     }
   }
 

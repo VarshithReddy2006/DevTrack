@@ -3,11 +3,16 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { notificationController } from './notification.controller.js';
 import { authMiddleware, asyncHandler, validateBody } from '../../middleware/index.js';
+import { pushEndpointSchema, pushSubscriptionSchema } from './pushNotification.validation.js';
 
 const router = Router();
 
 // Apply authMiddleware globally to all notification routes
 router.use(authMiddleware);
+
+router.get('/push-key', asyncHandler(notificationController.getPushKey));
+router.post('/subscribe', validateBody(pushSubscriptionSchema), asyncHandler(notificationController.subscribePush));
+router.post('/unsubscribe', validateBody(z.object({ endpoint: pushEndpointSchema })), asyncHandler(notificationController.unsubscribePush));
 
 const updatePreferencesSchema = z.object({
   enableInApp: z.boolean().optional(),
