@@ -11,6 +11,7 @@ import { ResumeOrchestrationEngine } from '../orchestration/ResumeOrchestrationE
 import { ResumeVariantEngine } from '../engines/ResumeVariantEngine.js';
 import { ATSCompatibilityEngine } from '../ats/ATSCompatibilityEngine.js';
 import { scoreBulletEdits } from '../ats/bulletEditScoring.js';
+import { BulletRevisionService } from '../bulletRevision.service.js';
 import { ResumeExportService } from '../export/ResumeExportService.js';
 import { ResumeMLService } from '../ai/ResumeMLService.js';
 import type { CreateResumeProfileDTO, UpdateResumeProfileDTO, GenerateVariantDTO, GenerateVariantRequestV2DTO, ExportResumeDTO, AnalyzeATSDTO, CreateEvidenceClaimDTO } from '../dto/index.js';
@@ -123,8 +124,6 @@ export class ResumeIntelligenceService {
         targetRole: profile?.targetRole,
         keywords: variant.prioritizedSkills,
       });
-      variant.bulletEdits = bulletEdits;
-      variant.atsScore = atsScore;
 
       if (clientScore !== undefined && clientScore !== atsScore.score) {
         logger.warn(
@@ -133,7 +132,9 @@ export class ResumeIntelligenceService {
       }
     }
     await variant.save();
-
+    if (bulletEdits?.length) {
+      return BulletRevisionService.saveInitial(userId.toString(), variant._id.toString(), bulletEdits);
+    }
     return variant;
   }
 

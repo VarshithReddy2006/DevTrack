@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { FeatureFlag } from '../../../db/models/featureFlag.model.js';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeVariant } from '../../../db/models/resumeVariant.model.js';
+import { ResumeBulletRevision } from '../../../db/models/resumeBulletRevision.model.js';
 import { errorHandler } from '../../../middleware/error.js';
 import { renderBulletEdits, scoreBulletEdits } from '../../../modules/resume/ats/bulletEditScoring.js';
 import { GenerateVariantRequestV2Schema, type BulletEditDTO } from '../../../modules/resume/dto/index.js';
@@ -36,6 +37,7 @@ const server = app.listen(0, '127.0.0.1');
 let origin: string;
 
 beforeAll(async () => {
+  await ResumeBulletRevision.init();
   if (!server.listening) await new Promise<void>(resolve => server.once('listening', resolve));
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -70,6 +72,10 @@ describe('POST /variants with ats-live-editor on', () => {
     expect(stored?.atsScore?.score).toBe(69);
     expect(stored).not.toHaveProperty('clientScore');
     expect(stored?.bulletEdits).toEqual(flawed);
+    expect(stored?.bulletRevisionVersion).toBe(1);
+    expect(await ResumeBulletRevision.findOne({ resumeId: stored!._id }).lean()).toMatchObject({
+      sectionId: '*', versionNumber: 1, atsScore: 69, baseSnapshot: [],
+    });
     expect(String(stored?.jobTargetId)).toBe('0123456789abcdef01234567');
 
     const body = await response.json();
