@@ -90,6 +90,7 @@ export function useXp(): XpState & {
       }
     },
     extraInvalidateKeys: [['xp', 'state']],
+    invalidateOn: ['xp_updated', 'level_up'],
   });
 
   return {

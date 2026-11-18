@@ -129,6 +129,7 @@ export function useRuntimeState() {
       }
     },
     extraInvalidateKeys: [['runtime-state']],
+    invalidateOn: ['runtime_state_patch', 'runtime_state_full', 'xp_updated', 'level_up'],
   });
 
   return {
