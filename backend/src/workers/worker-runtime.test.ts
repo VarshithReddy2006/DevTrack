@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createWorkerRuntime, parseWorkerType, WORKER_TYPES, workerDefinitions } from './worker-runtime.js';
 
 const mocks = vi.hoisted(() => {
-  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender'];
+  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender', 'jdParse', 'jdScore'];
   return {
     workers: Object.fromEntries(names.map(name => [name, { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }])),
     schedule: vi.fn().mockResolvedValue(undefined),
@@ -36,6 +36,8 @@ vi.mock('./focus-completion.worker.js', () => ({ createFocusCompletionWorkers: (
 vi.mock('../modules/leagues/workers/weeklyRollover.worker.js', () => ({ startWeeklyRolloverWorker: mocks.workers.leagueRollover.start, stopWeeklyRolloverWorker: mocks.workers.leagueRollover.stop, scheduleWeeklyRollover: mocks.scheduleRollover }));
 vi.mock('../modules/profile/workers/dossierRender.worker.js', () => ({ startDossierRenderWorker: mocks.workers.dossierRender.start, stopDossierRenderWorker: mocks.workers.dossierRender.stop }));
 vi.mock('../modules/profile/workers/ogRender.worker.js', () => ({ startOgRenderWorker: mocks.workers.ogRender.start, stopOgRenderWorker: mocks.workers.ogRender.stop }));
+vi.mock('../modules/job-targets/workers/jdParse.worker.js', () => ({ startJdParseWorker: mocks.workers.jdParse.start, stopJdParseWorker: mocks.workers.jdParse.stop }));
+vi.mock('../modules/job-targets/workers/jdScore.worker.js', () => ({ startJdScoreWorker: mocks.workers.jdScore.start, stopJdScoreWorker: mocks.workers.jdScore.stop }));
 vi.mock('../shared/jobs/notificationWorker.js', () => ({ startNotificationWorker: mocks.workers.notifications.start, stopNotificationWorker: mocks.workers.notifications.stop }));
 vi.mock('./worker-resume-ats.js', () => ({ startResumeATSWorker: mocks.workers.sessionAts.start, stopResumeATSWorker: mocks.workers.sessionAts.stop }));
 vi.mock('./worker-resume-embedding.js', () => ({ startResumeEmbeddingWorker: mocks.workers.sessionEmbedding.start, stopResumeEmbeddingWorker: mocks.workers.sessionEmbedding.stop }));
@@ -63,7 +65,7 @@ describe('standalone worker selection and lifecycle', () => {
   const cases: [string | undefined, string[]][] = [
     ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications', 'leagueScore', 'domainReadiness', 'focusCompletion']], ['maintenance', ['maintenance', 'leagueRollover']],
     ['readiness', ['dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
-    ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender', 'dossierRender']],
+    ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender', 'dossierRender']], ['ai', ['jdParse', 'jdScore']],
     ['all', Object.keys(mocks.workers)], [undefined, Object.keys(mocks.workers)], ['', Object.keys(mocks.workers)],
   ];
   it.each(cases)('starts and drains only consumers for %s', async (selector, expected) => {
@@ -85,6 +87,15 @@ describe('standalone worker selection and lifecycle', () => {
     expect(mocks.closeQueue).toHaveBeenCalledTimes(expected.includes('profile') ? 1 : 0);
     expect(infra.disconnect).toHaveBeenCalledOnce();
     expect(infra.disconnect.mock.invocationCallOrder[0]).toBeGreaterThan(Math.max(...expected.map(name => mocks.workers[name].stop.mock.invocationCallOrder[0])));
+  });
+
+  it('registers jd-parse and jd-score under the ai role and nowhere else', () => {
+    const queues = (role: string) => workerDefinitions.filter(definition => definition.role === role).map(definition => definition.queueName);
+    expect(queues('ai')).toEqual(['jd-parse', 'jd-score']);
+    for (const role of WORKER_TYPES.filter(value => value !== 'ai' && value !== 'all')) {
+      expect(queues(role)).not.toContain('jd-parse');
+      expect(queues(role)).not.toContain('jd-score');
+    }
   });
 
   it.each(['orchestration', 'orch', 'maint', 'typo', 'SYNC', ' sync '])('rejects %j without touching services or loaders', value => {
@@ -197,7 +208,7 @@ describe('standalone worker selection and lifecycle', () => {
   it('keeps production Compose, deployment tables and package commands within the supported contract', () => {
     const compose = readFileSync('../docker-compose.prod.yml', 'utf8');
     const selectors = [...compose.matchAll(/- WORKER_TYPE=([^\s]+)/g)].map(match => match[1]);
-    expect(selectors.sort()).toEqual(['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset', 'render'].sort());
+    expect(selectors.sort()).toEqual(['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset', 'render', 'ai'].sort());
     selectors.forEach(value => expect(parseWorkerType(value)).toBe(value));
     const deployment = readFileSync('../DEPLOYMENT.md', 'utf8');
     for (const match of deployment.matchAll(/WORKER_TYPE=([^`\s]+)/g)) expect(() => parseWorkerType(match[1])).not.toThrow();

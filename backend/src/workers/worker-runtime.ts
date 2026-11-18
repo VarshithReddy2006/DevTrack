@@ -1,5 +1,5 @@
 /** Validate before loading any service modules. */
-export const WORKER_TYPES = ['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset', 'render', 'all'] as const;
+export const WORKER_TYPES = ['sync', 'xp', 'readiness', 'maintenance', 'resume-intelligence', 'dataset', 'render', 'ai', 'all'] as const;
 export type WorkerType = typeof WORKER_TYPES[number];
 type Role = Exclude<WorkerType, 'all'>;
 
@@ -82,6 +82,14 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
   { role: 'render', queueName: 'dossier-render', load: async () => {
     const m = await import('../modules/profile/workers/dossierRender.worker.js');
     return { start: m.startDossierRenderWorker, stop: m.stopDossierRenderWorker };
+  } },
+  { role: 'ai', queueName: 'jd-parse', load: async () => {
+    const m = await import('../modules/job-targets/workers/jdParse.worker.js');
+    return { start: m.startJdParseWorker, stop: m.stopJdParseWorker };
+  } },
+  { role: 'ai', queueName: 'jd-score', load: async () => {
+    const m = await import('../modules/job-targets/workers/jdScore.worker.js');
+    return { start: m.startJdScoreWorker, stop: m.stopJdScoreWorker };
   } },
   { role: 'xp', queueName: 'streak-recalc', load: async () => {
     const m = await import('../shared/jobs/streakRecalcWorker.js');

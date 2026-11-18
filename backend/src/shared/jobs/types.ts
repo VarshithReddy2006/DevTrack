@@ -128,6 +128,19 @@ export interface OgRenderJobData {
   requestId?: string;
 }
 
+/** Job target analysis (WORKER_TYPE=ai). The JD text itself never travels in the job: the worker loads it. */
+export interface JdParseJobData {
+  userId: string;
+  jobTargetId: string;
+  requestId?: string;
+}
+
+export interface JdScoreJobData {
+  userId: string;
+  jobTargetId: string;
+  requestId?: string;
+}
+
 /**
  * One answer to evaluate. `stateVersion` is the session version at which the answer was
  * accepted (state SCORING); the worker only writes a result while the session is still there.
@@ -144,7 +157,7 @@ export interface DossierRenderJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData;
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -163,7 +176,9 @@ export const QueueNames = {
   OG_RENDER: 'domain-og-render',
   DOSSIER_RENDER: 'dossier-render',
 
-  // AI pool (answer evaluation for the mock interview studio)
+  // AI pool (WORKER_TYPE=ai): job description parsing, match scoring, interview scoring
+  JD_PARSE: 'jd-parse',
+  JD_SCORE: 'jd-score',
   INTERVIEW_SCORE: 'interview-score',
 
   // Domain event consumers (outbox relay delivers here)

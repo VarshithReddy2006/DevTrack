@@ -137,6 +137,7 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `domain-og-render` | 1200x630 OG share cards (satori + resvg), cached by content hash in `RenderArtifact` |
 | `dossier-render` | Verified Developer Dossier PDFs (headless Chromium, network blocked), stored via `ObjectStorage` |
 | `interview-score` | Mock interview answer evaluation: streams `interview.turn.delta` events, rubric scoring on the last turn, checklist (basic mode) fallback. The consumer is implemented but not registered in a worker role yet; it needs the InterviewSession model |
+| `jd-parse`, `jd-score` | Job target analysis: taxonomy extraction, model-assisted metadata and STAR rewrites, `jobtarget.parsed` outbox event (`ai` role) |
 
 ### Worker topology
 
@@ -153,15 +154,16 @@ Powered by **BullMQ** on **Redis**. Workers run in separate processes (or contai
 | `worker-resume` | `resume-intelligence` | Resume consumers and profile rebuild |
 | `worker-dataset` | `dataset` | Dataset ingestion |
 | `worker-render` | `render` | OG image and dossier PDF rendering (CPU and memory heavy, isolated from the API) |
+| `worker-ai` | `ai` | Job description parsing and scoring (`jd-parse`, `jd-score`, concurrency 4); slow model calls stay out of the XP and sync pools |
 | `worker-maint` | `maintenance` | Maintenance |
 
 The standalone dispatcher accepts exactly `sync`, `xp`, `readiness`, `maintenance`,
-`resume-intelligence`, `dataset`, `render`, and `all`. An unset or empty selector defaults to
+`resume-intelligence`, `dataset`, `render`, `ai`, and `all`. An unset or empty selector defaults to
 `all` for local development; production services must select an explicit role.
 Unknown values fail before loading service modules or connecting to databases.
 There is no standalone orchestration-compensation consumer: `orch` and
 `orchestration` are invalid selectors. The resume role groups existing consumers;
-it does not add a new orchestration engine. `all` is the union of the seven roles.
+it does not add a new orchestration engine. `all` is the union of the eight roles.
 
 Backend `worker:*` scripts use the same dispatcher with a positional selector.
 An explicit positional selector takes precedence over `WORKER_TYPE`. Shutdown
