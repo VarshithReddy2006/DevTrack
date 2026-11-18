@@ -2,13 +2,14 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose only the requested v2 endpoint through the shared API middleware,
-  // including its global rate limit. Other modules remain on v1.
+  // Expose the v2 analytics and resume revision APIs through shared middleware,
+  // including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
-    if ((req.method === 'GET' || req.method === 'HEAD') && /^\/revision\/analytics\/?$/i.test(req.path)) {
-      return routes(req, res, next);
-    }
-    return next();
+    const analytics = (req.method === 'GET' || req.method === 'HEAD') && /^\/revision\/analytics\/?$/i.test(req.path);
+    const history = (req.method === 'GET' || req.method === 'HEAD') && /^\/resume\/[^/]+\/revisions\/?$/i.test(req.path);
+    const restore = req.method === 'POST' && /^\/resume\/[^/]+\/revisions\/[^/]+\/restore\/?$/i.test(req.path);
+    const save = req.method === 'PUT' && /^\/resume\/[^/]+\/sections\/[^/]+\/bullets\/?$/i.test(req.path);
+    return analytics || history || restore || save ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

@@ -51,6 +51,7 @@ export interface IResumeVariant extends Document {
   bulletEdits?: IBulletEdit[];
   jobTargetId?: Schema.Types.ObjectId;
   atsScore?: IVariantAtsScore;
+  bulletRevisionVersion?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -152,6 +153,7 @@ const resumeVariantSchema = new Schema<IResumeVariant>(
     bulletEdits: { type: [bulletEditSchema], default: undefined },
     jobTargetId: { type: Schema.Types.ObjectId },
     atsScore: { type: variantAtsScoreSchema, default: undefined },
+    bulletRevisionVersion: { type: Number, min: 0, validate: Number.isSafeInteger, default: undefined },
   },
   {
     timestamps: true,
