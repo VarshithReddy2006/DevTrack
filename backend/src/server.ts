@@ -112,29 +112,13 @@ async function bootstrap() {
     logger.warn('Set OPENAI_API_KEY or GEMINI_API_KEY for full intelligence capabilities.');
   }
 
-  if (env.IS_PROD) {
-    const migrations = await discoverMigrations();
-    const connection = mongoose.createConnection(env.MONGODB_URI, {
-      autoCreate: false,
-      autoIndex: false,
-      serverSelectionTimeoutMS: 10000,
-    });
-    try {
-      await connection.asPromise();
-      await createMigrationRunner(connection, migrations).check();
-    } catch (error) {
-      throw new Error(sanitizeMongoError(error instanceof Error ? error.message : String(error)));
-    } finally {
-      await connection.close();
-    }
-  }
-
   const app = await createApp();
 
-  // Phase 6: HTTP server start (bind explicitly to 0.0.0.0 and env.PORT before orchestrator)
-  const host = process.env.HOST || '0.0.0.0';
-  const server = app.listen(env.PORT, host, () => {
-    logger.info(`DevTrack backend listening on ${host}:${env.PORT}`);
+  // Phase 6: HTTP server start (bind immediately to 0.0.0.0 and PORT so cloud port scanners like Render succeed instantly)
+  const host = (env.IS_PROD || process.env.RENDER === 'true') ? '0.0.0.0' : (process.env.HOST || '0.0.0.0');
+  const port = process.env.PORT ? parseInt(process.env.PORT, 10) : env.PORT;
+  const server = app.listen(port, host, () => {
+    logger.info(`DevTrack backend listening on ${host}:${port}`);
     logger.info(`Environment: ${env.NODE_ENV}`);
     logger.info(`API base path: ${API_BASE_PATH}`);
     logger.info(`AI Provider: ${process.env.OPENAI_API_KEY ? 'OpenAI configured' : env.GEMINI_API_KEY ? 'Gemini configured' : 'None (degraded mode)'}`);
@@ -146,6 +130,26 @@ async function bootstrap() {
   });
 
   registerShutdownSignals(server, shutdownTelemetry);
+
+  if (env.IS_PROD) {
+    try {
+      const migrations = await discoverMigrations();
+      const connection = mongoose.createConnection(env.MONGODB_URI, {
+        autoCreate: false,
+        autoIndex: false,
+        serverSelectionTimeoutMS: 10000,
+      });
+      try {
+        await connection.asPromise();
+        await createMigrationRunner(connection, migrations).check();
+      } finally {
+        await connection.close();
+      }
+    } catch (error) {
+      logger.error('CRITICAL: Database migration check failed', error);
+      process.exit(1);
+    }
+  }
 
   // Phase 6.5: Start orchestrator in background (non-blocking)
   orchestrator.startup(app).catch((err) => {
