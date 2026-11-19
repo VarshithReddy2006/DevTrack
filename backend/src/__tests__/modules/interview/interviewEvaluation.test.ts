@@ -22,6 +22,7 @@ const input: EvaluationInput = {
   sessionId: 's-443', userId: 'owner', role: 'backend', durationSeconds: 120, mode: 'basic_mode',
   turns: [{ question: 'Discuss a set', answer: 'Use a set', code: 'new Set()', feedback: null }],
 };
+delete process.env.MONGODB_URI;
 let db: MongoMemoryReplSet;
 beforeAll(async () => {
   if (process.env.MONGODB_URI) throw new Error('Tests require an owned temporary MongoDB, not MONGODB_URI');
