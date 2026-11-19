@@ -2,6 +2,7 @@
 // Day buckets, the rolling 7-day summary and the evidence claim upsert live here so the three
 // consumers and ReadinessSnapshotService agree on one definition of the window.
 import { Types, type ClientSession } from 'mongoose';
+import type { JobTargetGaps } from '../jobTargetGaps.service.js';
 import { ReadinessInput, type IReadinessInput } from '../../../db/models/readinessInput.model.js';
 import {
   ResumeEvidenceClaim,
@@ -31,6 +32,7 @@ export interface ReadinessInputsView {
   };
   jobTargets: {
     activeTargetsCount: number;
+    latestScore?: JobTargetGaps;
     latestTarget: {
       jobTargetId: string;
       targetRole: string | null;

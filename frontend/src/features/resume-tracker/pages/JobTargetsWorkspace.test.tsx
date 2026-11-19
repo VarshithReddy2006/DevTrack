@@ -90,18 +90,18 @@ it('loads the completed report through polling without an SSE event', async () =
   expect(get).toHaveBeenCalledTimes(2);
 }, 8_000);
 
-it('refreshes the matching result on SSE and accepts a rewrite through the API', async () => {
+it.each(['jobtarget.parsed', 'jobtarget.updated'] as const)('refreshes the matching result on %s SSE and accepts a rewrite through the API', async type => {
   get.mockResolvedValueOnce(response(parsing)).mockResolvedValue(response(ready));
   post.mockResolvedValue(response({ variantId: 'variant-1' }));
   mount('/resume/targets/target-1');
   expect(await screen.findByText(/Parsing ·/)).toBeInTheDocument();
 
   act(() => sse.dispatch?.({
-    type: 'jobtarget.parsed', timestamp: parsing.createdAt, payload: { jobTargetId: 'another-target' },
+    type, timestamp: parsing.createdAt, payload: { jobTargetId: 'another-target' },
   }));
   expect(get).toHaveBeenCalledTimes(1);
   act(() => sse.dispatch?.({
-    type: 'jobtarget.parsed', timestamp: parsing.createdAt, payload: { jobTargetId: 'target-1' },
+    type, timestamp: parsing.createdAt, payload: { jobTargetId: 'target-1' },
   }));
 
   expect(await screen.findByText('73%')).toBeInTheDocument();
