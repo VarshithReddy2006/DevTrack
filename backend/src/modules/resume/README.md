@@ -113,3 +113,65 @@ latency, live Clerk enrollment, and browser editor integration require separate
 verification. The endpoint does not add an editor debounce or UI.
 Tests use owned temporary MongoDB replica sets and stub authentication/rate-limit
 boundaries; no live Clerk or AI credentials are required.
+
+## ACR bullet suggestions
+
+`POST /api/v2/resume/bullets/suggest` accepts an authenticated Clerk session mapped
+to a local user. Existing v1 and unversioned aliases also work. The global API
+limiter and `rateLimiters.expensiveAction` apply, including to cache hits.
+The latter uses the existing shared user budget of five expensive actions/hour
+and fails closed if Redis is unavailable.
+
+Request:
+
+```json
+{"bullet":"Worked on reliable API services for customer requests","targetRole":"Backend engineer","skillsToHighlight":["API"]}
+```
+
+The shared Zod contract bounds the trimmed bullet to 10–500 characters, role to
+100 characters and skills to 20 strings of at most 80 characters.
+The success envelope contains `data.rewrites`: three ordered High Impact,
+Technical Depth and Leadership/Ownership options. Each contains `action`,
+`context`, `result`, assembled `text`, `actionVerb`, `metricPlaceholder`, and
+`atsScoreGain`. The gain is the signed shared ATS bullet-preview delta, computed
+by the server using requested keywords; it is advisory, not a prediction of a
+recruiter's score. Result fields always use explicit placeholders for the user to
+replace only with verified evidence.
+
+The service uses LLMGateway with the existing `resume_rewrite` quota. The gateway
+currently supports text completions: the JSON output shape is supplied in the
+system prompt and the returned JSON is strictly validated locally, rather than
+using a provider-native constrained decoding schema. Inputs are escaped and
+delimited as untrusted data. Model numbers and taxonomy-recognized skills must
+already occur in the original bullet; role/skill preferences do not establish
+experience. Schema and evidence failures discard the entire reply.
+These checks cannot verify all semantic claims or prevent every hallucination:
+users must review responsibility, outcomes and wording before accepting a suggestion.
+
+Validated AI responses are cached for 24 hours by a SHA-256 hash of user, bullet,
+role and skills. Raw text is not included in keys, but response values contain
+resume text; apply the deployment's normal Redis access/retention controls.
+Concurrent identical requests coalesce within one API process. Multiple API
+processes can still make duplicate model calls on simultaneous cold misses.
+The gateway's own prompt hash is also scoped to a hash of the local user ID.
+Cache hits avoid another quota/model call, but still consume the HTTP rate budget.
+
+`mode: "ai"` identifies validated model output. On unavailable/heuristic or
+rejected output, `mode: "template"` and `degradedReason` identify uncached
+editing guidance: these are prompts to complete, not polished achievement claims.
+Template gains are zero. Quota denial remains HTTP 429. Cache I/O failures do not
+fail service generation; HTTP traffic still requires the Redis-backed limiter.
+
+No credentials, model API calls, database writes or frontend integration are
+needed for the regression tests:
+
+```sh
+npm run test:bullet-rewrite --prefix backend
+npm test --workspace @devtrack/contracts
+npm run build --prefix backend
+```
+
+Tests use fixture authentication, provider responses and Redis commands. They
+exercise real HTTP routing, shared contract validation and expensive-action
+middleware, but do not verify live Clerk, provider output quality, Redis
+deployment or production latency. The gateway's existing provider timeouts apply.
