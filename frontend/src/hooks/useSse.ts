@@ -45,6 +45,8 @@ export type SseEventType =
   | 'interview.turn.delta'
   | 'interview.session.completed'
   | 'jobtarget.parsed'
+  | 'quest.completed'
+  | 'quest.claimed'
   | 'heartbeat';
 
 // ---------------------------------------------------------------------------

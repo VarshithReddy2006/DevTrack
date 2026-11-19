@@ -101,6 +101,13 @@ export function handleSseEvent(
       break;
     }
 
+    case 'quest.completed':
+    case 'quest.claimed': {
+      queryClient.invalidateQueries({ queryKey: queryKeys.quests.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.xp.current });
+      break;
+    }
+
     // ─── Achievement unlocked ───
     case 'achievement_unlocked':
     case 'badge_earned': {
