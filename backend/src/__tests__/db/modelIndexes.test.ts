@@ -23,6 +23,7 @@ import '../../db/models/behavioralTelemetry.model.js';
 import '../../db/models/betaCohort.model.js';
 import '../../db/models/betaUser.model.js';
 import '../../db/models/careerIntent.model.js';
+import '../../db/models/careerRoadmap.model.js';
 import '../../db/models/connectedPlatform.model.js';
 import '../../db/models/dailyActivity.model.js';
 import '../../db/models/dailyChallenge.model.js';

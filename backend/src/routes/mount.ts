@@ -2,8 +2,8 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose the v2 revision, resume revision, and push APIs through shared middleware,
-  // including the global rate limit. Other modules remain on v1.
+  // Expose the v2 revision, resume revision, push, and readiness roadmap APIs through shared
+  // middleware, including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
     const revision = (req.method === 'GET' || req.method === 'HEAD') && /^\/revision\/(analytics|queue)\/?$/i.test(req.path);
     const history = (req.method === 'GET' || req.method === 'HEAD') && /^\/resume\/[^/]+\/revisions\/?$/i.test(req.path);
@@ -12,7 +12,10 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const diffScore = req.method === 'POST' && /^\/resume\/diff-score\/?$/i.test(req.path);
     const pushKey = (req.method === 'GET' || req.method === 'HEAD') && /^\/notifications\/push-key\/?$/i.test(req.path);
     const pushSubscription = req.method === 'POST' && /^\/notifications\/(subscribe|unsubscribe)\/?$/i.test(req.path);
-    return revision || history || restore || save || diffScore || pushKey || pushSubscription ? routes(req, res, next) : next();
+    const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap\/?$/i.test(req.path))
+      || (req.method === 'POST' && /^\/readiness\/roadmap\/generate\/?$/i.test(req.path))
+      || (req.method === 'PATCH' && /^\/readiness\/roadmap\/milestones\/[^/]+\/tasks\/[^/]+\/?$/i.test(req.path));
+    return revision || history || restore || save || diffScore || pushKey || pushSubscription || roadmap ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);
