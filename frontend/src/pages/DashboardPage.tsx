@@ -16,6 +16,7 @@ import { DailyChallengeCard } from '../components/dashboard/DailyChallengeCard';
 import { useDailyChallenge } from '../hooks/useDailyChallenge';
 import { ErrorBoundary } from '../components/ui/ErrorBoundary';
 import { RetentionBanner } from '../components/dashboard/RetentionBanner';
+import { TieredQuestsDrawer } from '../features/quests/components/TieredQuestsDrawer';
 
 // removed unused transformRecentActivities
 
@@ -36,6 +37,7 @@ const DashboardPage: React.FC = () => {
   const { challenge } = useDailyChallenge();
   const { logout, isLoggingOut } = useLogout('/login');
   const [contests, setContests] = React.useState<{ name: string; platform: string; time: string }[]>([]);
+  const [questsOpen, setQuestsOpen] = React.useState(false);
 
   const lastSevenDays = React.useMemo(() => {
     const days = [];
@@ -133,7 +135,8 @@ const DashboardPage: React.FC = () => {
             SECTION 1 — HERO HEADER
             ========================================== */}
         <section>
-          <DashboardHeader />
+          <DashboardHeader onOpenQuests={() => setQuestsOpen(true)} />
+          <TieredQuestsDrawer open={questsOpen} onClose={() => setQuestsOpen(false)} />
         </section>
 
         {/* ==========================================

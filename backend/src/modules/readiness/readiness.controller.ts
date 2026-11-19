@@ -9,6 +9,7 @@ import { withAuth } from '../../shared/controllerUtils.js';
 import { logger } from '../../shared/logger.js';
 import { isFlagEnabled } from '../flags/flags.service.js';
 import { ReadinessSnapshotService } from './snapshot/ReadinessSnapshotService.js';
+import { getReadinessScore } from './readinessScore.service.js';
 
 export const READINESS_V2_FLAG = 'readiness-v2';
 
@@ -27,6 +28,10 @@ async function readinessInputsFor(userId: string) {
 }
 
 export const ReadinessController = {
+  getScore: withAuth('[readiness]', 'get readiness score', async (userId, _req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    ApiResponse.success(res, await getReadinessScore(userId));
+  }),
   getSnapshot: withAuth('[readiness]', 'get snapshot', async (userId, _req, res) => {
     const dynamicSnapshot = await ReadinessOrchestratorService.computeDynamicSnapshot(userId);
     const inputs = await readinessInputsFor(userId);

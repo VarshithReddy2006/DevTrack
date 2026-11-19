@@ -15,7 +15,11 @@ const MOTIVATIONAL_INSIGHTS = [
   "Your problem-solving velocity is higher than your 30-day average."
 ];
 
-export const DashboardHeader: React.FC = () => {
+interface DashboardHeaderProps {
+  onOpenQuests: () => void;
+}
+
+export const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onOpenQuests }) => {
   const displayName = useUserStore((s) => s.user?.displayName) || 'there';
   const fetchAllPlatforms = useProfileStore((s) => s.fetchAllPlatforms);
   const syncState = useProfileStore((s) => s.syncState);
@@ -147,6 +151,14 @@ export const DashboardHeader: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-3 relative z-10">
+        <button
+          type="button"
+          onClick={onOpenQuests}
+          aria-label="Open quests"
+          className="rounded-xl border border-dt-primary/10 bg-white/40 p-2.5 text-dt-textSecondary shadow-sm transition hover:border-dt-primary/30 hover:text-dt-primary"
+        >
+          <Icon name="trophy" size={17} />
+        </button>
         <button
           onClick={handleSync}
           disabled={isSyncing}

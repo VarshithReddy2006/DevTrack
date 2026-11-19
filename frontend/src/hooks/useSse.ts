@@ -46,6 +46,8 @@ export type SseEventType =
   | 'interview.session.completed'
   | 'jobtarget.parsed'
   | 'jobtarget.updated'
+  | 'quest.completed'
+  | 'quest.claimed'
   | 'heartbeat';
 
 // ---------------------------------------------------------------------------
