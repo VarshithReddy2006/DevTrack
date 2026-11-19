@@ -1,5 +1,6 @@
 // src/modules/projects/projects.service.ts
 import { cacheManager } from '../../shared/cache/cacheManager.js';
+import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
 import { Types } from 'mongoose';
 import { Project, ProjectTask, ActivityEvent } from '../../db/models/index.js';
 import { rankBetween } from '../../db/models/projectTask.model.js';
@@ -91,6 +92,7 @@ export async function createProject(userId: string, payload: ApiProjectCreatePay
     await VerifiedProjectIngestionService.ingestAfterChange(userId, project._id);
   }
   await cacheManager.invalidateDashboard(userId);
+  await invalidateCacheTag(portfolioTag(userId));
 
   // Activity logging
   createActivity(userId, {
@@ -128,6 +130,7 @@ export async function updateProject(
       await VerifiedProjectIngestionService.ingestAfterChange(userId, project._id);
     }
     await cacheManager.invalidateDashboard(userId);
+    await invalidateCacheTag(portfolioTag(userId));
     // Build a human-readable description of what changed
     const changes: string[] = [];
     if (payload.name) changes.push(`renamed to "${payload.name}"`);
@@ -191,6 +194,7 @@ export async function deleteProject(userId: string, projectId: string): Promise<
   const { name, repoUrl } = deletedProject;
   if (parseGitHubRepositoryUrl(repoUrl)) await VerifiedProjectIngestionService.queueRefresh(userId);
   await cacheManager.invalidateDashboard(userId);
+  await invalidateCacheTag(portfolioTag(userId));
   createActivity(userId, {
     type: 'project_deleted',
     title: `Deleted project ${name}`,
@@ -546,6 +550,7 @@ export async function syncProject(userId: string, projectId: string): Promise<Pr
   if (updated) {
     await VerifiedProjectIngestionService.ingestAfterChange(userId, updated._id);
     await cacheManager.invalidateDashboard(userId);
+    await invalidateCacheTag(portfolioTag(userId));
   }
   return updated ? 'synced' : 'repo_changed';
 }
