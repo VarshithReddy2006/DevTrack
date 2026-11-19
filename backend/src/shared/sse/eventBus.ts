@@ -243,6 +243,7 @@ export type SseEventType =
   | 'dsa_problem_solved'
   | 'contest_starting_soon'
   | 'revision_reviewed'
+  | 'revision.card_created'
   | 'streak_updated'
   | 'league_week_finalized'
   // AI mock interview studio

@@ -67,6 +67,8 @@ export type DomainEventType =
   // v2 Milestone domain events
   | 'focus.session.completed'
   | 'dsa.problem.solved'
+  | 'dsa.submission.evaluated'
+  | 'revision.card_created'
   | 'revision.reviewed'
   | 'jobtarget.parsed'
   | 'contest.starting-soon'
