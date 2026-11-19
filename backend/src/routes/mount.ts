@@ -14,7 +14,8 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const diffScore = req.method === 'POST' && /^\/resume\/diff-score\/?$/i.test(req.path);
     const pushKey = (req.method === 'GET' || req.method === 'HEAD') && /^\/notifications\/push-key\/?$/i.test(req.path);
     const pushSubscription = req.method === 'POST' && /^\/notifications\/(subscribe|unsubscribe)\/?$/i.test(req.path);
-    const portfolio = (req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/[^/]+\/?$/i.test(req.path);
+    const portfolio = ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/[^/]+(\/dossier\.pdf)?\/?$/i.test(req.path))
+      || (req.method === 'POST' && /^\/portfolio\/[^/]+\/dossier\/token\/?$/i.test(req.path));
     const readinessScore = (req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/score\/?$/i.test(req.path);
     const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/readiness\/roadmap\/generate\/?$/i.test(req.path))
