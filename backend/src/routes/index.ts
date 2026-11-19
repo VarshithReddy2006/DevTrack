@@ -1,3 +1,4 @@
+import { questRoutes } from '../modules/quests/quest.routes.js';
 // src/routes/index.ts - Route composition
 import { Router } from 'express';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -96,6 +97,7 @@ router.use('/recommendations', rateLimiters.ai, recommendationRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/revision', revisionRoutes);
 router.use('/leagues', leaguesRoutes);
+router.use('/quests', questRoutes);
 router.use('/ai', rateLimiters.ai, aiQuotaRoutes);
 
 export default router;
