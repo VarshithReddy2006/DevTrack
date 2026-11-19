@@ -8,6 +8,7 @@ import { ReadinessCore } from '../../../db/models/readinessCore.model.js';
 import { ReadinessInput } from '../../../db/models/readinessInput.model.js';
 import { logger } from '../../../shared/logger.js';
 import { summarizeInputs, toObjectId, type ReadinessInputsView } from '../consumers/readinessInputs.js';
+import { getJobTargetGaps } from '../jobTargetGaps.service.js';
 
 export interface ReadinessSnapshot {
   snapshotId: string;
@@ -59,7 +60,10 @@ export class ReadinessSnapshotServiceClass {
   async getInputs(userId: string, now: Date = new Date()): Promise<ReadinessInputsView> {
     const objectId = toObjectId(userId);
     const doc = objectId ? await ReadinessInput.findOne({ userId: objectId }) : null;
-    return summarizeInputs(doc, now);
+    const view = summarizeInputs(doc, now);
+    const gaps = objectId ? await getJobTargetGaps(userId) : null;
+    if (gaps) view.jobTargets.latestScore = gaps;
+    return view;
   }
 
   async createReadinessSnapshot(userId: string, changeDescription: string, createdBy = 'system'): Promise<ReadinessSnapshot> {

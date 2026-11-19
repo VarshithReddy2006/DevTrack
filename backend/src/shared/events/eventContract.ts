@@ -74,6 +74,7 @@ export type DomainEventType =
   | 'quest.completed'
   | 'quest.claimed'
   | 'jobtarget.parsed'
+  | 'jobtarget.scored'
   | 'contest.starting-soon'
   | 'league.week.finalized'
   // Public profile integrity
@@ -169,6 +170,16 @@ export interface JobTargetParsedPayload {
   requiredSkills?: string[];
   analysisMode?: 'ai' | 'taxonomy_only';
 }
+
+/** Percentage score (0–100), with missing skills ordered by the scorer's priority. */
+export const jobTargetScoredV1Schema = z.object({
+  jobTargetId: z.string().regex(/^[a-fA-F0-9]{24}$/),
+  matchScore: z.number().finite().min(0).max(100),
+  missingSkills: z.array(z.string().trim().min(1).max(200)).max(50),
+  scoredAt: z.string().datetime(),
+});
+
+export type JobTargetScoredPayload = z.infer<typeof jobTargetScoredV1Schema>;
 
 export interface OrchestrationStageFailedPayload {
   stage: string;
