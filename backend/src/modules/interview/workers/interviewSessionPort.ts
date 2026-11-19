@@ -18,6 +18,8 @@ export interface ScoringTurn {
   answer: string | null;
   /** Interviewer reply stored for the turn, if one was already written. */
   feedback: string | null;
+  /** Submitted source, when collected by the session service. Never inferred from feedback. */
+  code?: string | null;
 }
 
 /** Read-only view of a session, as much of it as scoring needs. */
@@ -36,6 +38,8 @@ export interface ScoringSession {
   mode?: InterviewMode;
   /** Planned and answered turns so far, index = turn index. */
   turns: ScoringTurn[];
+  /** Actual elapsed duration, if recorded by the session service. */
+  durationSeconds?: number | null;
 }
 
 export interface TurnGuard {
@@ -74,6 +78,10 @@ export interface InterviewSessionPort {
    */
   commitTurnResult(result: TurnResult): Promise<CommitResult>;
 
-  /** Same guard as commitTurnResult; also stores the scorecard and completes the session. */
+  /**
+   * Same guard as commitTurnResult; also stores the scorecard and completes the session.
+   * The production adapter should stageInterviewEvaluation(completedEvaluationInput(snapshot), transaction)
+   * in this same transaction. The score worker's post-commit enqueue/retry is a backup, not an atomic outbox.
+   */
   commitFinalResult(result: FinalResult): Promise<CommitResult>;
 }

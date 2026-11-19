@@ -75,6 +75,43 @@ function setup(scripts: Script[] = []) {
 
 const ANSWER = 'I would clarify requirements first, estimate 40 writes per second, then use a base62 counter with a cache in front of a key value store.';
 
+describe('completed transcript evaluation handoff', () => {
+  it('hands the persisted completed transcript to the evaluator after the final CAS', async () => {
+    const t = setup();
+    const evaluateCompleted = vi.fn().mockResolvedValue(undefined);
+    t.deps.evaluateCompleted = evaluateCompleted;
+    const session = t.port.add(scoringSession({ answers: [ANSWER], totalTurns: 1, mode: 'basic_mode' }));
+    await processInterviewScoreJob(t.job(session), t.deps);
+    expect(evaluateCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'completed', stateVersion: 5, turns: expect.arrayContaining([expect.objectContaining({ answer: ANSWER })]),
+    }));
+    expect(t.port.writes).toHaveLength(1);
+  });
+  it('recovers a post-commit enqueue failure when the original final job retries', async () => {
+    const t = setup();
+    const evaluateCompleted = vi.fn().mockRejectedValueOnce(new Error('queue unavailable')).mockResolvedValue(undefined);
+    t.deps.evaluateCompleted = evaluateCompleted;
+    const session = t.port.add(scoringSession({ answers: [ANSWER], totalTurns: 1, mode: 'basic_mode' }));
+    const data = t.job(session);
+    await expect(processInterviewScoreJob(data, t.deps)).rejects.toThrow('queue unavailable');
+    expect(session.status).toBe('completed');
+    expect(t.completed).toHaveLength(1);
+    expect(await processInterviewScoreJob(data, t.deps)).toMatchObject({ outcome: 'discarded', reason: 'session_completed' });
+    expect(evaluateCompleted).toHaveBeenCalledTimes(2);
+    expect(t.port.writes).toHaveLength(1);
+  });
+  it('does not hand off non-final results or unrelated completed versions', async () => {
+    const t = setup();
+    const evaluateCompleted = vi.fn();
+    t.deps.evaluateCompleted = evaluateCompleted;
+    const session = t.port.add(scoringSession({ answers: [ANSWER], mode: 'basic_mode' }));
+    await processInterviewScoreJob(t.job(session), t.deps);
+    session.status = 'completed';
+    await processInterviewScoreJob({ ...t.job(session), stateVersion: 99 }, t.deps);
+    expect(evaluateCompleted).not.toHaveBeenCalled();
+  });
+});
+
 describe('interview-score worker: streaming', () => {
   it('publishes every delta with monotonic seq, the job turn and stateVersion, and stores the reply', async () => {
     const t = setup([{ deltas: ['Good ', 'scoping. ', 'Add ', 'failure modes.'] }]);

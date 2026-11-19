@@ -58,6 +58,19 @@ beforeEach(() => {
 });
 afterEach(() => bus.shutdown());
 
+describe('interview.report_ready', () => {
+  it('sends report identity and mode only to the candidate owner', async () => {
+    const owner = connect(bus, 'candidate');
+    const other = connect(bus, 'another-user');
+    await bus.publishEnvelope('candidate', 'interview.report_ready', { sessionId: 's1', reportId: 'r1', mode: 'ai' });
+    expect(other).toHaveLength(0);
+    expect(owner).toHaveLength(1);
+    expect(parseFrame(owner[0]).data).toMatchObject({
+      type: 'interview.report_ready', userId: 'candidate', payload: { sessionId: 's1', reportId: 'r1', mode: 'ai' },
+    });
+  });
+});
+
 describe('interview.turn.delta', () => {
   const payload = { sessionId: 's1', turnIndex: 2, stateVersion: 9, delta: 'Nice ', seq: 0 };
 
