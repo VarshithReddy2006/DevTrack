@@ -12,7 +12,8 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const diffScore = req.method === 'POST' && /^\/resume\/diff-score\/?$/i.test(req.path);
     const pushKey = (req.method === 'GET' || req.method === 'HEAD') && /^\/notifications\/push-key\/?$/i.test(req.path);
     const pushSubscription = req.method === 'POST' && /^\/notifications\/(subscribe|unsubscribe)\/?$/i.test(req.path);
-    return revision || history || restore || save || diffScore || pushKey || pushSubscription ? routes(req, res, next) : next();
+    const portfolio = /^\/portfolio(\/.*)?$/i.test(req.path);
+    return revision || history || restore || save || diffScore || pushKey || pushSubscription || portfolio ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

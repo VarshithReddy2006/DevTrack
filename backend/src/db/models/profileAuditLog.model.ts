@@ -9,7 +9,8 @@ export interface IProfileAuditLog extends Document {
     | 'flag_cleared'
     | 'project_verified'
     | 'project_rejected'
-    | 'visibility_changed';
+    | 'visibility_changed'
+    | 'dossier_downloaded';
   triggeredBy: 'system' | 'admin' | 'user';
   details: Record<string, unknown>;
   suspicionScoreBefore: number | null;
@@ -30,6 +31,7 @@ const ProfileAuditLogSchema = new Schema<IProfileAuditLog>(
         'project_verified',
         'project_rejected',
         'visibility_changed',
+        'dossier_downloaded',
       ],
       required: true,
     },
