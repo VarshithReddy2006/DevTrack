@@ -1,5 +1,8 @@
 // src/modules/revision/revision.routes.ts — Revision cards routes
 import { Router } from 'express';
+import { validateContract } from '../../middleware/validation.js';
+import { RevisionQueueQuerySchema, RevisionQueueService } from './revisionQueue.service.js';
+import type { AuthenticatedRequest } from '../../middleware/auth.js';
 import { asyncHandler, authMiddleware } from '../../middleware/index.js';
 import {
   getDueCardsController,
@@ -8,6 +11,14 @@ import {
 } from './revision.controller.js';
 
 const router = Router();
+
+router.get('/queue', authMiddleware, validateContract({ query: RevisionQueueQuerySchema }, async (req, res) => {
+  const userId = (req as AuthenticatedRequest).user?.id;
+  if (!userId) return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
+  const data = await RevisionQueueService.getQueue({ userId, ...req.validQuery });
+  res.setHeader('Cache-Control', 'private, no-store');
+  return res.json({ success: true, count: data.length, data });
+}));
 
 router.get('/analytics', authMiddleware, asyncHandler(getRevisionAnalyticsController));
 

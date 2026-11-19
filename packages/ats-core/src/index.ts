@@ -1,4 +1,5 @@
 export { splitBullets } from './bullets.js';
+export { evaluateBulletEdits, renderBulletEdits, type BulletEdit, type BulletScoringContext } from './bulletEdits.js';
 export { scoreDifferential, type ScoreDifferentialInput, type ScoreDifferentialResult } from './scoring/scoreDifferential.js';
 export { validateFormatting, validateParserSafety } from './formatting.js';
 export { analyzeQuantifiedImpact } from './impact.js';
