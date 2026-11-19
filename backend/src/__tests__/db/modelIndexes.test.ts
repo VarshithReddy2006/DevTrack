@@ -66,6 +66,7 @@ import '../../db/models/readinessInput.model.js';
 import '../../db/models/readinessProjects.model.js';
 import '../../db/models/readinessRoadmap.model.js';
 import '../../db/models/readinessSkills.model.js';
+import '../../db/models/readinessSnapshot.model.js';
 import '../../db/models/readinessSnapshotRecord.model.js';
 import '../../db/models/recommendation.model.js';
 import '../../db/models/recommendationMemory.model.js';
