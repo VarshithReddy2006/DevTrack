@@ -4,9 +4,11 @@ import { FocusResultDialog } from './FocusResultDialog';
 import { FocusTodayCompact } from './FocusTodayCompact';
 import { FocusHistoryDrawer } from './FocusHistoryDrawer';
 import { formatTime } from '../hooks/useFocusSession';
+import { focusService } from '../services/focusService';
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe('FocusResultDialog', () => {
@@ -102,6 +104,38 @@ describe('FocusTodayCompact', () => {
 });
 
 describe('FocusHistoryDrawer', () => {
+  it('shows the empty state without fabricated sessions when history is empty', async () => {
+    vi.spyOn(focusService, 'getHistory').mockResolvedValue([]);
+
+    render(<FocusHistoryDrawer isOpen={true} onClose={vi.fn()} />);
+
+    expect(await screen.findByText('No sessions recorded yet')).toBeDefined();
+    expect(screen.queryByText('Deep Work')).toBeNull();
+    expect(screen.queryByText('DSA Sprint')).toBeNull();
+    expect(screen.queryByText('Debugging')).toBeNull();
+    expect(screen.queryByText('Learning')).toBeNull();
+  });
+
+  it('renders only sessions returned by the history API', async () => {
+    vi.spyOn(focusService, 'getHistory').mockResolvedValue([{
+      id: 'session-1',
+      mode: 'deep_work',
+      durationMinutes: 30,
+      startedAt: '2026-01-01T12:00:00.000Z',
+      status: 'completed',
+      xpAwarded: 30,
+      xpReason: 'qualified',
+    }]);
+
+    render(<FocusHistoryDrawer isOpen={true} onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Deep Work')).toBeDefined();
+    expect(screen.getByText('30 minutes')).toBeDefined();
+    expect(screen.queryByText('DSA Sprint')).toBeNull();
+    expect(screen.queryByText('Debugging')).toBeNull();
+    expect(screen.queryByText('Learning')).toBeNull();
+  });
+
   it('renders drawer with sessions and filter controls when open', () => {
     const onClose = vi.fn();
     render(<FocusHistoryDrawer isOpen={true} onClose={onClose} />);

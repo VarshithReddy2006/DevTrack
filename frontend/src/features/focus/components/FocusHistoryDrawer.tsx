@@ -20,49 +20,7 @@ export const FocusHistoryDrawer: React.FC<FocusHistoryDrawerProps> = ({
     if (!isOpen) return;
     setLoading(true);
     focusService.getHistory(30).then((items) => {
-      // If server returned empty, provide clean simulated past sessions for showcase
-      if (!items || items.length === 0) {
-        setHistory([
-          {
-            id: 'mock-1',
-            mode: 'deep_work',
-            durationMinutes: 45,
-            startedAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-            status: 'completed',
-            xpAwarded: 45,
-            xpReason: 'qualified',
-          },
-          {
-            id: 'mock-2',
-            mode: 'dsa',
-            durationMinutes: 25,
-            startedAt: new Date(Date.now() - 3600000 * 5).toISOString(),
-            status: 'completed',
-            xpAwarded: 25,
-            xpReason: 'qualified',
-          },
-          {
-            id: 'mock-3',
-            mode: 'debug',
-            durationMinutes: 15,
-            startedAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-            status: 'completed',
-            xpAwarded: 15,
-            xpReason: 'qualified',
-          },
-          {
-            id: 'mock-4',
-            mode: 'learn',
-            durationMinutes: 5,
-            startedAt: new Date(Date.now() - 3600000 * 28).toISOString(),
-            status: 'abandoned',
-            xpAwarded: 0,
-            xpReason: 'below_min_duration',
-          },
-        ]);
-      } else {
-        setHistory(items);
-      }
+      setHistory(items ?? []);
       setLoading(false);
     });
   }, [isOpen]);
