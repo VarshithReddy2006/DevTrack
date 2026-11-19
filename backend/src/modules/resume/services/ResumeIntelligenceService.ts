@@ -207,6 +207,8 @@ export class ResumeIntelligenceService {
       verificationStatus: 'unverified',
     });
 
+    const { enqueueEvidenceVerification } = await import('../../readiness/verification/evidenceVerification.queue.js');
+    await enqueueEvidenceVerification(claim);
     logger.info(`[ResumeIntelligence] Created evidence claim for user ${userId}`);
 
     return claim;

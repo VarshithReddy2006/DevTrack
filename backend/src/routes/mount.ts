@@ -2,7 +2,7 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose the v2 revision, resume revision, and push APIs through shared middleware,
+  // Expose the v2 revision, resume revision, portfolio, and push APIs through shared middleware,
   // including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
     const quests = ((req.method === 'GET' || req.method === 'HEAD') && /^\/quests\/?$/i.test(req.path)) || (req.method === 'POST' && /^\/quests\/[^/]+\/claim\/?$/i.test(req.path));
@@ -14,7 +14,8 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const diffScore = req.method === 'POST' && /^\/resume\/diff-score\/?$/i.test(req.path);
     const pushKey = (req.method === 'GET' || req.method === 'HEAD') && /^\/notifications\/push-key\/?$/i.test(req.path);
     const pushSubscription = req.method === 'POST' && /^\/notifications\/(subscribe|unsubscribe)\/?$/i.test(req.path);
-    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription ? routes(req, res, next) : next();
+    const portfolio = (req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/[^/]+\/?$/i.test(req.path);
+    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

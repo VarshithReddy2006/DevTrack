@@ -1,5 +1,6 @@
 // src/modules/profile/profile.service.ts
 import { cacheManager } from '../../shared/cache/cacheManager.js';
+import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
 import { Types } from 'mongoose';
 import { User, UserProfile, ConnectedPlatform, PlatformStats } from '../../db/models/index.js';
 import { PLATFORMS } from '../../config/constants.js';
@@ -67,6 +68,7 @@ export async function updateProfile(userId: string, payload: ApiProfileUpdatePay
     );
   }
 
+  await invalidateCacheTag(portfolioTag(userId));
   return getProfile(userId);
 }
 
@@ -123,6 +125,7 @@ export async function addTechStack(userId: string, tag: string): Promise<string[
     { upsert: true, new: true }
   );
 
+  await invalidateCacheTag(portfolioTag(userId));
   return profile?.techStack || [];
 }
 
@@ -177,5 +180,6 @@ export async function removeTechStack(userId: string, tag: string): Promise<stri
     { new: true }
   );
 
+  await invalidateCacheTag(portfolioTag(userId));
   return profile?.techStack || [];
 }
