@@ -1,3 +1,4 @@
+import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { InternalAxiosRequestConfig } from 'axios';
@@ -37,6 +38,8 @@ vi.mock('./SignupPage', () => ({ SignupPage: () => <h1>Signup</h1> }));
 
 const publicProfile = {
   username: 'someone',
+  settings: { theme: 'terminal-monospace', sectionOrder: ['dsa', 'streak', 'github', 'projects', 'activity'] },
+  sections: { streak: true, dsa: true, github: true, projects: true, activity: true },
   identity: { displayName: 'Some One', levelName: 'Builder' },
   dsa: {
     totalSolved: 312,
@@ -92,6 +95,16 @@ describe('public profile route /u/:username', () => {
     expect(publicCalls[0].headers.Authorization).toBeUndefined();
     // nothing else on this page should hit the owner-only profile endpoints
     expect(requests.filter((r) => r.url === '/profile')).toHaveLength(0);
+  });
+
+  it('applies the saved public theme and section order', async () => {
+    renderAt('/u/someone');
+    await screen.findByText('Some One');
+    const page = document.querySelector('.portfolio-theme-terminal-monospace');
+    expect(page).toBeInTheDocument();
+    const dsa = screen.getByRole('heading', { name: 'DSA telemetry' });
+    const identity = screen.getByText('Some One');
+    expect(dsa.compareDocumentPosition(identity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('hides owner-only controls from anonymous viewers', async () => {

@@ -13,6 +13,18 @@ const PUBLICATION_URL = '/profile/publication';
 export const PUBLICATION_SECTIONS = ['streak', 'dsa', 'github', 'projects', 'activity'] as const;
 export type PublicationSection = typeof PUBLICATION_SECTIONS[number];
 export type PublicationSections = Record<PublicationSection, boolean>;
+export const PUBLIC_PORTFOLIO_THEMES = [
+  'modern-dark',
+  'clean-minimal-light',
+  'monokai-hacker',
+  'terminal-monospace',
+] as const;
+export type PublicPortfolioTheme = typeof PUBLIC_PORTFOLIO_THEMES[number];
+
+export interface PortfolioSettings {
+  theme: PublicPortfolioTheme;
+  sectionOrder: PublicationSection[];
+}
 
 export interface PublicationStatus {
   published: boolean;
@@ -22,12 +34,14 @@ export interface PublicationStatus {
   publicationVersion: number;
   consentVersion: string | null;
   publishedAt: string | null;
+  settings: PortfolioSettings;
 }
 
 export interface PublishInput {
   slug: string;
   sections: PublicationSections;
   consentVersion: string;
+  settings?: PortfolioSettings;
 }
 
 export async function fetchPublication(options?: { signal?: AbortSignal }): Promise<PublicationStatus> {

@@ -1,6 +1,12 @@
 import type { ClientSession, Types } from 'mongoose';
 import { ProfileAuditLog } from '../../db/models/profileAuditLog.model.js';
-import { PUBLIC_PROFILE_SECTIONS, PublicProfile, type IPublicProfile } from '../../db/models/publicProfile.model.js';
+import {
+  DEFAULT_PUBLIC_PROFILE_THEME,
+  PUBLIC_PROFILE_SECTIONS,
+  PublicProfile,
+  type IPublicProfile,
+  type PublicProfileTheme,
+} from '../../db/models/publicProfile.model.js';
 import { RenderArtifact } from '../../db/models/renderArtifact.model.js';
 import { RESERVED_SLUGS, SLUG_PATTERN, UsernameReservation } from '../../db/models/usernameReservation.model.js';
 import { User } from '../../db/models/user.model.js';
@@ -27,13 +33,35 @@ export interface PublicationStatus {
   publicationVersion: number;
   consentVersion: string | null;
   publishedAt: Date | null;
+  settings: {
+    theme: PublicProfileTheme;
+    sectionOrder: (typeof PUBLIC_PROFILE_SECTIONS)[number][];
+  };
 }
 
 const hiddenSections = () => Object.fromEntries(PUBLIC_PROFILE_SECTIONS.map(section => [section, false])) as PublicationStatus['sections'];
 
-function toStatus(profile: Pick<IPublicProfile, 'published' | 'slug' | 'sections' | 'publicationVersion' | 'publication'> | null): PublicationStatus {
+type PublicationProfile = Pick<IPublicProfile, 'published' | 'slug' | 'sections' | 'publicationVersion' | 'publication'> & {
+  settings?: IPublicProfile['settings'];
+};
+
+function toStatus(profile: PublicationProfile | null): PublicationStatus {
+  const settings = profile?.settings;
+  const sectionOrder = settings?.sectionOrder?.filter((section) => PUBLIC_PROFILE_SECTIONS.includes(section)) ?? [...PUBLIC_PROFILE_SECTIONS];
+  const normalizedOrder = [...new Set(sectionOrder)];
+  for (const section of PUBLIC_PROFILE_SECTIONS) {
+    if (!normalizedOrder.includes(section)) normalizedOrder.push(section);
+  }
   if (!profile) {
-    return { published: false, slug: null, sections: hiddenSections(), publicationVersion: 0, consentVersion: null, publishedAt: null };
+    return {
+      published: false,
+      slug: null,
+      sections: hiddenSections(),
+      publicationVersion: 0,
+      consentVersion: null,
+      publishedAt: null,
+      settings: { theme: DEFAULT_PUBLIC_PROFILE_THEME, sectionOrder: [...PUBLIC_PROFILE_SECTIONS] },
+    };
   }
   return {
     published: profile.published,
@@ -42,6 +70,10 @@ function toStatus(profile: Pick<IPublicProfile, 'published' | 'slug' | 'sections
     publicationVersion: profile.publicationVersion,
     consentVersion: profile.publication?.consentVersion ?? null,
     publishedAt: profile.publication?.publishedAt ?? null,
+    settings: {
+      theme: settings?.theme ?? DEFAULT_PUBLIC_PROFILE_THEME,
+      sectionOrder: normalizedOrder as PublicationStatus['settings']['sectionOrder'],
+    },
   };
 }
 
@@ -60,7 +92,7 @@ async function dispatch(type: Extract<DomainEventType, 'profile.published' | 'pr
 
 export class PublicationService {
   static async getStatus(userId: Types.ObjectId | string): Promise<PublicationStatus> {
-    return toStatus(await PublicProfile.findOne({ userId }).lean());
+    return toStatus(await PublicProfile.findOne({ userId }).lean() as PublicationProfile | null);
   }
 
   /**
@@ -80,6 +112,11 @@ export class PublicationService {
     await PublicProfileService.computeProfile(userId);
 
     const sections = { ...hiddenSections(), ...input.sections };
+    const existingSettings = await PublicProfile.findOne({ userId }).select('settings').lean() as { settings?: IPublicProfile['settings'] } | null;
+    const settings = input.settings ?? existingSettings?.settings ?? {
+      theme: DEFAULT_PUBLIC_PROFILE_THEME,
+      sectionOrder: [...PUBLIC_PROFILE_SECTIONS],
+    };
     const now = new Date();
     let profile: IPublicProfile;
     try {
@@ -102,6 +139,7 @@ export class PublicationService {
             $set: {
               slug, published: true, visibility: 'public', sections,
               'publication.consentVersion': input.consentVersion, 'publication.publishedAt': now,
+              settings,
             },
             $inc: { publicationVersion: 1 },
           },

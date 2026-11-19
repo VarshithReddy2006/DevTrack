@@ -1,4 +1,4 @@
-import { IPublicProfile } from '../../db/models/publicProfile.model.js';
+import { DEFAULT_PUBLIC_PROFILE_THEME, PUBLIC_PROFILE_SECTIONS, IPublicProfile } from '../../db/models/publicProfile.model.js';
 import { IProfileTimelineEvent } from '../../db/models/profileTimelineEvent.model.js';
 
 import type { IUserSettings } from '../../db/models/userSettings.model.js';
@@ -8,11 +8,20 @@ import { visibleSections } from './visibility.js';
 export function mapToPublicProfileDTO(profile: IPublicProfile, privacy?: Partial<IUserSettings['privacy']>) {
   const snapshot = profile.snapshot;
   const { streak: showStreak, github: showGithub, dsa: showDsa, projects: showProjects, activity: showActivity } = visibleSections(profile, privacy);
+  const sectionOrder = [...new Set(profile.settings?.sectionOrder?.filter((section) => PUBLIC_PROFILE_SECTIONS.includes(section)) ?? [])];
+  for (const section of PUBLIC_PROFILE_SECTIONS) {
+    if (!sectionOrder.includes(section)) sectionOrder.push(section);
+  }
   // Badges are derived from the activity counters the anti-gaming audit distrusts, so hide them while flagged.
   const underReview = profile.antiGaming?.isFlagged === true;
 
   return {
     username: profile.username,
+    sections: visibleSections(profile, privacy),
+    settings: {
+      theme: profile.settings?.theme ?? DEFAULT_PUBLIC_PROFILE_THEME,
+      sectionOrder,
+    },
     visibility: profile.visibility,
     isIndexable: profile.isIndexable,
     identity: {

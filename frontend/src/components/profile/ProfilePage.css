@@ -736,3 +736,74 @@
     box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
   }
 }
+
+.profile-public-section > h3 {
+  margin-bottom: 1rem;
+  color: var(--portfolio-heading, #0f172a);
+  font-size: 0.875rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.portfolio-theme-modern-dark,
+.portfolio-theme-monokai-hacker,
+.portfolio-theme-terminal-monospace {
+  --portfolio-heading: #f8fafc;
+  background: #09090b;
+  color: #f8fafc;
+}
+
+.portfolio-theme-modern-dark .profile-header,
+.portfolio-theme-modern-dark .profile-card,
+.portfolio-theme-modern-dark .platform-stats-card,
+.portfolio-theme-monokai-hacker .profile-header,
+.portfolio-theme-monokai-hacker .profile-card,
+.portfolio-theme-monokai-hacker .platform-stats-card,
+.portfolio-theme-terminal-monospace .profile-header,
+.portfolio-theme-terminal-monospace .profile-card,
+.portfolio-theme-terminal-monospace .platform-stats-card {
+  background: #121216;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+}
+
+.portfolio-theme-modern-dark .profile-header__info h2,
+.portfolio-theme-modern-dark .profile-stat-badge__value,
+.portfolio-theme-monokai-hacker .profile-header__info h2,
+.portfolio-theme-monokai-hacker .profile-stat-badge__value,
+.portfolio-theme-terminal-monospace .profile-header__info h2,
+.portfolio-theme-terminal-monospace .profile-stat-badge__value {
+  color: #f8fafc;
+}
+
+.portfolio-theme-clean-minimal-light {
+  --portfolio-heading: #0f172a;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.portfolio-theme-monokai-hacker {
+  --portfolio-heading: #a6e22e;
+  background: #1e1f1c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.portfolio-theme-monokai-hacker .profile-header,
+.portfolio-theme-monokai-hacker .profile-card,
+.portfolio-theme-monokai-hacker .platform-stats-card {
+  border-color: rgba(166, 226, 46, 0.35);
+}
+
+.portfolio-theme-terminal-monospace {
+  --portfolio-heading: #4ade80;
+  background: #000;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.portfolio-theme-terminal-monospace .profile-header,
+.portfolio-theme-terminal-monospace .profile-card,
+.portfolio-theme-terminal-monospace .platform-stats-card {
+  border-radius: 0.25rem;
+  border-color: #14532d;
+}

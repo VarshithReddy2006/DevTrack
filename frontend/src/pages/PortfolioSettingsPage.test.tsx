@@ -23,10 +23,11 @@ const publish = vi.mocked(publishProfile);
 const unpublish = vi.mocked(unpublishProfile);
 
 const hidden = { streak: false, dsa: false, github: false, projects: false, activity: false };
-const draft: PublicationStatus = { published: false, slug: null, sections: hidden, publicationVersion: 0, consentVersion: null, publishedAt: null };
+const settings = { theme: 'modern-dark' as const, sectionOrder: ['streak', 'dsa', 'github', 'projects', 'activity'] as const };
+const draft: PublicationStatus = { published: false, slug: null, sections: hidden, publicationVersion: 0, consentVersion: null, publishedAt: null, settings: { ...settings, sectionOrder: [...settings.sectionOrder] } };
 const live: PublicationStatus = {
   published: true, slug: 'jane', sections: { ...hidden, streak: true }, publicationVersion: 3,
-  consentVersion: '2026-01', publishedAt: '2026-02-01T00:00:00.000Z',
+  consentVersion: '2026-01', publishedAt: '2026-02-01T00:00:00.000Z', settings: { ...settings, sectionOrder: [...settings.sectionOrder] },
 };
 const apiError = (statusCode: number, message: string) => ({ success: false, statusCode, message, code: 'X' });
 
@@ -78,10 +79,35 @@ it('publishes the normalized handle, the chosen sections and the consent version
   fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
 
   await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
-  expect(publish).toHaveBeenCalledWith({ slug: 'jane', sections: { ...hidden, streak: true }, consentVersion: '2026-11' });
+  expect(publish).toHaveBeenCalledWith({ slug: 'jane', sections: { ...hidden, streak: true }, consentVersion: '2026-11', settings });
   expect(await screen.findByText('Published at /u/jane')).toBeInTheDocument();
   const liveLink = screen.getByRole('link', { name: /View Live/ });
   expect(liveLink).toHaveAttribute('href', '/u/jane');
+});
+
+it('persists the selected portfolio theme and section order', async () => {
+  publish.mockResolvedValue(live);
+  renderPage();
+  await screen.findByText('Draft / Private');
+  fireEvent.click(screen.getByRole('radio', { name: /Monokai Hacker/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Move DSA progress up' }));
+  type('jane');
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+
+  await waitFor(() => expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+    settings: { theme: 'monokai-hacker', sectionOrder: ['dsa', 'streak', 'github', 'projects', 'activity'] },
+  })));
+});
+
+it('restores the previous theme and reports a mutation failure', async () => {
+  fetchStatus.mockResolvedValue(live);
+  publish.mockRejectedValue(apiError(500, 'boom'));
+  renderPage();
+  await screen.findByText('Published at /u/jane');
+  fireEvent.click(screen.getByRole('radio', { name: /Monokai Hacker/ }));
+  expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save that change");
+  expect(screen.getByRole('radio', { name: /Modern Dark/ })).toBeChecked();
 });
 
 it('shows a 409 from the server on the handle and stays a draft', async () => {
@@ -116,7 +142,7 @@ it('saves a section change right away while published, with the live handle', as
   await screen.findByText('Published at /u/jane');
   fireEvent.click(screen.getByRole('switch', { name: 'DSA progress' }));
   await waitFor(() => expect(publish).toHaveBeenCalledWith({
-    slug: 'jane', sections: { ...hidden, streak: true, dsa: true }, consentVersion: '2026-01',
+    slug: 'jane', sections: { ...hidden, streak: true, dsa: true }, consentVersion: '2026-01', settings,
   }));
   await waitFor(() => expect(screen.getByRole('switch', { name: 'DSA progress' })).toHaveAttribute('aria-checked', 'true'));
 });
@@ -139,7 +165,7 @@ it('offers an Update handle button only when the handle differs from the live on
   expect(screen.queryByRole('button', { name: 'Update handle' })).toBeNull();
   type('janet');
   fireEvent.click(screen.getByRole('button', { name: 'Update handle' }));
-  await waitFor(() => expect(publish).toHaveBeenCalledWith({ slug: 'janet', sections: live.sections, consentVersion: '2026-01' }));
+  await waitFor(() => expect(publish).toHaveBeenCalledWith({ slug: 'janet', sections: live.sections, consentVersion: '2026-01', settings }));
   expect(await screen.findByText('Published at /u/janet')).toBeInTheDocument();
 });
 
