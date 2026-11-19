@@ -1,6 +1,7 @@
 // src/db/models/resumeEvidenceClaim.model.ts
 import { Schema, model, type Document, type Types } from 'mongoose';
 import { EVIDENCE_LEDGER_INDEX } from './evidenceLedgerIndex.js';
+import { evidenceInputHash, hasExternalFlag } from '../../modules/readiness/verification/evidenceProof.js';
 
 export const VERIFICATION_STATUSES = ['verified', 'partial', 'unverified', 'flagged'] as const;
 export const EVIDENCE_SUBJECT_TYPES = ['resume_claim', 'repo', 'dsa_rating', 'focus_consistency', 'revision_retention', 'certification'] as const;
@@ -43,6 +44,15 @@ export interface IResumeEvidenceClaim extends Document {
   evidenceSources: IEvidenceSource[];
   lineage?: EvidenceEdge[];
   verificationStatus: VerificationStatus;
+  verificationHash?: string;
+  verifiedAt?: Date | null;
+  proofVerification?: {
+    state: 'verified' | 'rejected';
+    inputHash: string;
+    reason: string;
+    receipt: Record<string, unknown>;
+    notificationPending: boolean;
+  };
   provenance: ProvenanceType[];
   confidence: number;
   generatedBy: 'deterministic' | 'ai_assisted' | 'manual';
@@ -135,6 +145,18 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
       default: 'unverified',
       index: true,
     },
+    verificationHash: { type: String, match: /^[a-f\d]{64}$/ },
+    verifiedAt: { type: Date },
+    proofVerification: {
+      type: new Schema({
+        state: { type: String, enum: ['verified', 'rejected'], required: true },
+        inputHash: { type: String, match: /^[a-f\d]{64}$/, required: true },
+        reason: { type: String, required: true },
+        receipt: { type: Schema.Types.Mixed, required: true },
+        notificationPending: { type: Boolean, required: true },
+      }, { _id: false }),
+      default: undefined,
+    },
     provenance: {
       type: [String],
       enum: ['github', 'project', 'dsa', 'infra', 'manual', 'ai_assisted'],
@@ -162,6 +184,14 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
     timestamps: true,
     toJSON: {
       transform: (_doc, ret) => {
+        // An edit can supersede an attestation before the asynchronous verifier runs.
+        if (ret.proofVerification && ret.proofVerification.inputHash !== evidenceInputHash(ret)) {
+          delete ret.verificationHash;
+          ret.verifiedAt = null;
+          ret.confidence = 0;
+          if (!hasExternalFlag(ret)) ret.verificationStatus = 'unverified';
+          ret.proofVerification = undefined;
+        }
         ret.id = ret._id.toString();
         delete (ret as { _id?: unknown })._id;
         delete (ret as { __v?: unknown }).__v;

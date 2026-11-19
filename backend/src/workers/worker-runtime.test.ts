@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createWorkerRuntime, parseWorkerType, WORKER_TYPES, workerDefinitions } from './worker-runtime.js';
 
 const mocks = vi.hoisted(() => {
-  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender', 'jdFetch', 'jdParse', 'jdScore'];
+  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender', 'jdFetch', 'jdParse', 'jdScore', 'evidenceVerification'];
   return {
     workers: Object.fromEntries(names.map(name => [name, { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }])),
     schedule: vi.fn().mockResolvedValue(undefined),
@@ -44,6 +44,7 @@ vi.mock('./worker-resume-ats.js', () => ({ startResumeATSWorker: mocks.workers.s
 vi.mock('./worker-resume-embedding.js', () => ({ startResumeEmbeddingWorker: mocks.workers.sessionEmbedding.start, stopResumeEmbeddingWorker: mocks.workers.sessionEmbedding.stop }));
 vi.mock('./worker-resume-semantic.js', () => ({ startResumeSemanticWorker: mocks.workers.sessionSemantic.start, stopResumeSemanticWorker: mocks.workers.sessionSemantic.stop }));
 vi.mock('./worker-resume-recommendation.js', () => ({ startResumeRecommendationWorker: mocks.workers.recommendation.start, stopResumeRecommendationWorker: mocks.workers.recommendation.stop }));
+vi.mock('../modules/readiness/verification/evidenceVerification.worker.js', () => ({ startEvidenceVerificationWorker: mocks.workers.evidenceVerification.start, stopEvidenceVerificationWorker: mocks.workers.evidenceVerification.stop }));
 vi.mock('../shared/jobs/workers/dsaAnalyticsWorker.js', () => ({ startDsaAnalyticsWorker: () => { mocks.workers.dsa.start(); return { close: mocks.workers.dsa.stop }; } }));
 vi.mock('../shared/jobs/workers/projectIntelligenceWorker.js', () => ({ startProjectIntelligenceWorker: () => { mocks.workers.projects.start(); return { close: mocks.workers.projects.stop }; } }));
 vi.mock('../shared/jobs/workers/skillIntelligenceWorker.js', () => ({ startSkillIntelligenceWorker: () => { mocks.workers.skills.start(); return { close: mocks.workers.skills.stop }; } }));
@@ -65,7 +66,7 @@ describe('standalone worker selection and lifecycle', () => {
   const resume = ['generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation'];
   const cases: [string | undefined, string[]][] = [
     ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications', 'leagueScore', 'domainReadiness', 'focusCompletion']], ['maintenance', ['maintenance', 'leagueRollover']],
-    ['readiness', ['dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
+    ['readiness', ['evidenceVerification', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
     ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender', 'dossierRender']], ['ai', ['jdFetch', 'jdParse', 'jdScore']],
     ['all', Object.keys(mocks.workers)], [undefined, Object.keys(mocks.workers)], ['', Object.keys(mocks.workers)],
   ];
