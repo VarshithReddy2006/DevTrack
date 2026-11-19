@@ -1,7 +1,9 @@
+import { registerQuestConsumers } from '../modules/quests/questEvents.consumer.js';
 import type { Worker } from 'bullmq';
 import { focusActivityConsumer } from '../modules/activity/consumers/focusSessionCompleted.consumer.js';
 import { focusMissionConsumer } from '../modules/missions/consumers/focusSessionCompleted.consumer.js';
 import { registerReadinessConsumers } from '../modules/readiness/consumers/index.js';
+import { registerJobTargetSubmittedConsumer } from '../modules/job-targets/jobTargetSubmitted.consumer.js';
 import { focusStreakConsumer } from '../modules/streak/consumers/focusSessionCompleted.consumer.js';
 import { focusXpConsumer } from '../modules/xp/consumers/focusSessionCompleted.consumer.js';
 import { getConsumersForEvent, getQueuesForEvent, registerConsumer } from '../shared/events/consumerRegistry.js';
@@ -35,6 +37,8 @@ export async function processFocusCompletionJob(queue: string, event: DomainEven
 export function createDomainOutboxRelay(enqueue: OutboxRelayOptions['enqueue']): OutboxRelay {
   registerFocusCompletionConsumers();
   registerReadinessConsumers();
+  registerJobTargetSubmittedConsumer();
+  registerQuestConsumers();
   return new OutboxRelay({
     resolveQueues: type => {
       const queues = getQueuesForEvent(type);
