@@ -57,6 +57,7 @@ import '../../db/models/profileView.model.js';
 import '../../db/models/project.model.js';
 import '../../db/models/projectTask.model.js';
 import '../../db/models/publicProfile.model.js';
+import '../../db/models/pushSubscription.model.js';
 import '../../db/models/readinessBenchmarks.model.js';
 import '../../db/models/readinessCore.model.js';
 import '../../db/models/readinessDsa.model.js';

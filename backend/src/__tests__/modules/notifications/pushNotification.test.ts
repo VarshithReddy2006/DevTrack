@@ -17,9 +17,17 @@ import { pushSubscriptionSchema } from '../../../modules/notifications/pushNotif
 import { handleContestStartingSoon } from '../../../modules/notifications/consumers/contestStartingSoon.consumer.js';
 
 vi.mock('../../../shared/redis/client.js', () => ({ isRedisConfigured: () => false, getRedisClient: () => null }));
-vi.mock('web-push', async (importOriginal) => ({
-  ...await importOriginal<typeof import('web-push')>(), sendNotification: vi.fn(),
-}));
+vi.mock('web-push', async (importOriginal) => {
+  const actual = await importOriginal<any>();
+  const mod = actual.default ?? actual;
+  const sendNotification = vi.fn();
+  return {
+    ...mod,
+    ...actual,
+    default: { ...mod, sendNotification },
+    sendNotification,
+  };
+});
 vi.mock('../../../shared/sse/index.js', () => ({ eventBus: { emitNotificationCreated: vi.fn() } }));
 vi.mock('../../../shared/sse/eventBus.js', () => ({ eventBus: { publish: vi.fn() } }));
 vi.mock('../../../shared/jobs/index.js', () => ({ getNotificationQueue: vi.fn() }));

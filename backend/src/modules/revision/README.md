@@ -35,3 +35,48 @@ is not a production latency guarantee.
 From `backend/`, run `npm test -- src/__tests__/modules/revision/revisionAnalytics.test.ts`
 and `npm run build`. Tests use an owned temporary MongoDB and a deterministic Redis
 command fixture; they do not require live credentials or production data.
+
+## Prioritized daily queue
+
+`GET /api/v2/revision/queue?limit=20&pattern=dynamic-programming&difficulty=hard`
+returns `{ success: true, count, data: [...] }`. The v1 and legacy `/api` aliases
+also work. Authentication and the shared API rate limit apply. Responses are
+private/no-store and read current MongoDB state rather than a cached queue.
+
+Only cards belonging to the authenticated user with `dueAt <= now` and an expired
+or absent snooze are eligible. The scheduler uses `dueAt`; the issue's suggested
+`nextReviewAt` does not exist. The existing `{ userId: 1, dueAt: 1 }` index supports
+the initial match, so no new scheduling field or index migration is needed.
+
+Ranking assumptions resolve the issue's competing ordering requirements:
+
+- Score is fractional days since `dueAt` multiplied by `2.5 / easeFactor` and
+  `tagWeight`. A lower ease factor and higher weight increase priority.
+- To honor the explicit request that today's due cards precede overdue easy
+  cards, overdue easy cards form a second tier. Within each tier, score descends;
+  due date then card ID break ties deterministically. Thus the ordering is not
+  globally descending score across that exception. Today uses UTC midnight;
+  cards due later today remain ineligible until their scheduled time.
+- `tagWeight` is a per-card weighting input (0.1–10), neutral at 1 for newly
+  generated and legacy cards. No topic importance hierarchy or user preference
+  API is assumed. The current card generator uses the neutral default.
+- Display retention uses the same SM-2 interval stability proxy as analytics.
+  It is an estimate; the requested priority formula is the ranking heuristic.
+- Estimated review times are fixed planning estimates: easy 5 minutes, medium 10,
+  hard 15. They are not learned from user timing data.
+
+Each card includes its ID, problem key, title, difficulty, tags, selected/first
+pattern, due time, review sequence, fractional days overdue, effective weight,
+score, tier, retention percentage and estimated review minutes. `pattern` filters
+an exact stored tag (including tags after the first); `difficulty` is an enum.
+The limit defaults to 20 and caps at 50. Invalid, fractional, repeated or
+nonpositive limits and malformed filters return 400. Unknown query keys are ignored.
+
+The calculated ranking must examine matching due cards before selecting the best
+batch. The index narrows candidates and MongoDB coalesces sort/limit; the 50ms
+target still depends on candidate count, hardware and database health. Local
+all-cards-due benchmarks exceeded 50ms at both 10,000 and 50,000 cards, so the
+issue's latency target remains unmet. Benchmarks are observations, not a
+production guarantee. Run
+`npm test -- src/__tests__/modules/revision/revisionQueue.test.ts` for calculation,
+filtering, privacy, boundary and 10,000/50,000-card performance checks.
