@@ -83,6 +83,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../modules/profile/workers/dossierRender.worker.js');
     return { start: m.startDossierRenderWorker, stop: m.stopDossierRenderWorker };
   } },
+  { role: 'ai', queueName: 'jd-fetch', load: async () => {
+    const m = await import('../modules/job-targets/workers/jobTargetFetch.worker.js');
+    return { start: m.startJobTargetFetchWorker, stop: m.stopJobTargetFetchWorker };
+  } },
   { role: 'ai', queueName: 'jd-parse', load: async () => {
     const m = await import('../modules/job-targets/workers/jdParse.worker.js');
     return { start: m.startJdParseWorker, stop: m.stopJdParseWorker };
