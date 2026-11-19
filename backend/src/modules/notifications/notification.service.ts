@@ -36,7 +36,7 @@ export interface Notification {
 // Notification preferences
 export interface NotificationPreferences {
   enableInApp: boolean;
-  enablePush: boolean; // placeholder for future
+  enablePush: boolean; // Web Push contest alerts require explicit opt-in.
   digestFrequency: 'realtime' | 'daily' | 'weekly' | 'none';
   types: Record<NotificationType, boolean>;
 }

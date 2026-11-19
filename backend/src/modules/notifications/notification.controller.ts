@@ -4,8 +4,36 @@
 import { notificationService } from './notification.service.js';
 import { ApiResponse } from '../../shared/response.js';
 import { withAuth } from '../../shared/controllerUtils.js';
+import { getPushPublicKey, subscribePush, unsubscribePush } from './pushNotification.service.js';
 
 export const notificationController = {
+  getPushKey: withAuth('[notifications]', 'get push key', async (_userId, _req, res) => {
+    const publicKey = getPushPublicKey();
+    if (!publicKey) {
+      res.status(503).json({ success: false, message: 'Web Push is not configured' });
+      return;
+    }
+    res.json({ publicKey });
+  }),
+
+  subscribePush: withAuth('[notifications]', 'subscribe push', async (userId, req, res) => {
+    const result = await subscribePush(userId, req.body);
+    if (result === 'unavailable') {
+      res.status(503).json({ success: false, message: 'Web Push is not configured' });
+      return;
+    }
+    if (result === 'conflict') {
+      res.status(409).json({ success: false, message: 'Subscription belongs to another account or uses an outdated VAPID key' });
+      return;
+    }
+    res.status(201).json({ success: true });
+  }),
+
+  unsubscribePush: withAuth('[notifications]', 'unsubscribe push', async (userId, req, res) => {
+    await unsubscribePush(userId, req.body.endpoint);
+    res.json({ success: true });
+  }),
+
   getNotifications: withAuth('[notifications]', 'get notifications', async (userId, req, res) => {
     const limit = parseInt(req.query.limit as string) || 20;
     const offset = parseInt(req.query.offset as string) || 0;

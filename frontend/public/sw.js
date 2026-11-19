@@ -17,8 +17,9 @@ self.addEventListener('push', (event) => {
     const title = payload.title || 'Contest Starting Soon!';
     const options = {
       body: payload.message || payload.body || 'A competitive programming contest is starting in 30 minutes.',
-      icon: '/favicon.svg',
+      icon: payload.icon || '/favicon.svg',
       badge: '/favicon.svg',
+      actions: payload.actions || [],
       data: {
         url: payload.url || '/dsa',
         contestId: payload.contestId,
