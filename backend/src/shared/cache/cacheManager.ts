@@ -68,6 +68,9 @@ async function invalidate(keys: string[], requireSuccess = false): Promise<void>
 }
 
 export const cacheManager = {
+  async invalidateKey(key: string): Promise<void> {
+    await invalidate([key]);
+  },
   // DB writes commit first. Cache failures must not reject a committed write.
   async invalidateUserAnalytics(userId: string): Promise<void> {
     await invalidate([CACHE_KEYS.userAnalytics(userId)]);

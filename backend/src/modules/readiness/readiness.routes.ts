@@ -8,6 +8,7 @@ const router = Router();
 
 router.use(authMiddleware);
 
+router.get('/score', ReadinessController.getScore);
 router.get('/snapshot', ReadinessController.getSnapshot);
 router.get('/domain/:domain', ReadinessController.getDomainIntelligence);
 router.post('/intent', ReadinessController.setCareerIntent);
