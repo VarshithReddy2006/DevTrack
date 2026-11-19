@@ -7,6 +7,7 @@ import { CalendarActions } from './CalendarActions';
 import { PlatformFilterChips } from './PlatformFilterChips';
 import { getUpcomingContests } from '../../services/contestsService';
 import type { ContestPlatform } from './contestsUtils';
+import { ContestCalendarView } from './components/ContestCalendarView';
 
 const ALL_PLATFORMS: ContestPlatform[] = ['leetcode', 'codeforces', 'atcoder', 'codechef'];
 
@@ -20,6 +21,7 @@ const PLATFORM_LABELS: Record<ContestPlatform, string> = {
 export default function ContestsPage() {
   const [selectedPlatforms, setSelectedPlatforms] = useState<ContestPlatform[]>(ALL_PLATFORMS);
   const [search, setSearch] = useState('');
+  const [view, setView] = useState<'list' | 'calendar'>('list');
   const { data: contests = [], isPending, isError, error, refetch } = useQuery({
     queryKey: ['contests', 'upcoming'],
     queryFn: ({ signal }) => getUpcomingContests(undefined, { signal }),
@@ -78,11 +80,14 @@ export default function ContestsPage() {
             </label>
           </div>
           <PlatformFilterChips selected={selectedPlatforms} onChange={setSelectedPlatforms} />
+          <div role="group" aria-label="Contest view" className="flex gap-2">
+            {(['list', 'calendar'] as const).map(value => <button key={value} type="button" aria-pressed={view === value} onClick={() => setView(value)} className={`rounded-lg border px-3 py-2 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-600 ${view === value ? 'border-violet-600 bg-violet-50 text-violet-900' : 'border-zinc-300 bg-white text-zinc-700'}`}>{value === 'list' ? 'List' : 'Calendar'}</button>)}
+          </div>
         </section>
 
         {isPending && <div className="rounded-2xl border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500">Loading upcoming contests…</div>}
 
-        {!isPending && !isError && filteredContests.length === 0 && (
+        {!isPending && !isError && view === 'list' && filteredContests.length === 0 && (
           <div className="rounded-2xl border border-dashed border-zinc-300 bg-white p-10 text-center">
             <Trophy size={28} className="mx-auto text-zinc-400" aria-hidden="true" />
             <h3 className="mt-3 font-semibold text-zinc-800">No matching contests</h3>
@@ -90,7 +95,9 @@ export default function ContestsPage() {
           </div>
         )}
 
-        <div className="grid gap-3">
+        {!isPending && !isError && view === 'calendar' && <ContestCalendarView contests={filteredContests} />}
+
+        {view === 'list' && <div className="grid gap-3">
           {filteredContests.map((contest) => (
             <article key={`${contest.platform}:${contest.externalId}`} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:border-[#7C5CFF]/30 hover:shadow-md">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -111,7 +118,7 @@ export default function ContestsPage() {
               </div>
             </article>
           ))}
-        </div>
+        </div>}
       </div>
     </PageShell>
   );
