@@ -1,0 +1,9 @@
+.model-answer-code .hljs-keyword,
+.model-answer-code .hljs-selector-tag { color: #c4b5fd; }
+.model-answer-code .hljs-string,
+.model-answer-code .hljs-attr { color: #6ee7b7; }
+.model-answer-code .hljs-number,
+.model-answer-code .hljs-literal { color: #fcd34d; }
+.model-answer-code .hljs-title,
+.model-answer-code .hljs-built_in { color: #7dd3fc; }
+.model-answer-code .hljs-comment { color: #cbd5e1; }
