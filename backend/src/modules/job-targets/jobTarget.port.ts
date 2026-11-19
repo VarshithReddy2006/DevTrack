@@ -1,14 +1,14 @@
-// What the jd-parse and jd-score workers need from storage. The JobTarget model and service
-// (#339) are not on main yet, so the workers talk to this port instead of to Mongoose.
+// What the jd-parse and jd-score workers need from storage. The model/service exist,
+// but the production candidate-input/storage adapter is still not registered.
 //
-// Plug-in point for #339: implement JobTargetPort over the real model and call
+// Implement JobTargetPort over the real model and call
 // setJobTargetPort() once at worker start-up. completeScore() must write the score result and
-// the outbox row in one transaction (runInTransaction + writeOutboxEvent, see
-// src/shared/events/outbox.ts), which is why it takes the ready-made outbox input.
+// both outbox rows in one transaction (runInTransaction + writeOutboxEvent, see
+// src/shared/events/outbox.ts), which is why it takes the ready-made outbox inputs.
 
 import type { CandidateEvidence, CandidateSkill, ExtractedRequirements, MatchScoreResult } from '@devtrack/ats-core';
 import { NonRetryableError } from '../../infrastructure/queues/ErrorClassifier.js';
-import type { JobTargetParsedPayload } from '../../shared/events/eventContract.js';
+import type { JobTargetParsedPayload, JobTargetScoredPayload } from '../../shared/events/eventContract.js';
 import type { OutboxEventInput } from '../../shared/events/outbox.js';
 import type { JdStructureOutput } from './prompts/jdStructure.prompt.js';
 import type { StarRewrite } from './prompts/starRewrite.prompt.js';
@@ -79,8 +79,8 @@ export interface JobTargetPort {
   loadTarget(userId: string, jobTargetId: string): Promise<JobTargetRecord | null>;
   loadCandidateInput(userId: string): Promise<CandidateInput>;
   saveParseResult(userId: string, jobTargetId: string, result: JdParseResult): Promise<void>;
-  /** Persist the score result and the outbox row together. Retried jobs call it again, so it must overwrite. */
-  completeScore(userId: string, jobTargetId: string, result: JdScoreResult, event: JobTargetParsedOutboxInput): Promise<void>;
+  /** Persist the result and BOTH outbox rows in one transaction. Retried jobs must overwrite safely. */
+  completeScore(userId: string, jobTargetId: string, result: JdScoreResult, event: JobTargetParsedOutboxInput, scoredEvent: JobTargetScoredOutboxInput): Promise<void>;
 }
 
 export type JobTargetParsedOutboxInput = Omit<OutboxEventInput, 'payload' | 'type'> & {
@@ -88,7 +88,12 @@ export type JobTargetParsedOutboxInput = Omit<OutboxEventInput, 'payload' | 'typ
   payload: JobTargetParsedPayload;
 };
 
-/** Default until #339 lands. Fails loudly instead of pretending to store anything. */
+export type JobTargetScoredOutboxInput = Omit<OutboxEventInput, 'payload' | 'type'> & {
+  type: 'jobtarget.scored';
+  payload: JobTargetScoredPayload;
+};
+
+/** Default until the storage adapter is registered. Fails loudly instead of pretending to store anything. */
 const unwired: JobTargetPort = {
   async loadTarget() { throw unwiredError(); },
   async loadCandidateInput() { throw unwiredError(); },

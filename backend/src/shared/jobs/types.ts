@@ -179,6 +179,7 @@ export const QueueNames = {
 
   // AI pool (WORKER_TYPE=ai): job description parsing, match scoring, interview scoring
   JD_PARSE: 'jd-parse',
+  JD_FETCH: 'jd-fetch',
   JD_SCORE: 'jd-score',
   INTERVIEW_SCORE: 'interview-score',
 
@@ -196,6 +197,7 @@ export const QueueNames = {
   READINESS_BENCHMARKS: 'readiness-benchmarks',
   READINESS_ROADMAP: 'readiness-roadmap',
   READINESS_AGGREGATION: 'readiness-aggregation',
+  EVIDENCE_VERIFICATION: 'evidence-verification',
   
   // Resume Intelligence Pipelines
   RESUME_UPLOAD: 'resume-upload',

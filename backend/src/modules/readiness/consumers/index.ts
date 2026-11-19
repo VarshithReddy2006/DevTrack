@@ -3,6 +3,7 @@ import { focusSessionCompletedConsumer } from './focusSessionCompleted.consumer.
 import { jobTargetParsedConsumer } from './jobTargetParsed.consumer.js';
 import { revisionReviewedConsumer } from './revisionReviewed.consumer.js';
 import { registerRevisionConsumers } from '../../revision/dsaEvents.consumer.js';
+import { jobTargetScoredConsumer } from '../../job-targets/jobTargetScored.consumer.js';
 
 export * from './focusSessionCompleted.consumer.js';
 export * from './jobTargetParsed.consumer.js';
@@ -14,4 +15,5 @@ export function registerReadinessConsumers(): void {
   registerConsumer('focus.session.completed', focusSessionCompletedConsumer);
   registerConsumer('revision.reviewed', revisionReviewedConsumer);
   registerConsumer('jobtarget.parsed', jobTargetParsedConsumer);
+  registerConsumer('jobtarget.scored', jobTargetScoredConsumer);
 }

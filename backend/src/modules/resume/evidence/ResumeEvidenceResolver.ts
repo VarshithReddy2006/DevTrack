@@ -174,9 +174,13 @@ export class ResumeEvidenceResolver {
     const existing = await ResumeEvidenceClaim.findOneAndUpdate(
       { userId, claimText: cleanText, ...resumeClaimScope },
       { $set: update, $unset: { lineage: '' } },
-      { runValidators: true },
+      { runValidators: true, new: true },
     );
-    if (existing) return;
+    if (existing) {
+      const { enqueueEvidenceVerification } = await import('../../readiness/verification/evidenceVerification.queue.js');
+      await enqueueEvidenceVerification(existing);
+      return;
+    }
 
     await ResumeProfile.init();
     const profile = await ResumeProfile.findOneAndUpdate(

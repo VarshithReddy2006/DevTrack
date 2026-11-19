@@ -11,6 +11,7 @@ import {
 } from '../../../db/models/resumeEvidenceClaim.model.js';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { EVIDENCE_LEDGER_INDEX } from '../../../db/models/evidenceLedgerIndex.js';
+import { enqueueEvidenceVerification } from '../../readiness/verification/evidenceVerification.queue.js';
 
 interface ClaimFilters {
   subjectType?: EvidenceSubjectType;
@@ -75,13 +76,16 @@ export async function upsertClaim(userId: Types.ObjectId, input: EvidenceClaimIn
   };
   const options = { new: true, runValidators: true, upsert: true } as const;
 
+  let claim;
   try {
-    return await ResumeEvidenceClaim.findOneAndUpdate(key, update, options).orFail();
+    claim = await ResumeEvidenceClaim.findOneAndUpdate(key, update, options).orFail();
   } catch (error) {
     const duplicate = error as { code?: number; keyPattern?: Record<string, number> };
     if (duplicate.code !== 11000 ||
         !Object.keys(EVIDENCE_LEDGER_INDEX.key).every(field => duplicate.keyPattern?.[field] === 1)) throw error;
     // A concurrent upsert inserted the same subject. Update the winning row.
-    return ResumeEvidenceClaim.findOneAndUpdate(key, update, { ...options, upsert: false }).orFail();
+    claim = await ResumeEvidenceClaim.findOneAndUpdate(key, update, { ...options, upsert: false }).orFail();
   }
+  await enqueueEvidenceVerification(claim);
+  return claim;
 }

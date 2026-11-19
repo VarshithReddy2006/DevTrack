@@ -32,7 +32,10 @@ vi.mock('../../middleware/auth.js', () => ({
 }));
 
 vi.mock('../../middleware/rateLimitAdvanced.js', () => ({
-  rateLimiters: { expensiveAction: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next() },
+  rateLimiters: {
+    expensiveAction: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+    ai: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  },
 }));
 
 let server: Server;

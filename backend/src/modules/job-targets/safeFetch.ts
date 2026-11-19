@@ -134,6 +134,9 @@ export interface SafeFetchOptions {
   maxBytes?: number;
   timeoutMs?: number;
   headers?: Record<string, string>;
+  /** Return redirects to an intercepting browser, which vets the next request separately. */
+  followRedirects?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface RawResponse {
@@ -146,7 +149,7 @@ export interface SafeFetchDeps {
   /** Returns every address the host resolves to. */
   resolve: (hostname: string) => Promise<string[]>;
   /** Performs one request to an already validated address. Must not follow redirects. */
-  request: (target: { url: URL; ip: string; headers: Record<string, string>; timeoutMs: number; maxBytes: number }) => Promise<RawResponse>;
+  request: (target: { url: URL; ip: string; headers: Record<string, string>; timeoutMs: number; maxBytes: number; signal?: AbortSignal }) => Promise<RawResponse>;
 }
 
 const defaultResolve = async (hostname: string): Promise<string[]> => {
@@ -158,7 +161,7 @@ const defaultResolve = async (hostname: string): Promise<string[]> => {
   }
 };
 
-const defaultRequest: SafeFetchDeps['request'] = ({ url, ip, headers, timeoutMs, maxBytes }) =>
+const defaultRequest: SafeFetchDeps['request'] = ({ url, ip, headers, timeoutMs, maxBytes, signal }) =>
   new Promise((resolve, reject) => {
     const lib = url.protocol === 'https:' ? https : http;
     let settled = false;
@@ -172,6 +175,7 @@ const defaultRequest: SafeFetchDeps['request'] = ({ url, ip, headers, timeoutMs,
       url,
       {
         method: 'GET',
+        signal,
         headers: { 'user-agent': 'DevTrack-JobFetcher/1.0', accept: 'text/html,text/plain,application/json;q=0.9', ...headers },
         // Pin the socket to the address that passed validation. SNI and the Host header still use the hostname.
         lookup: ((_host: string, opts: { all?: boolean }, cb: (...a: unknown[]) => void) => {
@@ -239,7 +243,7 @@ async function vet(raw: string, deps: SafeFetchDeps): Promise<{ url: URL; ip: st
   return { url, ip: addresses[0] };
 }
 
-export async function safeFetch(
+async function fetchWithinDeadline(
   rawUrl: string,
   options: SafeFetchOptions = {},
   deps: SafeFetchDeps = defaultDeps,
@@ -255,9 +259,11 @@ export async function safeFetch(
     if (remaining <= 0) throw new SafeFetchError('TIMEOUT', `exceeded ${timeoutMs} ms`);
 
     const { url, ip } = await vet(current, deps);
-    const res = await deps.request({ url, ip, headers: options.headers ?? {}, timeoutMs: remaining, maxBytes });
+    options.signal?.throwIfAborted();
+    const res = await deps.request({ url, ip, headers: options.headers ?? {}, timeoutMs: Math.max(1, deadline - Date.now()), maxBytes,
+      ...(options.signal ? { signal: options.signal } : {}) });
 
-    if (res.status >= 300 && res.status < 400 && res.headers.location) {
+    if (res.status >= 300 && res.status < 400 && res.headers.location && options.followRedirects !== false) {
       if (hop === maxRedirects) throw new SafeFetchError('TOO_MANY_REDIRECTS', `more than ${maxRedirects} redirects`);
       try {
         current = new URL(res.headers.location, url).toString();
@@ -269,4 +275,30 @@ export async function safeFetch(
     return { status: res.status, url: url.toString(), headers: res.headers, body: res.body };
   }
   throw new SafeFetchError('TOO_MANY_REDIRECTS', `more than ${maxRedirects} redirects`);
+}
+
+/** Bound DNS as well as the socket and cancel pending I/O when the caller stops. */
+export async function safeFetch(rawUrl: string, options: SafeFetchOptions = {}, deps: SafeFetchDeps = defaultDeps): Promise<SafeFetchResponse> {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? SAFE_FETCH_TIMEOUT_MS;
+  const abort = () => controller.abort(options.signal?.reason ?? new SafeFetchError('TIMEOUT', 'fetch cancelled'));
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => controller.abort(new SafeFetchError('TIMEOUT', `exceeded ${timeoutMs} ms`)), timeoutMs);
+  let onAbort: () => void = () => undefined;
+  try {
+    controller.signal.throwIfAborted();
+    return await Promise.race([
+      fetchWithinDeadline(rawUrl, { ...options, signal: controller.signal }, deps),
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(controller.signal.reason);
+        if (controller.signal.aborted) onAbort();
+        else controller.signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', abort);
+    controller.signal.removeEventListener('abort', onAbort);
+  }
 }

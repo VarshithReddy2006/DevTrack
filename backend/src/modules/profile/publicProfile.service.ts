@@ -16,6 +16,7 @@ import mongoose from 'mongoose';
 import { calculateStreaks, formatISODate, getStartOfDay, getStartOfYear, subtractDays } from '../../shared/date.js';
 import { getAchievements } from '../dashboard/dashboard.service.js';
 import { ogImagePath, ogImageVersion } from './og/ogCard.js';
+import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
 
 const SNAPSHOT_VERSION = 2;
 
@@ -237,6 +238,7 @@ export class PublicProfileService {
       { $set: profileData, $setOnInsert: { slug } },
       { upsert: true, new: true }
     );
+    await invalidateCacheTag(portfolioTag(String(userId)));
     return verificationScore;
   }
 

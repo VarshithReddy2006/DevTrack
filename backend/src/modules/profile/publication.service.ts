@@ -10,6 +10,7 @@ import { logger } from '../../shared/logger.js';
 import { escapeRegExp } from '../../shared/regex.js';
 import type { PublishProfileInput } from './publication.schemas.js';
 import { PublicProfileService } from './publicProfile.service.js';
+import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
 
 export type PublicationErrorCode = 'INVALID_SLUG' | 'RESERVED_SLUG' | 'SLUG_TAKEN';
 
@@ -119,6 +120,7 @@ export class PublicationService {
       throw error;
     }
 
+    await invalidateCacheTag(portfolioTag(String(userId)));
     await dispatch('profile.published', userId, { slug, publicationVersion: profile.publicationVersion });
     return toStatus(profile);
   }
@@ -141,6 +143,7 @@ export class PublicationService {
     });
 
     if (!profile) return this.getStatus(userId);
+    await invalidateCacheTag(portfolioTag(String(userId)));
     // Public reads already 404; also drop the stored card so no image of a private profile is kept.
     await RenderArtifact.deleteMany({ userId, type: 'og_image' }).catch(error => {
       logger.warn('[PublicationService] Could not remove stored OG image', { userId: String(userId), error });

@@ -162,6 +162,9 @@ vi.mock('bullmq', () => {
     name: string;
     processor: any;
     options: any;
+    static RateLimitError() {
+      return new Error('bullmq:rateLimitExceeded');
+    }
     constructor(name: string, processor: any, options: any) {
       this.name = name;
       this.processor = processor;
@@ -185,9 +188,17 @@ vi.mock('bullmq', () => {
     });
   }
   
+  class MockRateLimitError extends Error {
+    constructor(message = 'bullmq:rateLimitExceeded') {
+      super(message);
+      this.name = 'RateLimitError';
+    }
+  }
+
   return {
     Queue: MockQueue,
-    Worker: MockWorker
+    Worker: MockWorker,
+    RateLimitError: MockRateLimitError,
   };
 });
 
