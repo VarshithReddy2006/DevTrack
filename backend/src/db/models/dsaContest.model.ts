@@ -142,5 +142,6 @@ dsaContestSchema.index(
   }
 );
 dsaContestSchema.index({ kind: 1, startTime: 1, alertEmitted: 1 });
+dsaContestSchema.index({ kind: 1, platform: 1, endTime: 1 });
 
 export const DsaContest = model<IDsaContest>('DsaContest', dsaContestSchema);

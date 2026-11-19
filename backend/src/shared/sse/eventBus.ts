@@ -242,6 +242,7 @@ export type SseEventType =
   | 'focus_session_completed'
   | 'dsa_problem_solved'
   | 'contest_starting_soon'
+  | 'contest.rating_updated'
   | 'revision_reviewed'
   | 'streak_updated'
   | 'league_week_finalized'
