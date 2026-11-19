@@ -20,6 +20,7 @@ import { useUIStore } from '../../../store/uiStore';
 import { analyticsService } from '../../../services/analyticsService';
 import { useFeatureFlags } from '../../flags/hooks/useFeatureFlags';
 import { JOB_TARGET_FLAG } from '../jobTargets';
+import { ATS_LIVE_EDITOR_FLAG } from '../../../services/resumeEditorService';
 
 /* ────────────────────────────────────────────
    Intelligence Preview Cards Data
@@ -139,6 +140,9 @@ export const ResumeEntryWorkspace: React.FC = () => {
                 <Link to="/resume/targets" className="mt-4 inline-flex items-center gap-2 rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50">
                   <Target aria-hidden="true" size={16} /> Job targets
                 </Link>
+              )}
+              {isEnabled(ATS_LIVE_EDITOR_FLAG) && (
+                <Link to="/resume/editor" className="ml-3 mt-4 inline-flex items-center gap-2 rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50">Edit resume bullets</Link>
               )}
             </motion.div>
 

@@ -95,8 +95,9 @@ jobs:
 
       - name: Run Shared Contract Tests
         run: |
-          npm ci --workspace @devtrack/contracts
+          npm ci --workspace @devtrack/contracts --workspace @devtrack/ats-core
           npm run test --workspace @devtrack/contracts
+          npm run test --workspace @devtrack/ats-core
 
       - name: Run Backend Unit Tests
         working-directory: ./backend

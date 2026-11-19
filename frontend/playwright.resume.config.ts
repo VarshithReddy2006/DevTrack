@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 // Runs only the resume browser flow against a disposable API, MongoDB and Redis.
 export default defineConfig({
   testDir: './e2e',
-  testMatch: 'resume-ats-flow.spec.ts',
+  testMatch: ['resume-ats-flow.spec.ts', 'resume-editor-flow.spec.ts'],
   workers: 1,
   retries: 0,
   timeout: 150_000,

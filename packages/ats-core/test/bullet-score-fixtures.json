@@ -1,0 +1,169 @@
+[
+  {
+    "name": "empty resume and default role",
+    "bullets": [],
+    "context": {},
+    "expected": {
+      "score": 75,
+      "extractionConfidence": 70,
+      "parserWarningCount": 0,
+      "formattingWarningCount": 0,
+      "keywordsMatched": 0,
+      "keywordsTotal": 0
+    }
+  },
+  {
+    "name": "quantified Docker bullet for backend role",
+    "bullets": [
+      {
+        "section": "Experience",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "Reduced Docker API latency by 30% for 1,000 users."
+      }
+    ],
+    "context": {
+      "targetRole": "Backend Engineer",
+      "keywords": [
+        "Docker",
+        "C++",
+        "Node.js"
+      ]
+    },
+    "expected": {
+      "score": 53,
+      "extractionConfidence": 75,
+      "parserWarningCount": 0,
+      "formattingWarningCount": 0,
+      "keywordsMatched": 1,
+      "keywordsTotal": 3
+    }
+  },
+  {
+    "name": "same bullet for frontend role",
+    "bullets": [
+      {
+        "section": "Experience",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "Reduced Docker API latency by 30% for 1,000 users."
+      }
+    ],
+    "context": {
+      "targetRole": "Frontend Engineer",
+      "keywords": [
+        "Docker",
+        "C++",
+        "Node.js"
+      ]
+    },
+    "expected": {
+      "score": 73,
+      "extractionConfidence": 75,
+      "parserWarningCount": 0,
+      "formattingWarningCount": 0,
+      "keywordsMatched": 1,
+      "keywordsTotal": 3
+    }
+  },
+  {
+    "name": "case-insensitive grouping and explicit indexes",
+    "bullets": [
+      {
+        "section": "Experience",
+        "bulletIndex": 1,
+        "originalText": "",
+        "editedText": "Improved throughput by 20%."
+      },
+      {
+        "section": "experience",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "Built Node.js APIs."
+      },
+      {
+        "section": "Skills",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "Docker and C++"
+      },
+      {
+        "section": "Projects",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "Created a parser."
+      },
+      {
+        "section": "Education",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "B.Tech Computer Science"
+      }
+    ],
+    "context": {
+      "targetRole": "Backend Engineer",
+      "keywords": [
+        "Docker",
+        "C++",
+        "Node.js"
+      ]
+    },
+    "expected": {
+      "score": 92,
+      "extractionConfidence": 90,
+      "parserWarningCount": 0,
+      "formattingWarningCount": 0,
+      "keywordsMatched": 3,
+      "keywordsTotal": 3
+    }
+  },
+  {
+    "name": "parser unsafe symbols and long bullet",
+    "bullets": [
+      {
+        "section": "Summary",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "👩‍💻 Worked on services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services services "
+      }
+    ],
+    "context": {
+      "targetRole": "SRE",
+      "keywords": [
+        "Kubernetes",
+        "AWS"
+      ]
+    },
+    "expected": {
+      "score": 42,
+      "extractionConfidence": 75,
+      "parserWarningCount": 0,
+      "formattingWarningCount": 0,
+      "keywordsMatched": 0,
+      "keywordsTotal": 2
+    }
+  },
+  {
+    "name": "symbol keywords and empty keyword list",
+    "bullets": [
+      {
+        "section": "Projects",
+        "bulletIndex": 0,
+        "originalText": "",
+        "editedText": "Built C++ and C# tools with Node.js."
+      }
+    ],
+    "context": {
+      "targetRole": "Full Stack Developer",
+      "keywords": []
+    },
+    "expected": {
+      "score": 79,
+      "extractionConfidence": 75,
+      "parserWarningCount": 0,
+      "formattingWarningCount": 0,
+      "keywordsMatched": 0,
+      "keywordsTotal": 0
+    }
+  }
+]

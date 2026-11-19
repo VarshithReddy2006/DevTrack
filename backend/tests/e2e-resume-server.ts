@@ -3,7 +3,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { createHash } from 'node:crypto';
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { connect } from 'node:net';
 import { createIntegrationDatabase } from '../src/__tests__/integration/database.js';
 
@@ -26,7 +26,7 @@ await new Promise<void>((resolve, reject) => {
 });
 const database = await createIntegrationDatabase(
   mongoose,
-  () => MongoMemoryServer.create({ binary: { version: '7.0.14' } }),
+  () => MongoMemoryReplSet.create({ replSet: { count: 1 }, binary: { version: '7.0.14' } }),
   process.env.MONGODB_URI,
 );
 process.env.MONGODB_URI = database.uri;
@@ -95,6 +95,10 @@ const user = await User.create({
   username: 'resume_e2e',
   displayName: 'Resume E2E User',
 });
+const [{ FeatureFlag }, { activeFlagKeys }] = await Promise.all([
+  import('../src/db/models/featureFlag.model.js'), import('../src/modules/flags/flags.service.js'),
+]);
+await FeatureFlag.create({ key: 'ats-live-editor', name: 'ATS live editor', enabled: true, rolloutPercent: 0, allowedUserIds: [user._id.toString()] });
 await getRedisClient().ping();
 
 const resumeStageQueues = new Set<string>([
@@ -137,6 +141,10 @@ app.get('/api/auth/me', auth, (_req: Request, res: Response) => res.json({
   data: { id: user._id.toString(), clerkId: user.clerkId, email: user.email,
     username: user.username, displayName: user.displayName, role: user.role },
 }));
+app.get('/api/flags', auth, async (_req: Request, res: Response, next: NextFunction) => {
+  try { res.json({ success: true, data: await activeFlagKeys(user._id.toString()) }); }
+  catch (error) { next(error); }
+});
 app.use('/api/resume', createResumeUploadRoutes(auth));
 app.use('/api/resume-intelligence', createResumeIntelligenceRoutes(auth));
 app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {

@@ -12,6 +12,7 @@
   },
   "include": [
     "e2e/resume-ats-flow.spec.ts",
+    "e2e/resume-editor-flow.spec.ts",
     "e2e/support/clerk.tsx",
     "playwright.resume.config.ts"
   ]

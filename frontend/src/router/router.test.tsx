@@ -10,7 +10,7 @@ const clerk = vi.hoisted(() => {
     matches: false, media, addEventListener: vi.fn(), removeEventListener: vi.fn(),
     addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(), onchange: null,
   }));
-  return { signedIn: false, interviewEnabled: false, jobTargetsEnabled: false, originalMatchMedia };
+  return { signedIn: false, interviewEnabled: false, jobTargetsEnabled: false, editorEnabled: false, originalMatchMedia };
 });
 
 afterAll(() => { window.matchMedia = clerk.originalMatchMedia; });
@@ -42,7 +42,8 @@ vi.mock('../features/flags/hooks/useFeatureFlags', () => ({
     isLoading: false,
     isEnabled: (key: string) =>
       (key === 'interview-studio' && clerk.interviewEnabled) ||
-      (key === 'jd-matcher' && clerk.jobTargetsEnabled),
+      (key === 'jd-matcher' && clerk.jobTargetsEnabled) ||
+      (key === 'ats-live-editor' && clerk.editorEnabled),
   }),
 }));
 vi.mock('../features/resume-tracker/pages/ResumeEntryWorkspace', () => ({
@@ -50,6 +51,9 @@ vi.mock('../features/resume-tracker/pages/ResumeEntryWorkspace', () => ({
 }));
 vi.mock('../features/resume-tracker/pages/JobTargetsWorkspace', () => ({
   JobTargetsWorkspace: () => <h1>Job targets</h1>,
+}));
+vi.mock('../features/resume-tracker/pages/ResumeEditorWorkspace', () => ({
+  ResumeEditorWorkspace: () => <h1>Resume bullet editor</h1>,
 }));
 vi.mock('../features/resume-tracker/pages/JobTargetDetailWorkspace', () => ({
   JobTargetDetailWorkspace: () => <h1>Job target detail</h1>,
@@ -64,7 +68,7 @@ function renderAt(path: string) {
 }
 
 describe('AppRouter', () => {
-  beforeEach(() => { clerk.signedIn = false; clerk.interviewEnabled = false; clerk.jobTargetsEnabled = false; });
+  beforeEach(() => { clerk.signedIn = false; clerk.interviewEnabled = false; clerk.jobTargetsEnabled = false; clerk.editorEnabled = false; });
   afterEach(cleanup);
 
   it('shows the landing page to signed-out visitors at /', () => {
@@ -129,5 +133,16 @@ describe('AppRouter', () => {
     clerk.signedIn = true;
     renderAt('/resume/targets/target-1');
     expect(await screen.findByRole('heading', { name: 'Resume Intelligence' })).toBeTruthy();
+  });
+  it('gates the editor behind ats-live-editor', async () => {
+    clerk.signedIn = true;
+    renderAt('/resume/editor');
+    expect(await screen.findByRole('heading', { name: 'Resume Intelligence' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Resume bullet editor' })).toBeNull();
+  });
+  it('loads the editor route for an enabled signed-in account', async () => {
+    clerk.signedIn = true; clerk.editorEnabled = true;
+    renderAt('/resume/editor');
+    expect(await screen.findByRole('heading', { name: 'Resume bullet editor' })).toBeTruthy();
   });
 });

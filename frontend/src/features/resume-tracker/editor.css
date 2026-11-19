@@ -1,0 +1,10 @@
+.resume-bullet-editor { min-width: 0; overflow: hidden; border: 1px solid #cbd5e1; border-radius: 8px; background: white; }
+.resume-bullet-editor .cm-editor { min-height: 260px; max-height: 65vh; font-size: 14px; }
+.resume-bullet-editor .cm-scroller { overflow: auto; }
+.resume-bullet-editor .cm-content { padding: 12px 0; font-family: ui-monospace, monospace; color: #0f172a; }
+.resume-bullet-editor .cm-line { padding: 0 12px; overflow-wrap: anywhere; }
+.resume-bullet-editor .cm-gutters { background: #f8fafc; color: #64748b; border-right: 1px solid #e2e8f0; }
+.resume-bullet-editor .cm-focused { outline: 2px solid #6d28d9; outline-offset: -2px; }
+.resume-bullet-editor .bullet-action-verb { color: #166534; font-weight: 700; }
+.resume-bullet-editor .bullet-metric { color: #1e40af; background: #dbeafe; }
+.resume-save-dialog::backdrop { background: rgb(15 23 42 / 50%); }
