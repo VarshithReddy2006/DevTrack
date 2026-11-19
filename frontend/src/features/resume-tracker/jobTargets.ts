@@ -19,7 +19,7 @@ export function useJobTargetUpdates(userId: string) {
   const client = useQueryClient();
   useSse({
     onEvent: event => {
-      if (event.type !== 'jobtarget.parsed') return;
+      if (event.type !== 'jobtarget.parsed' && event.type !== 'jobtarget.updated') return;
       const targetId = event.payload?.jobTargetId;
       if (typeof targetId !== 'string' || !targetId) return;
 

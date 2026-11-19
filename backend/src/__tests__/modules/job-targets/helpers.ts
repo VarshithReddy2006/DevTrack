@@ -4,6 +4,7 @@ import type {
   JdParseResult,
   JdScoreResult,
   JobTargetParsedOutboxInput,
+  JobTargetScoredOutboxInput,
   JobTargetPort,
   JobTargetRecord,
 } from '../../../modules/job-targets/jobTarget.port.js';
@@ -13,6 +14,7 @@ export class InMemoryJobTargetPort implements JobTargetPort {
   candidate: CandidateInput = { skills: [], evidence: [], experienceYears: 0, bullets: [] };
   scores = new Map<string, JdScoreResult>();
   events: JobTargetParsedOutboxInput[] = [];
+  scoredEvents: JobTargetScoredOutboxInput[] = [];
 
   async loadTarget(userId: string, jobTargetId: string) {
     const target = this.targets.get(jobTargetId);
@@ -22,9 +24,10 @@ export class InMemoryJobTargetPort implements JobTargetPort {
   async saveParseResult(_userId: string, jobTargetId: string, result: JdParseResult) {
     this.targets.get(jobTargetId)!.parse = structuredClone(result);
   }
-  async completeScore(_userId: string, jobTargetId: string, result: JdScoreResult, event: JobTargetParsedOutboxInput) {
+  async completeScore(_userId: string, jobTargetId: string, result: JdScoreResult, event: JobTargetParsedOutboxInput, scoredEvent: JobTargetScoredOutboxInput) {
     this.scores.set(jobTargetId, structuredClone(result));
     this.events.push(structuredClone(event));
+    this.scoredEvents.push(structuredClone(scoredEvent));
   }
 }
 

@@ -13,6 +13,7 @@ export const CACHE_KEYS = {
   userStreak: (userId: string) => `cache:streak:${userId}`,
   userXp: (userId: string) => `cache:xp:${userId}`,
   dashboard: (userId: string) => `cache:dashboard:${userId}`,
+  readinessGaps: (userId: string) => `cache:readiness-gaps:${userId}`,
   leaderboard: (type: string) => `cache:leaderboard:${type}`,
 } as const;
 
@@ -49,16 +50,20 @@ const PUBLISH = `
   return 1
 `;
 
-async function invalidate(keys: string[]): Promise<void> {
+async function invalidate(keys: string[], requireSuccess = false): Promise<void> {
   for (const key of keys) IN_FLIGHT_KEYS.delete(key);
   try {
     const redis = getRedisClient();
-    if (redis.status !== 'ready') return;
+    if (redis.status !== 'ready') {
+      if (requireSuccess) throw new Error('Redis unavailable for cache invalidation');
+      return;
+    }
     const scriptKeys = keys.flatMap(key => [key, generationKey(key)]);
     await cacheCommand(redis.eval(INVALIDATE, scriptKeys.length, ...scriptKeys));
   } catch (error) {
     readStats.errors++;
-    logger.warn('[cache] Invalidation failed (non-fatal)', { error });
+    logger.warn(requireSuccess ? '[cache] Invalidation failed; caller must retry' : '[cache] Invalidation failed (non-fatal)', { error });
+    if (requireSuccess) throw error;
   }
 }
 
@@ -80,10 +85,16 @@ export const cacheManager = {
     await invalidate([CACHE_KEYS.dashboard(userId)]);
   },
 
+  async invalidateReadinessGaps(userId: string): Promise<void> {
+    // An outbox consumer retries this post-commit projection instead of acknowledging stale gaps.
+    await invalidate([CACHE_KEYS.readinessGaps(userId)], true);
+  },
+
   async invalidateAllUserCache(userId: string): Promise<void> {
     await invalidate([
       CACHE_KEYS.userAnalytics(userId), CACHE_KEYS.userStreak(userId),
       CACHE_KEYS.userXp(userId), CACHE_KEYS.dashboard(userId),
+      CACHE_KEYS.readinessGaps(userId),
     ]);
   },
 
