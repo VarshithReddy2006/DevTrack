@@ -32,6 +32,15 @@ export interface EvidenceClaim {
     lastVerifiedAt: string | null;
     verificationAttempts: number;
     flaggedReason: string | null;
+    verificationProof?: {
+      hash?: string;
+      authority?: string;
+      signatureStatus?: 'gpg_verified' | 'platform_attested' | 'unverified';
+      sourceUrl?: string;
+      verifiedAt?: string;
+      platform?: string;
+    };
+    [key: string]: unknown;
   };
   createdAt: string;
   updatedAt: string;
