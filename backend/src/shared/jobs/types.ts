@@ -196,6 +196,7 @@ export const QueueNames = {
   READINESS_BENCHMARKS: 'readiness-benchmarks',
   READINESS_ROADMAP: 'readiness-roadmap',
   READINESS_AGGREGATION: 'readiness-aggregation',
+  EVIDENCE_VERIFICATION: 'evidence-verification',
   
   // Resume Intelligence Pipelines
   RESUME_UPLOAD: 'resume-upload',

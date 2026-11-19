@@ -131,6 +131,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('./worker-resume-recommendation.js');
     return { start: m.startResumeRecommendationWorker, stop: m.stopResumeRecommendationWorker };
   } },
+  { role: 'readiness', queueName: 'evidence-verification', load: async () => {
+    const m = await import('../modules/readiness/verification/evidenceVerification.worker.js');
+    return { start: m.startEvidenceVerificationWorker, stop: m.stopEvidenceVerificationWorker };
+  } },
   { role: 'readiness', queueName: 'readiness-dsa', load: async () => {
     const m = await import('../shared/jobs/workers/dsaAnalyticsWorker.js');
     let worker: ReturnType<typeof m.startDsaAnalyticsWorker> | undefined;
