@@ -15,7 +15,18 @@ and 50 characters per section. Invalid or oversized content is reported rather
 than truncated.
 
 CodeMirror supports undo/redo, line wrapping, highlighted action verbs and
-numbers. Word comparisons show saved and edited text side by side. ATS previews
+numbers. The active line also underlines weak phrases such as "Worked on",
+"Helped with", and "Responsible for" with a wavy amber line. Hover or press
+Alt+Enter on that line for three local alternatives. Buttons support keyboard
+focus; Escape dismisses suggestions and returns to the editor. A replacement
+preserves the surrounding bullet, moves the caret after the inserted phrase,
+and creates its own undo step. Suggestions close on edits, caret movement,
+source changes, and read-only changes. Read-only editors cannot apply them.
+The dictionary contains writing suggestions, not verified experience: choose
+wording that accurately reflects the contribution. Matching and suggestions
+make no network requests and do not change ATS scoring.
+
+Word comparisons show saved and edited text side by side. ATS previews
 run locally after 300 ms without a scoring request. The preview and backend both
 use the shared `@devtrack/ats-core` bullet adapter. Source previews use the
 profile's target role and the selected variant's prioritized keywords (or profile

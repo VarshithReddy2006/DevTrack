@@ -76,7 +76,7 @@ function Editor({ userId, profile, variants: initialVariants }: { userId: string
     <div className="grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
       <section aria-labelledby="bullet-editor-heading" className="min-w-0 space-y-3 rounded-xl border border-slate-200 bg-white p-4">
         <h2 id="bullet-editor-heading" className="font-semibold">Your bullets</h2>
-        <p id="bullet-instructions" className="text-sm text-slate-600">One bullet per line. Use headings such as # Experience to organize sections. Action verbs appear green; numbers appear blue.</p>
+        <p id="bullet-instructions" className="text-sm text-slate-600">One bullet per line. Use headings such as # Experience to organize sections. Action verbs appear green; numbers appear blue. Weak verbs on the active line have a wavy underline. Hover or press Alt+Enter for alternatives; Escape closes suggestions.</p>
         {selectedVariant && !selectedVariant.bulletEdits?.length && <p className="text-sm text-slate-600">This variant has no saved bullet text yet. Start from your profile summary below.</p>}
         <Suspense fallback={<p role="status">Loading editor…</p>}><BulletEditor value={editor.value} readOnly={saving || restoring} onChange={value => { editor.setValue(value); setNotice(null); }} /></Suspense>
         {editor.error && <p role="alert" className="text-sm text-red-800">{editor.error}</p>}
