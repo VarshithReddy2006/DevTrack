@@ -1,3 +1,4 @@
+import { registerQuestConsumers } from '../../quests/questEvents.consumer.js';
 // src/modules/readiness/workers/domainReadiness.worker.ts: Runs the readiness domain consumers.
 // The outbox relay enqueues one job per event (jobId = eventId) on `domain-readiness`; the job
 // data is the event envelope. Each consumer registered for that queue is run through the inbox
@@ -28,6 +29,7 @@ export async function processDomainReadinessJob(event: DomainEventEnvelope): Pro
 export function startDomainReadinessWorker(): Worker<DomainEventEnvelope> {
   if (_worker) return _worker;
   registerReadinessConsumers();
+  registerQuestConsumers();
 
   _worker = createDlqWorker<DomainEventEnvelope>(
     QueueNames.DOMAIN_READINESS,

@@ -1,3 +1,4 @@
+import { writeOutboxEvent } from '../../shared/events/outbox.js';
 // src/modules/revision/revision.service.ts — Revision cards service with optimistic concurrency
 import { Types } from 'mongoose';
 import { RevisionCard, type IRevisionCard } from '../../db/models/revisionCard.model.js';
@@ -111,6 +112,8 @@ export class RevisionService {
 
       if (session) {
         await card.save({ session });
+        await writeOutboxEvent(session, { type: 'revision.reviewed', aggregateType: 'RevisionCard', aggregateId: cardId, userId,
+          payload: { cardId, reviewSeq: nextReviewSeq, rating, reviewedAt: now.toISOString() } });
       } else {
         await card.save();
       }

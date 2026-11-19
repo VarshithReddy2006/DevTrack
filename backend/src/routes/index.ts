@@ -1,3 +1,4 @@
+import { questRoutes } from '../modules/quests/quest.routes.js';
 // src/routes/index.ts - Route composition
 import { Router } from 'express';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -32,6 +33,7 @@ import { evidenceRoutes } from '../modules/resume/routes/evidence.routes.js';
 import { resumeIntelligenceRoutes } from '../modules/resume/index.js';
 import analyticsRoutes from '../modules/analytics/analytics.routes.js';
 import { revisionRoutes } from '../modules/revision/index.js';
+import { bulletRewriteRoutes } from '../modules/resume/bulletRewrite.routes.js';
 import { bulletRevisionRoutes } from '../modules/resume/resume.routes.js';
 import { leaguesRoutes } from '../modules/leagues/index.js';
 import { aiQuotaRoutes } from '../modules/ai/quota.routes.js';
@@ -90,6 +92,7 @@ router.use('/onboarding', onboardingRoutes);
 router.use('/daily-challenge', dailyChallengeRoutes);
 router.use('/coaching', rateLimiters.ai, coachingRoutes);
 router.use('/readiness', readinessRoutes);
+router.use('/resume', bulletRewriteRoutes);
 router.use('/resume', bulletRevisionRoutes);
 router.use('/resume', uploadRoutes);
 router.use('/resume-intelligence', resumeIntelligenceRoutes);
@@ -98,6 +101,7 @@ router.use('/recommendations', rateLimiters.ai, recommendationRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/revision', revisionRoutes);
 router.use('/leagues', leaguesRoutes);
+router.use('/quests', questRoutes);
 router.use('/ai', rateLimiters.ai, aiQuotaRoutes);
 
 export default router;
