@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { actionVerbHighlighter } from '../../ats/editor/actionVerbExtension';
 import { analyzeActionVerbs } from '@devtrack/ats-core';
 import { Annotation, Compartment, EditorState, RangeSetBuilder } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -41,7 +42,7 @@ export default function BulletEditor({ value, onChange, readOnly }: { value: str
       state: EditorState.create({
         doc: latest.current.value,
         extensions: [
-          lineNumbers(), EditorView.lineWrapping, history(), keymap.of([...defaultKeymap, ...historyKeymap]), bulletHighlights,
+          lineNumbers(), EditorView.lineWrapping, history(), keymap.of([...defaultKeymap, ...historyKeymap]), bulletHighlights, actionVerbHighlighter,
           EditorView.contentAttributes.of({ 'aria-label': 'Resume bullets', 'aria-describedby': 'bullet-instructions', role: 'textbox', 'aria-multiline': 'true' }),
           editable.current.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
           EditorView.updateListener.of(update => {

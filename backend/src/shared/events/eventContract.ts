@@ -71,6 +71,8 @@ export type DomainEventType =
   | 'revision.card_created'
   | 'revision.reviewed'
   | 'jobtarget.submitted'
+  | 'quest.completed'
+  | 'quest.claimed'
   | 'jobtarget.parsed'
   | 'contest.starting-soon'
   | 'league.week.finalized'

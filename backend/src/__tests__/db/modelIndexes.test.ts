@@ -52,6 +52,8 @@ import '../../db/models/onboardingAnalytics.model.js';
 import '../../db/models/outboxEvent.model.js';
 import '../../db/models/platformStats.model.js';
 import '../../db/models/processedEvent.model.js';
+import '../../db/models/quest.model.js';
+import '../../db/models/userQuestProgress.model.js';
 import '../../db/models/profileAuditLog.model.js';
 import '../../db/models/profileTimelineEvent.model.js';
 import '../../db/models/profileView.model.js';
