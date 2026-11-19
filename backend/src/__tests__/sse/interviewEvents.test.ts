@@ -58,6 +58,19 @@ beforeEach(() => {
 });
 afterEach(() => bus.shutdown());
 
+describe('interview.time_warning', () => {
+  it('delivers the five-minute warning only to the session owner', async () => {
+    const owner = connect(bus, 'owner');
+    const other = connect(bus, 'other');
+    await bus.publishEnvelope('owner', 'interview.time_warning', { sessionId: 's1', minutesRemaining: 5 });
+    expect(other).toHaveLength(0);
+    expect(owner).toHaveLength(1);
+    expect(parseFrame(owner[0]).data).toMatchObject({
+      type: 'interview.time_warning', userId: 'owner', payload: { sessionId: 's1', minutesRemaining: 5 },
+    });
+  });
+});
+
 describe('interview.turn.delta', () => {
   const payload = { sessionId: 's1', turnIndex: 2, stateVersion: 9, delta: 'Nice ', seq: 0 };
 

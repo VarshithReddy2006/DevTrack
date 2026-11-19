@@ -182,6 +182,7 @@ export const QueueNames = {
   JD_FETCH: 'jd-fetch',
   JD_SCORE: 'jd-score',
   INTERVIEW_SCORE: 'interview-score',
+  INTERVIEW_GUARD: 'interview-guard',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',

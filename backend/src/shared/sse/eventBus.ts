@@ -125,6 +125,10 @@ const interviewSessionCompletedPayload = z.object({
   mode: z.enum(['ai', 'basic_mode']).optional(),
 });
 
+const interviewTimeWarningPayload = z.object({
+  sessionId: z.string().min(1), minutesRemaining: z.literal(5),
+});
+
 function validateEventPayload(type: string, payload: unknown): Record<string, unknown> {
   let schema: z.ZodSchema<any>;
   switch (type) {
@@ -175,6 +179,9 @@ function validateEventPayload(type: string, payload: unknown): Record<string, un
       break;
     case 'interview.session.completed':
       schema = interviewSessionCompletedPayload;
+      break;
+    case 'interview.time_warning':
+      schema = interviewTimeWarningPayload;
       break;
     default:
       return payload as Record<string, unknown>;
@@ -252,6 +259,7 @@ export type SseEventType =
   // AI mock interview studio
   | 'interview.turn.delta'
   | 'interview.session.completed'
+  | 'interview.time_warning'
   | 'jobtarget.updated'
   | 'evidence.verified'
   // System
