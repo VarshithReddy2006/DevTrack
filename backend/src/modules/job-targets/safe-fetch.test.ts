@@ -56,6 +56,47 @@ describe('isBlockedHostname', () => {
 });
 
 describe('safeFetch', () => {
+  it('returns manual redirects without contacting the redirected host', async () => {
+    const d = deps({ 'a.example': ['93.184.216.34'] }, { 'https://a.example/': redirect('http://localhost/') });
+    const response = await safeFetch('https://a.example/', { followRedirects: false }, d);
+    expect(response.status).toBe(302);
+    expect(response.headers.location).toBe('http://localhost/');
+    expect(d.request).toHaveBeenCalledOnce();
+  });
+
+  it('bounds a stuck DNS lookup and never opens a socket when it later resolves', async () => {
+    let resolve!: (addresses: string[]) => void;
+    const d = { resolve: () => new Promise<string[]>(done => { resolve = done; }), request: vi.fn(async () => ok()) };
+    await expect(safeFetch('https://a.example/', { timeoutMs: 15 }, d)).rejects.toMatchObject({ code: 'TIMEOUT' });
+    resolve(['93.184.216.34']);
+    await new Promise(done => setImmediate(done));
+    expect(d.request).not.toHaveBeenCalled();
+  });
+
+  it('propagates cancellation to the transport and rejects pre-aborted work', async () => {
+    const controller = new AbortController();
+    const d = deps({ 'a.example': ['93.184.216.34'] }, {});
+    controller.abort(new Error('cancelled render'));
+    await expect(safeFetch('https://a.example/', { signal: controller.signal }, d)).rejects.toThrow('cancelled render');
+    expect(d.request).not.toHaveBeenCalled();
+    const running = new AbortController();
+    d.request.mockImplementation(async ({ signal }) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      running.abort(new Error('cancel pending I/O'));
+    }));
+    await expect(safeFetch('https://a.example/', { signal: running.signal }, d)).rejects.toThrow('cancel pending I/O');
+  });
+  it('does not lose a cancellation fired synchronously while starting DNS', async () => {
+    const controller = new AbortController();
+    const request = vi.fn(async () => ok());
+    const resolve = () => {
+      controller.abort(new Error('cancel DNS'));
+      return new Promise<string[]>(() => {});
+    };
+    await expect(safeFetch('https://a.example/', { signal: controller.signal }, { resolve, request })).rejects.toThrow('cancel DNS');
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('fetches a public page', async () => {
     const d = deps({ 'jobs.example.com': ['93.184.216.34'] }, {});
     const res = await safeFetch('https://jobs.example.com/p/1', {}, d);

@@ -70,6 +70,9 @@ export type DomainEventType =
   | 'dsa.submission.evaluated'
   | 'revision.card_created'
   | 'revision.reviewed'
+  | 'jobtarget.submitted'
+  | 'quest.completed'
+  | 'quest.claimed'
   | 'jobtarget.parsed'
   | 'contest.starting-soon'
   | 'league.week.finalized'
@@ -153,6 +156,11 @@ export interface RevisionReviewedPayload {
   reviewedAt?: string;
 }
 
+export interface JobTargetSubmittedPayload {
+  jobTargetId: string;
+  source: 'url' | 'text';
+}
+
 /** Emitted by the JD parse pipeline once a job target has been parsed and scored. */
 export interface JobTargetParsedPayload {
   jobTargetId: string;
@@ -190,6 +198,7 @@ export type ProfileUnpublishedEvent = DomainEventEnvelope<'profile.unpublished',
 export type ProfileFlaggedEvent = DomainEventEnvelope<'profile.flagged', ProfileFlaggedPayload>;
 export type FocusSessionCompletedEvent = DomainEventEnvelope<'focus.session.completed', FocusSessionCompletedPayload>;
 export type RevisionReviewedEvent = DomainEventEnvelope<'revision.reviewed', RevisionReviewedPayload>;
+export type JobTargetSubmittedEvent = DomainEventEnvelope<'jobtarget.submitted', JobTargetSubmittedPayload>;
 export type JobTargetParsedEvent = DomainEventEnvelope<'jobtarget.parsed', JobTargetParsedPayload>;
 export type OrchestrationStageFailedEvent = DomainEventEnvelope<'orchestration.stage_failed', OrchestrationStageFailedPayload>;
 export type WorkerPoisonedEvent = DomainEventEnvelope<'worker.poisoned', WorkerPoisonedPayload>;

@@ -1,3 +1,6 @@
+import { UserQuestProgress } from '../../db/models/userQuestProgress.model.js';
+import { questObjectId, questError, questTransaction } from '../quests/questEngine.service.js';
+import { writeOutboxEvent } from '../../shared/events/outbox.js';
 // src/modules/xp/processor.ts — XP processing engine with idempotency
 // Processes XP events, persists transactions, aggregates UserXp state.
 // All XP awards MUST flow through this module — no direct UserXp writes elsewhere.
@@ -488,4 +491,78 @@ function getWeekStart(date: Date): Date {
   d.setDate(diff);
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+/** Claim a persisted, owned quest reward atomically with the XP ledger. */
+export async function processQuestReward(userId: string, progressId: string, now = new Date()) {
+  questObjectId.parse(userId);
+  questObjectId.parse(progressId);
+  await ensureUserXp(new Types.ObjectId(userId));
+  return questTransaction(async session => {
+    const progress = await UserQuestProgress.findOne({ _id: progressId, userId }).session(session);
+    if (!progress) throw questError(404, 'Quest not found');
+    const sourceId = 'quest_' + progressId;
+    const existing = await XpTransaction.findOne({ userId, sourceType: 'manual', sourceId }).session(session).lean();
+    if (progress.claimed) {
+      if (!existing) throw new Error('Claimed quest is missing its reward ledger');
+      const wallet = await UserXp.findOne({ userId }).session(session).lean();
+      return { questId: progressId, claimed: true, duplicate: true, xpReward: progress.xpReward,
+        trophyReward: progress.trophyReward, totalXp: wallet!.totalXp, leagueTrophies: wallet!.leagueTrophies ?? 0 };
+    }
+    if (existing) throw new Error('Unclaimed quest already has a reward ledger');
+    if (!progress.completed || progress.currentCount < progress.targetCount || !progress.completedAt
+      || progress.completedAt >= progress.expiresAt || progress.startsAt > now || progress.expiresAt <= now) {
+      throw questError(409, 'Quest is incomplete or expired');
+    }
+    if (!Number.isSafeInteger(progress.xpReward) || progress.xpReward <= 0 || progress.xpReward > 10_000
+      || !Number.isSafeInteger(progress.trophyReward) || progress.trophyReward <= 0 || progress.trophyReward > 1000) {
+      throw new Error('Invalid persisted quest reward');
+    }
+    const wallet = await UserXp.findOne({ userId }).session(session);
+    if (!wallet) throw new Error('XP aggregate missing');
+    const previousTotalXp = wallet.totalXp;
+    const newTotalXp = previousTotalXp + progress.xpReward;
+    const trophies = (wallet.leagueTrophies ?? 0) + progress.trophyReward;
+    if (!Number.isSafeInteger(newTotalXp) || !Number.isSafeInteger(trophies)) throw new Error('Unsafe quest reward aggregate');
+    const levelBefore = calculateLevel(previousTotalXp);
+    const levelAfter = calculateLevel(newTotalXp);
+    await UserXp.updateOne({ _id: wallet._id }, {
+      $inc: { totalXp: progress.xpReward, leagueTrophies: progress.trophyReward, 'lifetimeStats.totalXpEarned': progress.xpReward },
+      $set: { currentLevel: levelAfter, xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter), lastXpGainedAt: now },
+    }, { session });
+    progress.claimed = true;
+    progress.claimedAt = now;
+    await progress.save({ session });
+    await XpTransaction.create([{
+      userId, sourceType: 'manual', sourceId, xpAwarded: progress.xpReward,
+      previousTotalXp, newTotalXp, levelBefore, levelAfter,
+      metadata: { questId: progressId, periodKey: progress.periodKey, leagueTrophies: progress.trophyReward },
+    }], { session });
+    await UserAnalytics.updateOne({ userId }, { $max: { totalXp: newTotalXp, currentLevel: levelAfter } }, { upsert: true, session });
+    await writeOutboxEvent(session, { type: 'quest.claimed', aggregateType: 'UserQuestProgress', aggregateId: progressId,
+      userId, payload: { progressId } });
+    return { questId: progressId, claimed: true, duplicate: false, xpReward: progress.xpReward,
+      trophyReward: progress.trophyReward, totalXp: newTotalXp, leagueTrophies: trophies };
+  });
+}
+
+/** Retryable post-commit projection/delivery; balances were already committed. */
+export async function reconcileQuestReward(userId: string, progressId: string) {
+  const sourceId = 'quest_' + progressId;
+  const award = await XpTransaction.findOne({ userId, sourceType: 'manual', sourceId }).lean();
+  if (!award || award.metadata?.questId !== progressId) throw new Error('Quest reward ledger missing');
+  await repairUserAnalytics(userId);
+  await cacheManager.invalidateAllUserCache(userId);
+  await enqueueLeagueScore({ userId, sourceType: 'manual', sourceId, xpAwarded: award.xpAwarded,
+    occurredAt: award.createdAt.toISOString() });
+  const wallet = await UserXp.findOne({ userId }).lean();
+  if (!wallet) throw new Error('XP aggregate missing');
+  await eventBus.publishEnvelope(userId, 'xp_updated', { totalXp: wallet.totalXp, gainedXp: award.xpAwarded,
+    currentLevel: wallet.currentLevel, nextLevelXp: wallet.xpToNextLevel, sourceType: 'quest' });
+  for (let level = award.levelBefore + 1; level <= award.levelAfter; level++) {
+    await eventBus.publishEnvelope(userId, 'level_up', { newLevel: level, totalXp: wallet.totalXp, previousLevel: level - 1 });
+  }
+  await unifiedRuntimeStateService.updateFromEvent({ eventId: sourceId, eventType: 'xp_awarded', userId, timestamp: new Date(),
+    data: { xpAwarded: award.xpAwarded, newTotalXp: wallet.totalXp, levelBefore: wallet.currentLevel, levelAfter: wallet.currentLevel,
+      xpToNextLevel: wallet.xpToNextLevel } });
 }

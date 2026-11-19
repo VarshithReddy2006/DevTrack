@@ -7,6 +7,7 @@ import mongoose, { Schema, type Document } from 'mongoose';
 export interface IUserXp extends Document {
   userId: Schema.Types.ObjectId;
   totalXp: number;
+  leagueTrophies: number;
   currentLevel: number;
   xpToNextLevel: number;
   lastXpGainedAt: Date | null;
@@ -28,6 +29,7 @@ export interface IUserXp extends Document {
 const userXpSchema = new Schema<IUserXp>(
   {
     userId: { type: Schema.Types.ObjectId, required: true, unique: true },
+    leagueTrophies: { type: Number, default: 0, min: 0 },
     totalXp: { type: Number, default: 0, min: 0 },
     currentLevel: { type: Number, default: 1, min: 1 },
     xpToNextLevel: { type: Number, default: 100, min: 0 },
