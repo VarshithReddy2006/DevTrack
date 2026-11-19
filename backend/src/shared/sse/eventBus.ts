@@ -252,6 +252,7 @@ export type SseEventType =
   // AI mock interview studio
   | 'interview.turn.delta'
   | 'interview.session.completed'
+  | 'evidence.verified'
   // System
   | 'heartbeat';
 

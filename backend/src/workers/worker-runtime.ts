@@ -83,6 +83,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../modules/profile/workers/dossierRender.worker.js');
     return { start: m.startDossierRenderWorker, stop: m.stopDossierRenderWorker };
   } },
+  { role: 'ai', queueName: 'jd-fetch', load: async () => {
+    const m = await import('../modules/job-targets/workers/jobTargetFetch.worker.js');
+    return { start: m.startJobTargetFetchWorker, stop: m.stopJobTargetFetchWorker };
+  } },
   { role: 'ai', queueName: 'jd-parse', load: async () => {
     const m = await import('../modules/job-targets/workers/jdParse.worker.js');
     return { start: m.startJdParseWorker, stop: m.stopJdParseWorker };
@@ -130,6 +134,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
   { role: 'resume-intelligence', queueName: 'resume-recommendation', load: async () => {
     const m = await import('./worker-resume-recommendation.js');
     return { start: m.startResumeRecommendationWorker, stop: m.stopResumeRecommendationWorker };
+  } },
+  { role: 'readiness', queueName: 'evidence-verification', load: async () => {
+    const m = await import('../modules/readiness/verification/evidenceVerification.worker.js');
+    return { start: m.startEvidenceVerificationWorker, stop: m.stopEvidenceVerificationWorker };
   } },
   { role: 'readiness', queueName: 'readiness-dsa', load: async () => {
     const m = await import('../shared/jobs/workers/dsaAnalyticsWorker.js');

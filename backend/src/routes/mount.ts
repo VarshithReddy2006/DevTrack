@@ -2,7 +2,7 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose the v2 revision, resume revision, and push APIs through shared middleware,
+  // Expose the v2 revision, resume revision, portfolio, and push APIs through shared middleware,
   // including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
     const quests = ((req.method === 'GET' || req.method === 'HEAD') && /^\/quests\/?$/i.test(req.path)) || (req.method === 'POST' && /^\/quests\/[^/]+\/claim\/?$/i.test(req.path));
