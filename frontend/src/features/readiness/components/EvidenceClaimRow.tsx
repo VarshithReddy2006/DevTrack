@@ -1,7 +1,7 @@
 import React from 'react';
 import { ExternalLink } from 'lucide-react';
 import type { EvidenceClaim } from '../../../services/evidenceService';
-import { VerificationBadge } from './VerificationBadge';
+import { EvidenceVerificationBadge } from './EvidenceVerificationBadge';
 import { SOURCE_LABELS, SUBJECT_TYPE_LABELS, claimSubjectType, safeSourceUrl } from '../utils/evidenceLedger';
 
 const dateFormat = new Intl.DateTimeFormat('en', { dateStyle: 'medium' });
@@ -49,7 +49,7 @@ export const EvidenceClaimRow: React.FC<Props> = ({ claim, now = Date.now() }) =
           sourceLabel
         )}
       </td>
-      <td className="px-4 py-3"><VerificationBadge status={claim.verificationStatus} /></td>
+      <td className="px-4 py-3"><EvidenceVerificationBadge claim={claim} size="sm" /></td>
       <td className="px-4 py-3 text-sm text-slate-600 tabular-nums">{Math.round(claim.confidence)}%</td>
       <td className="px-4 py-3 text-sm text-slate-600">
         {checked ? <time dateTime={checked.date.toISOString()}>{checked.label}</time> : <span aria-label="No date recorded">-</span>}

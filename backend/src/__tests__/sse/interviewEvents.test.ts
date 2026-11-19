@@ -65,8 +65,21 @@ describe('interview.time_warning', () => {
     await bus.publishEnvelope('owner', 'interview.time_warning', { sessionId: 's1', minutesRemaining: 5 });
     expect(other).toHaveLength(0);
     expect(owner).toHaveLength(1);
-    expect(parseFrame(owner[0]).data).toMatchObject({
+    expect(parseFrame(owner[0]!).data).toMatchObject({
       type: 'interview.time_warning', userId: 'owner', payload: { sessionId: 's1', minutesRemaining: 5 },
+    });
+  });
+});
+
+describe('interview.report_ready', () => {
+  it('sends report identity and mode only to the candidate owner', async () => {
+    const owner = connect(bus, 'candidate');
+    const other = connect(bus, 'another-user');
+    await bus.publishEnvelope('candidate', 'interview.report_ready', { sessionId: 's1', reportId: 'r1', mode: 'ai' });
+    expect(other).toHaveLength(0);
+    expect(owner).toHaveLength(1);
+    expect(parseFrame(owner[0]!).data).toMatchObject({
+      type: 'interview.report_ready', userId: 'candidate', payload: { sessionId: 's1', reportId: 'r1', mode: 'ai' },
     });
   });
 });

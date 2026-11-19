@@ -129,6 +129,11 @@ const interviewTimeWarningPayload = z.object({
   sessionId: z.string().min(1), minutesRemaining: z.literal(5),
 });
 
+const interviewReportReadyPayload = z.object({
+  sessionId: z.string().min(1), reportId: z.string().min(1),
+  mode: z.enum(['ai', 'basic_mode']),
+});
+
 function validateEventPayload(type: string, payload: unknown): Record<string, unknown> {
   let schema: z.ZodSchema<any>;
   switch (type) {
@@ -182,6 +187,9 @@ function validateEventPayload(type: string, payload: unknown): Record<string, un
       break;
     case 'interview.time_warning':
       schema = interviewTimeWarningPayload;
+      break;
+    case 'interview.report_ready':
+      schema = interviewReportReadyPayload;
       break;
     default:
       return payload as Record<string, unknown>;
@@ -260,6 +268,7 @@ export type SseEventType =
   | 'interview.turn.delta'
   | 'interview.session.completed'
   | 'interview.time_warning'
+  | 'interview.report_ready'
   | 'jobtarget.updated'
   | 'evidence.verified'
   // System

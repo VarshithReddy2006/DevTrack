@@ -50,6 +50,7 @@ import {
   scoreChecklistTurn,
 } from '../scoring/checklistScorer.js';
 import type { CommitResult, InterviewSessionPort, ScoringSession } from './interviewSessionPort.js';
+import { enqueueCompletedInterview } from './interviewEvaluate.worker.js';
 
 /** Quota bucket in DEFAULT_AI_QUOTAS. */
 export const INTERVIEW_AI_FEATURE = 'interview';
@@ -81,6 +82,8 @@ export interface InterviewScoreDeps {
   port: InterviewSessionPort;
   gateway: Pick<LLMGateway, 'streamCompletion'>;
   events: InterviewEventSink;
+  /** Persist/queue the full completed transcript for the separate detailed rubric report. */
+  evaluateCompleted?: (session: ScoringSession) => Promise<void>;
 }
 
 export const eventBusSink: InterviewEventSink = {
@@ -89,7 +92,7 @@ export const eventBusSink: InterviewEventSink = {
 };
 
 export function defaultDeps(port: InterviewSessionPort): InterviewScoreDeps {
-  return { port, gateway: llmGateway, events: eventBusSink };
+  return { port, gateway: llmGateway, events: eventBusSink, evaluateCompleted: enqueueCompletedInterview };
 }
 
 /**
@@ -198,6 +201,11 @@ export async function processInterviewScoreJob(
 
   const session = await port.load(data.sessionId);
   if (!session) return discard('session_missing', 'preflight');
+  // A post-commit enqueue failure must remain recoverable on the original final job's retry.
+  if (session.status === 'completed' && session.stateVersion === data.stateVersion + 1
+    && session.currentTurnIndex === data.turnIndex && data.turnIndex >= session.totalTurns - 1) {
+    await deps.evaluateCompleted?.(session);
+  }
   const stale = staleReason(session, data);
   if (stale) return discard(stale, 'preflight');
 
@@ -301,6 +309,11 @@ export async function processInterviewScoreJob(
       logger.error('[interview-score] Could not publish interview.session.completed', error, {
         event: 'interview_completed_event_failed', sessionId: session.id,
       });
+    }
+    if (deps.evaluateCompleted) {
+      const completed = await port.load(session.id);
+      if (!completed || completed.status !== 'completed') throw new Error('Completed interview snapshot is missing');
+      await deps.evaluateCompleted(completed);
     }
   }
   return { outcome: 'applied', final: isFinal, mode, fallbackReason, deltas };
