@@ -12,3 +12,5 @@ export type { FormattingWarning, KeywordCoverage, ParserWarning, SectionIntegrit
 export { SKILL_TAXONOMY_VERSION } from './taxonomy/index.js';
 export { extractRequirements, type ExperienceRequirement, type ExtractedRequirements, type RequirementContext, type RequirementPriority, type SkillRequirement } from './jd/extractRequirements.js';
 export { matchScore, type CandidateEvidence, type CandidateSkill, type MatchScoreResult } from './jd/matchScore.js';
+export { weightedMatcher, type WeightedRequirement, type WeightedMatcherOptions, type TierMatch, type WeightedMatchResult } from './matcher/weightedMatcher.js';
+export { DEFAULT_SKILL_WEIGHTS, skillTier, type SkillTier, type SkillWeights } from './taxonomy/skillWeights.js';

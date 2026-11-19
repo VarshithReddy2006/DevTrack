@@ -53,3 +53,43 @@ Use the versioned skill taxonomy to get a reproducible report without an AI prov
 The report carries the taxonomy version and the source label taxonomy_only. Hard requirements, stack coverage, verified evidence and experience carry weights of 40, 30, 20 and 10. Dimensions without applicable job criteria return null, and the score redistributes their weight across applicable dimensions. Pass overall years of experience as the fourth argument for job requirements that do not name a skill.
 
 Extraction uses a fixed alias list and heading and phrase rules. It can miss unfamiliar terms or misread ambiguous, negated or alternative requirements. Evidence verification comes from the caller.
+
+## Weighted requirement matching
+
+`weightedMatcher(requirements, candidateSkills, { weights? })` is a separate pure
+matching API. Supply requirements as `{ skill, tier? }` and candidate skills as
+strings. Tiers are `mandatory`, `preferred`, and `soft`, weighted 60/25/15 by
+default. Each tier uses equal coverage per unique skill. The result contains
+`score`, `tiers` (each with `score`, `matched`, `missing`), `matchedSkills`, and
+`missingCriticalRequirements`. Scores are percentages rounded to two decimals.
+Any missing mandatory requirement caps the composite at 75, including when its
+custom weight is zero. Empty tiers have null scores and their weights are
+redistributed; no requirements or no applicable positive weights scores zero.
+
+    import { weightedMatcher } from '@devtrack/ats-core';
+
+    const report = weightedMatcher([
+      { skill: 'PostgreSQL', tier: 'mandatory' },
+      { skill: 'Docker', tier: 'preferred' },
+      { skill: 'Leadership', tier: 'soft' },
+    ], ['postgres', 'Docker']); // 85; leadership is missing
+
+Explicit tiers should reflect the job's requirements. Without a tier, `skillTier`
+uses the existing taxonomy: languages, databases and architecture default to
+mandatory; Agile, Scrum, code review, mentorship, leadership, communication and
+teamwork default to soft; other terms default to preferred. This is a fallback
+heuristic, not an inference that every language in a job is mandatory. Parsed
+`extractRequirements` skills can be mapped by the caller from their contexts to
+explicit tiers. Unknown terms remain matchable after Unicode, whitespace and case
+normalization. Existing taxonomy aliases resolve to canonical names. Matching is
+by complete skill name, not free-text substring or semantic similarity.
+
+Duplicate aliases count once in the strictest supplied tier (mandatory, then
+preferred, then soft). Output lists are sorted within each tier, independent of
+input order. Custom weights partially override defaults, accept finite
+nonnegative values, and are normalized over applicable tiers. All-zero, negative,
+nonfinite or explicitly undefined weights and unknown runtime tiers are rejected.
+Inputs and exported defaults are not mutated. This API has no I/O and works in
+Node and browser bundles. It does not replace the existing four-dimension
+`matchScore`, wire a backend endpoint, verify evidence, or evaluate years of
+experience; those remain separate caller responsibilities.

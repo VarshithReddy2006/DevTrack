@@ -70,6 +70,8 @@ export type DomainEventType =
   | 'dsa.submission.evaluated'
   | 'revision.card_created'
   | 'revision.reviewed'
+  | 'quest.completed'
+  | 'quest.claimed'
   | 'jobtarget.parsed'
   | 'contest.starting-soon'
   | 'league.week.finalized'

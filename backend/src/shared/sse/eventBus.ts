@@ -245,6 +245,8 @@ export type SseEventType =
   | 'contest.rating_updated'
   | 'revision_reviewed'
   | 'revision.card_created'
+  | 'quest.completed'
+  | 'quest.claimed'
   | 'streak_updated'
   | 'league_week_finalized'
   // AI mock interview studio
