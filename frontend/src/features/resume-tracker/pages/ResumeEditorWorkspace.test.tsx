@@ -29,7 +29,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/resume/editor']}><EditorNavigationGuard><Link to="/other">Other page</Link><Routes><Route path="/resume/editor" element={<ResumeEditorWorkspace />} /><Route path="/other" element={<h1>Other page</h1>} /></Routes></EditorNavigationGuard></MemoryRouter></QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/resume/editor']}><EditorNavigationGuard><Link to="/other">Other page</Link><Routes><Route path="/resume/editor" element={<ResumeEditorWorkspace />} /><Route path="/other" element={<h1>Other page</h1>} /></Routes></EditorNavigationGuard></MemoryRouter></QueryClientProvider>), client };
 }
 async function edit() {
   const field = await screen.findByLabelText('Resume bullets');
@@ -90,4 +90,35 @@ it('rejects malformed source responses and retries without exposing an unusable 
   get.mockImplementation(async path => response(path === '/resume-intelligence/profile' ? profile : [variant]));
   fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
   expect(await screen.findByLabelText('Resume bullets')).toHaveValue('# Experience\n- Built a service.');
+});
+
+it('replaces the real editor only after a verified restore and keeps saved section text and private cache consistent', async () => {
+  const id = 'a'.repeat(24);
+  const source = { ...variant, _id: id, bulletRevisionVersion: 2 };
+  const recovered = [{ ...variant.bulletEdits[0], editedText: 'Restored Docker API.' }, { section: 'Skills', bulletIndex: 0, originalText: 'TypeScript', editedText: 'Current TypeScript skills.' }];
+  const saved = { ...source, bulletEdits: recovered, atsScore: { score: 73 }, bulletRevisionVersion: 3 };
+  get.mockImplementation(async path => response(path === '/resume-intelligence/profile' ? profile : path === '/resume-intelligence/variants' ? [source] : {
+    currentVersion: 2,
+    revisions: [1, 2].map(versionNumber => ({ resumeId: id, sectionId: '*', versionNumber, atsScore: 50 + versionNumber, createdAt: '2026-11-19T01:00:00Z', baseSnapshot: [], patch: [{ op: 'replace', path: '', value: variant.bulletEdits }] })),
+  }));
+  let finish!: (value: AxiosResponse) => void;
+  post.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const view = mount(); const field = await edit();
+  view.client.setQueryData(['resume-editor', 'other-user'], 'untouched');
+  fireEvent.click(screen.getByRole('button', { name: 'Revision History' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Version 1.*ATS/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Restore this version' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm restore' }));
+  await waitFor(() => expect(screen.getByLabelText('Resume source')).toBeDisabled());
+  expect(field).toHaveProperty('readOnly', true);
+  expect(field).toHaveValue('# Experience\n- Reduced Docker latency by 30%.');
+  finish(response(saved));
+  expect(await screen.findByText(/Restored version 1 as checkpoint 3/)).toHaveTextContent('73/100');
+  expect(field).toHaveValue('# Experience\n- Restored Docker API.\n\n# Skills\n- Current TypeScript skills.');
+  expect(field).toHaveProperty('readOnly', false);
+  expect(screen.getByText('No unsaved changes')).toBeInTheDocument();
+  expect(screen.getByLabelText('Resume source')).toBeEnabled();
+  expect(view.client.getQueryData(['resume-editor', 'editor-user'])).toEqual({ profile, variants: [saved] });
+  expect(view.client.getQueryData(['resume-editor', 'other-user'])).toBe('untouched');
+  expect(post).toHaveBeenCalledExactlyOnceWith(`/resume/${id}/revisions/1/restore`, { expectedVersion: 2 });
 });
