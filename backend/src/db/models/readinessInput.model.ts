@@ -23,6 +23,15 @@ export interface IJobTargetContext {
   parsedAt: Date;
 }
 
+export interface IJobTargetScoreContext {
+  jobTargetId: string;
+  matchScore: number;
+  missingSkills: string[];
+  highPrioritySkills: string[];
+  scoredAt: Date;
+  eventId: string;
+}
+
 export interface IReadinessInput extends Document {
   userId: Types.ObjectId;
   focusDays: Map<string, IFocusDayBucket>;
@@ -31,6 +40,7 @@ export interface IReadinessInput extends Document {
     /** Distinct parsed job targets; the active count is its size. */
     targetIds: string[];
     latest?: IJobTargetContext;
+    latestScore?: IJobTargetScoreContext;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -73,6 +83,16 @@ const readinessInputSchema = new Schema<IReadinessInput>(
     jobTargets: {
       targetIds: { type: [String], default: [] },
       latest: { type: jobTargetContextSchema },
+      latestScore: {
+        type: new Schema<IJobTargetScoreContext>({
+          jobTargetId: { type: String, required: true },
+          matchScore: { type: Number, required: true, min: 0, max: 100 },
+          missingSkills: { type: [String], default: [] },
+          highPrioritySkills: { type: [String], default: [] },
+          scoredAt: { type: Date, required: true },
+          eventId: { type: String, required: true },
+        }, { _id: false }),
+      },
     },
   },
   { timestamps: true },

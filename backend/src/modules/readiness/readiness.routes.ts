@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authMiddleware } from '../../middleware/auth.js';
 import { ReadinessController } from './readiness.controller.js';
 import dsaRoutes from './dsa/routes/dsa.routes.js';
+import roadmapRoutes from './roadmap.routes.js';
 
 const router = Router();
 
@@ -21,6 +22,9 @@ router.delete('/guidance/history', ReadinessController.clearGuidanceHistory);
 
 // Mount DSA sub-routes under /readiness/dsa
 router.use('/dsa', dsaRoutes);
+
+// Target role roadmap generator under /readiness/roadmap
+router.use('/roadmap', roadmapRoutes);
 
 export const readinessRoutes = router;
 
