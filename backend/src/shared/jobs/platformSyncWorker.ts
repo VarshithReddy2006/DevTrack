@@ -9,8 +9,10 @@ import { syncPlatform } from '../../modules/platform-sync/sync.service.js';
 import { PlatformSyncJobData, QueueNames, JobRetryConfig } from './types.js';
 import { getXpProcessingQueue, getStreakRecalcQueue } from './queueFactory.js';
 import { injectTraceIntoJob, runJobInTrace } from '../tracing/tracing.js';
+import { startContestRatingSyncWorker, scheduleContestRatingSync, stopContestRatingSyncWorker } from './contestRatingSyncWorker.js';
 
 let _worker: Worker<PlatformSyncJobData> | null = null;
+let ratingSchedule: Promise<void> | null = null;
 
 export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
   if (_worker) return _worker;
@@ -187,7 +189,9 @@ export function startPlatformSyncWorker(): Worker<PlatformSyncJobData> {
     concurrency: 5,
   });
 
-  // Start contest refresh worker in the sync worker pool
+  // Start contest workers in the sync pool (also used by workers/worker-sync.ts).
+  startContestRatingSyncWorker();
+  ratingSchedule = scheduleContestRatingSync().catch(error => logger.warn('[sync] Failed scheduling contest rating synchronization', { error }));
   void import('./contestRefreshWorker.js')
     .then(({ startContestRefreshWorker, scheduleContestRefreshTask }) => {
       startContestRefreshWorker();
@@ -204,8 +208,12 @@ export async function stopPlatformSyncWorker(): Promise<void> {
   if (!_worker) return;
 
   logger.info('[worker] Stopping platform sync worker', { event: 'worker_stopping' });
-  await _worker.close();
+  const results = await Promise.allSettled([
+    _worker.close(),
+    (async () => { await ratingSchedule; await stopContestRatingSyncWorker(); })(),
+  ]);
   _worker = null;
+  ratingSchedule = null;
   try {
     const { stopContestRefreshWorker } = await import('./contestRefreshWorker.js');
     await stopContestRefreshWorker();
@@ -213,6 +221,8 @@ export async function stopPlatformSyncWorker(): Promise<void> {
     logger.warn('[sync] Failed stopping contest refresh worker', { err });
   }
   logger.info('[worker] Platform sync worker stopped', { event: 'worker_stopped' });
+  const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+  if (errors.length) throw new AggregateError(errors, 'Sync worker shutdown failed');
 }
 
 export function getWorkerStatus(): { running: boolean } {

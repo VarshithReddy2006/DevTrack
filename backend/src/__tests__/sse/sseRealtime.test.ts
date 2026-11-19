@@ -19,13 +19,35 @@ vi.mock('../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({
   unifiedRuntimeStateService: { getRuntimeState: vi.fn(async () => null) },
 }));
 
-import { EventBus } from '../../shared/sse/eventBus.js';
+import { EventBus, type SseClient } from '../../shared/sse/eventBus.js';
 import { parseStreamId, replayMissedEvents } from '../../shared/sse/sseHandler.js';
 
 function published(bus: EventBus) {
   const spy = vi.spyOn(bus, 'publishEnvelope').mockResolvedValue(undefined);
   return spy;
 }
+
+it('delivers replayable contest rating updates only to the owning user', async () => {
+  const bus = new EventBus();
+  const owner: string[] = []; const other: string[] = [];
+  const decoder = new TextDecoder();
+  for (const [userId, frames] of [['owner', owner], ['other', other]] as const) {
+    bus.register({ id: `${userId}-client`, userId, connectedAt: Date.now(),
+      controller: { enqueue: (value: Uint8Array) => frames.push(decoder.decode(value)) },
+      emit: () => undefined, destroy: () => undefined } as unknown as SseClient);
+  }
+  try {
+    const payload = { contestId: 'contest-123', platform: 'codeforces', rank: 12, ratingChange: -12 };
+    await bus.publishEnvelope('owner', 'contest.rating_updated', payload);
+    expect(owner).toHaveLength(1);
+    expect(owner[0]).toContain('contest.rating_updated');
+    expect(owner[0]).toContain('1700000000000-0');
+    expect(other).toHaveLength(0);
+    expect(redis.xadd).toHaveBeenCalledWith('sse:stream:owner', '*', 'type', 'contest.rating_updated',
+      'sequence', '1', 'payload', JSON.stringify(payload), 'timestamp', expect.any(String),
+      'correlationId', expect.any(String), 'schemaVersion', '1');
+  } finally { bus.shutdown(); }
+});
 
 describe('runtime_state_patch coalescing', () => {
   beforeEach(() => vi.useFakeTimers());

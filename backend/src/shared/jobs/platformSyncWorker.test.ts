@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   processor: null as null | ((job: unknown) => Promise<unknown>),
 }));
 vi.mock('../../modules/platform-sync/sync.service.js', () => ({ syncPlatform: mocks.sync }));
+vi.mock('./contestRatingSyncWorker.js', () => ({ startContestRatingSyncWorker: vi.fn(), scheduleContestRatingSync: vi.fn().mockResolvedValue(undefined), stopContestRatingSyncWorker: vi.fn() }));
 vi.mock('../../infrastructure/queues/WorkerFactory.js', () => ({ WorkerFactory: {
   createWorker: (_queue: unknown, processor: (job: unknown) => Promise<unknown>) => {
     mocks.processor = processor; return { on: vi.fn(), close: vi.fn() };
@@ -27,6 +28,14 @@ vi.mock('../tracing/tracing.js', () => ({
 beforeEach(() => { vi.clearAllMocks(); startPlatformSyncWorker(); });
 afterEach(async () => { await stopPlatformSyncWorker(); });
 const job = { id: 'synthetic', data: { userId: 'owner', platformName: 'leetcode' }, attemptsMade: 0 };
+
+it('starts, schedules and drains contest rating synchronization with the sync pool', async () => {
+  const ratings = await import('./contestRatingSyncWorker.js');
+  expect(ratings.startContestRatingSyncWorker).toHaveBeenCalledTimes(1);
+  expect(ratings.scheduleContestRatingSync).toHaveBeenCalledTimes(1);
+  await stopPlatformSyncWorker();
+  expect(ratings.stopContestRatingSyncWorker).toHaveBeenCalledTimes(1);
+});
 
 it.each([true, false])('does not duplicate coordinator notifications for success=%s', async success => {
   const result = { success, platform: 'leetcode', error: success ? undefined : 'provider unavailable' };
