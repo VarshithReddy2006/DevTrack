@@ -9,6 +9,7 @@ export interface IRevisionCard extends Document {
   title: string;
   difficulty: ProblemDifficulty;
   tags: string[];
+  tagWeight: number;
   reviewSeq: number; // monotonic sequence for optimistic concurrency
   repetitions: number;
   easeFactor: number;
@@ -54,6 +55,7 @@ const revisionCardSchema = new Schema<IRevisionCard>(
       default: 0,
       min: 0,
     },
+    tagWeight: { type: Number, default: 1, min: 0.1, max: 10 },
     repetitions: {
       type: Number,
       required: true,
