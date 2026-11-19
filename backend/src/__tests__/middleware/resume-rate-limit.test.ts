@@ -41,7 +41,7 @@ vi.mock('dotenv', () => ({ default: { config: vi.fn() } }));
 // Keep real authentication; replace only Clerk verification and local user lookup.
 vi.mock('@clerk/backend', () => ({ verifyToken: async (token: string) => {
   if (!['user-a', 'user-b'].includes(token)) throw new Error('Invalid test token');
-  return { sub: token };
+  return { sub: token, sid: 'sess_fixture' };
 } }));
 vi.mock('../../db/models/index.js', () => ({ User: { findOne: async ({ clerkId }: { clerkId: string }) => ({
   _id: clerkId, clerkId, email: `${clerkId}@example.test`, username: clerkId, role: 'user',
@@ -134,6 +134,18 @@ async function request(path: string, user = 'user-a', method = 'GET', body?: unk
 }
 
 describe('production resume HTTP chain', () => {
+  it('previews scores beyond the general API budget without database lookups or generation charges', async () => {
+    const { User } = await import('../../db/models/index.js');
+    const lookup = vi.spyOn(User, 'findOne');
+    const body = { originalBullets: [], revisedBullets: ['Built reliable Node.js APIs for customers across multiple regions'], targetKeywords: ['Node.js'] };
+    for (let preview = 0; preview < 120; preview++) {
+      expect((await request('/api/v2/resume/diff-score', 'user-a', 'POST', body)).status).toBe(200);
+    }
+    expect(lookup).not.toHaveBeenCalled();
+    expect((await request('/api/v2/resume/diff-score', 'user-a', 'POST', body)).status).toBe(429);
+    expect((await request('/api/resume/upload', 'user-a', 'POST')).status).toBe(200);
+  });
+
   it.each(['/api', '/api/v1'])('polls for six minutes through completion via %s', async prefix => {
     expect((await request(`${prefix}/resume/upload`, 'user-a', 'POST')).status).toBe(200);
     for (let poll = 0; poll < 240; poll++) {

@@ -8,6 +8,37 @@ The backend and browser can pass the same text and keywords to `validateParserSa
 
 The golden fixtures record the deterministic findings, recommendations, score, and word count from `ATSCompatibilityEngine` at commit `a2f42b5`.
 
+## Bullet score differential
+
+`scoreDifferential({ originalBullets, revisedBullets, targetKeywords })` returns
+integer `originalScore`, `revisedScore`, `delta` (revised minus original),
+`keywordChanges: { added, removed }`, revised `brevityScore`, and
+`originalBrevityScore`. All scores are 0–100. The function is pure, does not mutate
+input, and works identically in Node and browser bundles.
+
+This is a bullet-only preview, not a persisted full-resume score. It uses the
+existing parser, formatting, literal keyword coverage, extraction-confidence, and
+ATS aggregation functions with no inferred resume sections or supplied role.
+Keywords are trimmed and deduplicated case-insensitively, preserving the first
+label/order; symbol keywords such as C++, C#, and .NET use the shared word-boundary
+matching. Empty/whitespace-only bullet lists score zero. With no target keywords,
+keyword coverage is neutral.
+
+Brevity starts at 100 per nonempty bullet. Fewer than 8 words lose 10 points per
+missing word; more than 35 lose 2 points per excess word, capped at 70 per bullet.
+The phrases `responsible for`, `worked on`, `helped to`, `in order to`, `very`,
+`really`, `various`, `numerous`, and `successfully` lose 10 points per occurrence,
+capped at 30 per bullet. The mean of those bullet scores is rounded to an integer.
+The preview deducts 20% of the lost brevity points and an additional 5 points per
+target-keyword occurrence after its third occurrence across the entire bullet
+list, capped at 30 total stuffing points, through the shared credibility-penalty
+input. The shared aggregator rounds/clamps the final result.
+
+These explicit heuristics are advisory and not a recruiter outcome prediction;
+legitimate repeated skills can incur a stuffing penalty. The API bounds its
+inputs; direct package callers should impose equivalent limits for interactive
+latency. This utility does not change existing saved-resume scoring behavior.
+
 ## Job description matching
 
 Use the versioned skill taxonomy to get a reproducible report without an AI provider.

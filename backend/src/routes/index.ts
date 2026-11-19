@@ -45,14 +45,15 @@ const globalRateLimit = rateLimit({
   message: 'Too many requests. Please slow down.',
 });
 
-// Polling has a dedicated authenticated budget. Keep an IP flood guard before
+// Polling and stateless score previews have a dedicated budget. Keep an IP flood guard before
 // auth without exhausting the general 100-request/15-minute API budget.
 router.use((req, res, next) => {
   const pollingRead = (req.method === 'GET' || req.method === 'HEAD') && (
     /^\/resume\/session\/[^/]+(?:\/status)?\/?$/i.test(req.path)
     || /^\/resume-intelligence\/report\/[^/]+\/?$/i.test(req.path)
   );
-  return pollingRead
+  const scorePreview = req.method === 'POST' && /^\/resume\/diff-score\/?$/i.test(req.path);
+  return pollingRead || scorePreview
     ? rateLimiters.resumeReadIngress(req, res, next)
     : globalRateLimit(req, res, next);
 });
