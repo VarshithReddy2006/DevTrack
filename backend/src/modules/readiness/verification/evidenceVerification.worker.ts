@@ -142,7 +142,9 @@ export async function startEvidenceVerificationWorker(): Promise<Worker> {
     } catch (error) {
       if (error instanceof GitHubBackoffError) {
         await worker!.rateLimit(error.retryAfterMs);
-        throw Worker.RateLimitError();
+        throw typeof Worker?.RateLimitError === 'function'
+          ? Worker.RateLimitError()
+          : new Error('bullmq:rateLimitExceeded');
       }
       throw error;
     }
