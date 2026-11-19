@@ -29,6 +29,7 @@ import '../../db/models/dailyChallenge.model.js';
 import '../../db/models/datasetIngestion.model.js';
 import '../../db/models/deadLetterJob.model.js';
 import '../../db/models/dsaContest.model.js';
+import '../../db/models/dsaContestParticipation.model.js';
 import '../../db/models/dsaProblem.model.js';
 import '../../db/models/dsaProfile.model.js';
 import '../../db/models/dsaSubmission.model.js';

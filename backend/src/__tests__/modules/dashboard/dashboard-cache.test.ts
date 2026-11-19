@@ -18,7 +18,7 @@ import { entries, redis } from '../../fixtures/cacheRedis.js';
 // Replace only external infrastructure/provider boundaries.
 vi.mock('../../../shared/redis/client.js', async () => {
   const { redis } = await import('../../fixtures/cacheRedis.js');
-  return { getRedisClient: () => redis };
+  return { getRedisClient: () => redis, isRedisConfigured: () => false };
 });
 vi.mock('../../../shared/sse/index.js', () => {
   const events = new Map<PropertyKey, ReturnType<typeof vi.fn>>();

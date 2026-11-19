@@ -11,7 +11,7 @@ import { enqueueContestRatingSyncs, processContestRatingJob, scheduleContestRati
 const state = vi.hoisted(() => ({ add: vi.fn(), rateLimit: vi.fn(), close: vi.fn(), create: vi.fn() }));
 vi.mock('../../../shared/sse/eventBus.js', () => ({ eventBus: { publishEnvelope: vi.fn() } }));
 vi.mock('../../../shared/jobs/queueFactory.js', () => ({ getOrCreateQueue: () => ({ add: state.add }) }));
-vi.mock('../../../shared/redis/client.js', () => ({ getRedisClient: vi.fn() }));
+vi.mock('../../../shared/redis/client.js', () => ({ getRedisClient: vi.fn(), isRedisConfigured: () => false }));
 vi.mock('../../../shared/jobs/dlq.service.js', () => ({ createDlqWorker: (...args: unknown[]) => {
   state.create(...args); return { rateLimit: state.rateLimit, close: state.close };
 } }));

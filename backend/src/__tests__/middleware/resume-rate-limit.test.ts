@@ -10,32 +10,35 @@ const fixture = vi.hoisted(() => ({
 }));
 
 // Expiring Redis fixture: no sockets, credentials, or cleanup against a real service.
-vi.mock('../../shared/redis/client.js', () => ({ getRedisClient: () => ({
-  async get(key: string) {
-    const entry = fixture.values.get(key);
-    if (entry?.expiresAt !== undefined && entry.expiresAt <= Date.now()) {
-      fixture.values.delete(key);
-      return null;
-    }
-    return entry?.value ?? null;
-  },
-  async incr(key: string) {
-    const value = Number(await this.get(key)) + 1;
-    fixture.values.set(key, { ...fixture.values.get(key), value: String(value) });
-    return value;
-  },
-  async pexpire(key: string, ms: number) {
-    fixture.values.get(key)!.expiresAt = Date.now() + ms;
-  },
-  async ttl(key: string) {
-    await this.get(key);
-    const entry = fixture.values.get(key);
-    return !entry ? -2 : entry.expiresAt === undefined ? -1 : Math.ceil((entry.expiresAt - Date.now()) / 1000);
-  },
-  async set(key: string, value: string, _mode: string, ms: number) {
-    fixture.values.set(key, { value, expiresAt: Date.now() + ms });
-  },
-}) }));
+vi.mock('../../shared/redis/client.js', () => ({
+  isRedisConfigured: () => false,
+  getRedisClient: () => ({
+    async get(key: string) {
+      const entry = fixture.values.get(key);
+      if (entry?.expiresAt !== undefined && entry.expiresAt <= Date.now()) {
+        fixture.values.delete(key);
+        return null;
+      }
+      return entry?.value ?? null;
+    },
+    async incr(key: string) {
+      const value = Number(await this.get(key)) + 1;
+      fixture.values.set(key, { ...fixture.values.get(key), value: String(value) });
+      return value;
+    },
+    async pexpire(key: string, ms: number) {
+      fixture.values.get(key)!.expiresAt = Date.now() + ms;
+    },
+    async ttl(key: string) {
+      await this.get(key);
+      const entry = fixture.values.get(key);
+      return !entry ? -2 : entry.expiresAt === undefined ? -1 : Math.ceil((entry.expiresAt - Date.now()) / 1000);
+    },
+    async set(key: string, value: string, _mode: string, ms: number) {
+      fixture.values.set(key, { value, expiresAt: Date.now() + ms });
+    },
+  }),
+}));
 vi.mock('../../shared/logger.js', () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
 vi.mock('dotenv', () => ({ default: { config: vi.fn() } }));
 // Keep real authentication; replace only Clerk verification and local user lookup.
