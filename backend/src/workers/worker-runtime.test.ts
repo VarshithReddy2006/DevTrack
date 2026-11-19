@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createWorkerRuntime, parseWorkerType, WORKER_TYPES, workerDefinitions } from './worker-runtime.js';
 
 const mocks = vi.hoisted(() => {
-  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender', 'jdParse', 'jdScore', 'interviewEvaluate'];
+  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender', 'jdFetch', 'jdParse', 'jdScore', 'evidenceVerification', 'interviewEvaluate'];
   return {
     workers: Object.fromEntries(names.map(name => [name, { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }])),
     schedule: vi.fn().mockResolvedValue(undefined),
@@ -36,6 +36,7 @@ vi.mock('./focus-completion.worker.js', () => ({ createFocusCompletionWorkers: (
 vi.mock('../modules/leagues/workers/weeklyRollover.worker.js', () => ({ startWeeklyRolloverWorker: mocks.workers.leagueRollover.start, stopWeeklyRolloverWorker: mocks.workers.leagueRollover.stop, scheduleWeeklyRollover: mocks.scheduleRollover }));
 vi.mock('../modules/profile/workers/dossierRender.worker.js', () => ({ startDossierRenderWorker: mocks.workers.dossierRender.start, stopDossierRenderWorker: mocks.workers.dossierRender.stop }));
 vi.mock('../modules/profile/workers/ogRender.worker.js', () => ({ startOgRenderWorker: mocks.workers.ogRender.start, stopOgRenderWorker: mocks.workers.ogRender.stop }));
+vi.mock('../modules/job-targets/workers/jobTargetFetch.worker.js', () => ({ startJobTargetFetchWorker: mocks.workers.jdFetch.start, stopJobTargetFetchWorker: mocks.workers.jdFetch.stop }));
 vi.mock('../modules/job-targets/workers/jdParse.worker.js', () => ({ startJdParseWorker: mocks.workers.jdParse.start, stopJdParseWorker: mocks.workers.jdParse.stop }));
 vi.mock('../modules/interview/workers/interviewEvaluate.worker.js', () => ({ startInterviewEvaluateWorker: mocks.workers.interviewEvaluate.start, stopInterviewEvaluateWorker: mocks.workers.interviewEvaluate.stop }));
 vi.mock('../modules/job-targets/workers/jdScore.worker.js', () => ({ startJdScoreWorker: mocks.workers.jdScore.start, stopJdScoreWorker: mocks.workers.jdScore.stop }));
@@ -44,6 +45,7 @@ vi.mock('./worker-resume-ats.js', () => ({ startResumeATSWorker: mocks.workers.s
 vi.mock('./worker-resume-embedding.js', () => ({ startResumeEmbeddingWorker: mocks.workers.sessionEmbedding.start, stopResumeEmbeddingWorker: mocks.workers.sessionEmbedding.stop }));
 vi.mock('./worker-resume-semantic.js', () => ({ startResumeSemanticWorker: mocks.workers.sessionSemantic.start, stopResumeSemanticWorker: mocks.workers.sessionSemantic.stop }));
 vi.mock('./worker-resume-recommendation.js', () => ({ startResumeRecommendationWorker: mocks.workers.recommendation.start, stopResumeRecommendationWorker: mocks.workers.recommendation.stop }));
+vi.mock('../modules/readiness/verification/evidenceVerification.worker.js', () => ({ startEvidenceVerificationWorker: mocks.workers.evidenceVerification.start, stopEvidenceVerificationWorker: mocks.workers.evidenceVerification.stop }));
 vi.mock('../shared/jobs/workers/dsaAnalyticsWorker.js', () => ({ startDsaAnalyticsWorker: () => { mocks.workers.dsa.start(); return { close: mocks.workers.dsa.stop }; } }));
 vi.mock('../shared/jobs/workers/projectIntelligenceWorker.js', () => ({ startProjectIntelligenceWorker: () => { mocks.workers.projects.start(); return { close: mocks.workers.projects.stop }; } }));
 vi.mock('../shared/jobs/workers/skillIntelligenceWorker.js', () => ({ startSkillIntelligenceWorker: () => { mocks.workers.skills.start(); return { close: mocks.workers.skills.stop }; } }));
@@ -65,8 +67,8 @@ describe('standalone worker selection and lifecycle', () => {
   const resume = ['generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation'];
   const cases: [string | undefined, string[]][] = [
     ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications', 'leagueScore', 'domainReadiness', 'focusCompletion']], ['maintenance', ['maintenance', 'leagueRollover']],
-    ['readiness', ['dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
-    ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender', 'dossierRender']], ['ai', ['jdParse', 'jdScore', 'interviewEvaluate']],
+    ['readiness', ['evidenceVerification', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
+    ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender', 'dossierRender']], ['ai', ['jdFetch', 'jdParse', 'jdScore', 'interviewEvaluate']],
     ['all', Object.keys(mocks.workers)], [undefined, Object.keys(mocks.workers)], ['', Object.keys(mocks.workers)],
   ];
   it.each(cases)('starts and drains only consumers for %s', async (selector, expected) => {
@@ -92,8 +94,9 @@ describe('standalone worker selection and lifecycle', () => {
 
   it('registers job-target and interview evaluation consumers under the ai role and nowhere else', () => {
     const queues = (role: string) => workerDefinitions.filter(definition => definition.role === role).map(definition => definition.queueName);
-    expect(queues('ai')).toEqual(['jd-parse', 'jd-score', 'interview-evaluate']);
+    expect(queues('ai')).toEqual(['jd-fetch', 'jd-parse', 'jd-score', 'interview-evaluate']);
     for (const role of WORKER_TYPES.filter(value => value !== 'ai' && value !== 'all')) {
+      expect(queues(role)).not.toContain('jd-fetch');
       expect(queues(role)).not.toContain('jd-parse');
       expect(queues(role)).not.toContain('jd-score');
       expect(queues(role)).not.toContain('interview-evaluate');

@@ -50,6 +50,9 @@ export const queryKeys = {
   missions: {
     active: ['missions', 'active'] as const,
   },
+  quests: {
+    all: ['quests'] as const,
+  },
   achievements: {
     all: ['achievements'] as const,
     detail: (id: string) => ['achievements', id] as const,

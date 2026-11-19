@@ -32,6 +32,8 @@
     "migrate:embedding-user-hash": "tsx src/db/migrations/run-embedding-user-hash.ts",
     "migrate:daily-challenge-tiers": "tsx src/db/migrations/run-daily-challenge-tiers.ts",
     "test:safety": "vitest run -c vitest.safety.config.ts",
+    "test:evidence-verification": "vitest run -c vitest.evidence-verification.config.ts",
+    "test:job-fetch": "vitest run -c vitest.job-fetch.config.ts",
     "test:unit": "npm run test:safety && npm run test:score-differential && npm run test:bullet-rewrite && npm run test:interview-evaluation && vitest run",
     "test:interview-evaluation": "vitest run -c vitest.interview-evaluation.config.ts",
     "test:bullet-rewrite": "vitest run -c vitest.bullet-rewrite.config.ts",

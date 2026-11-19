@@ -11,7 +11,7 @@ import { getOrCreateQueue } from '../../../shared/jobs/queueFactory.js';
 import { JobRetryConfig, QueueNames, type JdScoreJobData } from '../../../shared/jobs/types.js';
 import type { JobTargetParsedPayload } from '../../../shared/events/eventContract.js';
 import { checkStarEvidence } from '../analysis/starEvidenceChecks.js';
-import { MAX_EVENT_SKILLS, scoreTaxonomy } from '../analysis/taxonomyFallback.js';
+import { MAX_EVENT_SKILLS, missingTaxonomySkills, scoreTaxonomy } from '../analysis/taxonomyFallback.js';
 import { createGatewayJdLlm, type JdLlm } from '../jdLlm.js';
 import { parseJobTargetJobData } from '../jobData.js';
 import {
@@ -21,6 +21,7 @@ import {
   type DegradedReason,
   type JdScoreResult,
   type JobTargetParsedOutboxInput,
+  type JobTargetScoredOutboxInput,
   type JobTargetPort,
   type JobTargetRecord,
 } from '../jobTarget.port.js';
@@ -151,7 +152,14 @@ export async function processJdScore(rawData: unknown, deps: JdScoreDeps): Promi
     requiredSkills: parse.requiredSkills.slice(0, MAX_EVENT_SKILLS),
     analysisMode,
   });
-  await deps.port.completeScore(userId, jobTargetId, result, event);
+  const scoredEvent: JobTargetScoredOutboxInput = {
+    type: 'jobtarget.scored', aggregateType: 'job_target', aggregateId: jobTargetId, userId,
+    payload: {
+      jobTargetId, matchScore: deterministic.score,
+      missingSkills: missingTaxonomySkills(parse.requirements, candidate), scoredAt: result.scoredAt,
+    },
+  };
+  await deps.port.completeScore(userId, jobTargetId, result, event, scoredEvent);
   logger.info('[jd-score] Scored job target', { event: 'jd_score_done', jobTargetId, analysisMode, degradedReason: ai.degradedReason });
   return result;
 }

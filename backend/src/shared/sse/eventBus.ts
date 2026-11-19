@@ -261,6 +261,8 @@ export type SseEventType =
   | 'interview.turn.delta'
   | 'interview.session.completed'
   | 'interview.report_ready'
+  | 'jobtarget.updated'
+  | 'evidence.verified'
   // System
   | 'heartbeat';
 

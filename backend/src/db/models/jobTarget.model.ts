@@ -3,7 +3,7 @@
 import { Schema, model, type Document, type Types } from 'mongoose';
 import { cascadeEmbeddingDeletes } from './embeddingCascade.js';
 
-export type JobTargetStatus = 'submitted' | 'fetching' | 'ready' | 'failed';
+export type JobTargetStatus = 'submitted' | 'fetching' | 'ready' | 'failed' | 'completed';
 
 export interface IJobTarget extends Document {
   userId: Types.ObjectId;
@@ -14,6 +14,12 @@ export interface IJobTarget extends Document {
   title: string | null;
   status: JobTargetStatus;
   failureReason: string | null;
+  matchScore?: number;
+  missingSkills: string[];
+  scoredAt?: Date;
+  /** Source identity fences replays and out-of-order scores, independent of inbox retention. */
+  scoreEventId?: string;
+  scoreNotification?: { leaseToken?: string; leaseUntil?: Date; notifiedAt?: Date };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -24,8 +30,17 @@ const jobTargetSchema = new Schema<IJobTarget>(
     text: { type: String, default: null },
     url: { type: String, default: null },
     title: { type: String, default: null },
-    status: { type: String, enum: ['submitted', 'fetching', 'ready', 'failed'], default: 'submitted', required: true },
+    status: { type: String, enum: ['submitted', 'fetching', 'ready', 'failed', 'completed'], default: 'submitted', required: true },
     failureReason: { type: String, default: null },
+    matchScore: { type: Number, min: 0, max: 100 },
+    missingSkills: { type: [String], default: [] },
+    scoredAt: { type: Date },
+    scoreEventId: { type: String },
+    scoreNotification: {
+      leaseToken: { type: String },
+      leaseUntil: { type: Date },
+      notifiedAt: { type: Date },
+    },
   },
   { timestamps: true },
 );
