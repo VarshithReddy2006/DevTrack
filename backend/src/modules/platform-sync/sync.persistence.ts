@@ -4,14 +4,23 @@ import { logger } from '../../shared/logger.js';
 import { createActivity, incrementDailyActivity } from '../activity/activity.service.js';
 import { dsaProblemIdentity } from '../dsa/dsa-problem-identity.js';
 import type { PlatformSubmission, PlatformContest, FetchedPlatformStats } from './adapters/types.js';
+import { enqueueSubmissionEvaluation } from '../revision/cardGenerator.service.js';
 
 export async function persistSubmissions(userId: string, submissions: PlatformSubmission[]): Promise<number> {
   const userObjId = new Types.ObjectId(userId);
   let ingested = 0;
+  const evaluations = new Set<string>();
   for (const sub of submissions) {
     if (!sub.problemExternalId || !Number.isFinite(sub.submittedAt.getTime())) continue;
+    if (sub.runtimePercentile != null && (typeof sub.runtimePercentile !== 'number' || !Number.isFinite(sub.runtimePercentile) || sub.runtimePercentile < 0 || sub.runtimePercentile > 100)) {
+      throw new Error('Invalid submission runtime percentile');
+    }
     const key = { userId: userObjId, platform: sub.platform, externalId: sub.externalId };
-    if (await DsaSubmission.exists(key)) continue;
+    const existingSubmission = await DsaSubmission.findOne(key).select('_id revisionEvaluationQueued').lean();
+    if (existingSubmission) {
+      if (!existingSubmission.revisionEvaluationQueued) evaluations.add(existingSubmission._id.toString());
+      continue;
+    }
     const problemKey = { userId: userObjId, platform: sub.platform, externalId: sub.problemExternalId };
     let problem;
     try {
@@ -29,14 +38,19 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
       problem = await DsaProblem.findOne(problemKey);
     }
     if (!problem) throw new Error('Failed to persist synced problem');
+    let savedSubmission;
     try {
-      await DsaSubmission.create({ ...key, problemId: problem._id,
+      savedSubmission = await DsaSubmission.create({ ...key, problemId: problem._id,
         status: sub.status === 'accepted' ? 'accepted' : sub.status === 'time_limit' ? 'time_limit_exceeded'
           : sub.status === 'runtime_error' ? 'runtime_error' : sub.status === 'compilation_error' ? 'compilation_error' : 'wrong',
         language: sub.language ?? 'unknown', codeSnippet: null, submittedAt: sub.submittedAt,
-        executionTime: sub.runtimeMs ?? null, memoryUsed: sub.memoryKb ?? null });
+        executionTime: sub.runtimeMs ?? null, memoryUsed: sub.memoryKb ?? null, runtimePercentile: sub.runtimePercentile ?? null });
     } catch (error) {
-      if ((error as { code?: number }).code === 11000) continue;
+      if ((error as { code?: number }).code === 11000) {
+        const duplicate = await DsaSubmission.exists(key);
+        if (duplicate) evaluations.add(duplicate._id.toString());
+        continue;
+      }
       throw error;
     }
     // Count and heatmap only after the unique submission key was admitted.
@@ -50,12 +64,16 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
     } }]);
     await incrementDailyActivity(userId, sub.submittedAt, 'submission');
     ingested++;
+    evaluations.add(savedSubmission._id.toString());
     if (sub.status === 'accepted') {
       const { checkChallengeCompletion } = await import('../daily-challenge/daily-challenge.service.js');
       void checkChallengeCompletion(userId, sub.platform, sub.problemExternalId, sub.submittedAt)
         .catch(error => logger.warn('[sync] Challenge completion check failed', { userId, error }));
     }
   }
+  // Providers commonly return newest first. Publish only after admitting the
+  // whole batch so a fast consumer can see earlier failures before acceptance.
+  for (const submissionId of evaluations) await enqueueSubmissionEvaluation(userId, submissionId);
   return ingested;
 }
 

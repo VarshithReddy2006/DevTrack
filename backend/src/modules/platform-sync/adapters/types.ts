@@ -26,6 +26,8 @@ export interface PlatformSubmission {
   language?: string;
   /** Optional: runtime in ms */
   runtimeMs?: number;
+  /** Optional provider-supplied runtime percentile, 0–100; never inferred from milliseconds. */
+  runtimePercentile?: number;
   /** Optional: memory in KB */
   memoryKb?: number;
   /** Provider-specific raw data (for debugging, never used in business logic) */

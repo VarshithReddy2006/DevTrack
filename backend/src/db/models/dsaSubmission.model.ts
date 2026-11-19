@@ -14,6 +14,8 @@ export interface IDsaSubmission extends Document {
   submittedAt: Date;
   executionTime: number | null;
   memoryUsed: number | null;
+  runtimePercentile: number | null;
+  revisionEvaluationQueued: boolean;
   topicTags: string[];
   createdAt: Date;
 }
@@ -69,6 +71,8 @@ const dsaSubmissionSchema = new Schema<IDsaSubmission>(
       type: Number,
       default: null,
     },
+    runtimePercentile: { type: Number, default: null, min: 0, max: 100 },
+    revisionEvaluationQueued: { type: Boolean, default: false },
     topicTags: {
       type: [String],
       default: [],
