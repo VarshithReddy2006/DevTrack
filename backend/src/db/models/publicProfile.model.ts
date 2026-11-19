@@ -2,6 +2,9 @@ import mongoose, { Document, Schema, Types } from 'mongoose';
 
 export const PUBLIC_PROFILE_SECTIONS = ['streak', 'dsa', 'github', 'projects', 'activity'] as const;
 export type PublicProfileSection = typeof PUBLIC_PROFILE_SECTIONS[number];
+export const PUBLIC_PROFILE_THEMES = ['modern-dark', 'clean-minimal-light', 'monokai-hacker', 'terminal-monospace'] as const;
+export type PublicProfileTheme = typeof PUBLIC_PROFILE_THEMES[number];
+export const DEFAULT_PUBLIC_PROFILE_THEME: PublicProfileTheme = 'modern-dark';
 
 export interface IPublicProfile extends Document {
   userId: Types.ObjectId;
@@ -18,6 +21,10 @@ export interface IPublicProfile extends Document {
   publication: {
     consentVersion: string | null;
     publishedAt: Date | null;
+  };
+  settings: {
+    theme: PublicProfileTheme;
+    sectionOrder: PublicProfileSection[];
   };
 
   snapshot: {
@@ -132,6 +139,10 @@ const PublicProfileSchema = new Schema<IPublicProfile>(
     publication: {
       consentVersion: { type: String, default: null },
       publishedAt: { type: Date, default: null },
+    },
+    settings: {
+      theme: { type: String, enum: PUBLIC_PROFILE_THEMES, default: DEFAULT_PUBLIC_PROFILE_THEME },
+      sectionOrder: { type: [String], enum: PUBLIC_PROFILE_SECTIONS, default: [...PUBLIC_PROFILE_SECTIONS] },
     },
 
     snapshot: {

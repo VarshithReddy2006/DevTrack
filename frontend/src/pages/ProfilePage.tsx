@@ -16,6 +16,7 @@ import { Icon } from '../components/shared/Icon';
 import { getPublicProfile } from '../services/profileService';
 import '../components/profile/ProfilePage.css';
 import { DEFAULT_PROFILE, EMPTY_PLATFORM_STATE } from '../types/profile.types';
+import { PUBLICATION_SECTIONS, type PublicPortfolioTheme, type PublicationSection } from '../services/publicationService';
 
 interface ProfilePageProps {
   isPublicView?: boolean;
@@ -146,6 +147,19 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
 
   const hasAnyStats = activeLeetcode.data || activeCodeforces.data || activeCodechef.data || activeGithub.data || (isPublicView && publicProfile);
   const isLoading = isPublicView ? isPublicLoading : (dashLoading || activeLeetcode.loading || activeCodeforces.loading || activeCodechef.loading || activeGithub.loading || isProfileLoading);
+  const portfolioTheme: PublicPortfolioTheme = publicProfile?.settings?.theme ?? 'modern-dark';
+  const portfolioSections = publicProfile?.sections ?? Object.fromEntries(PUBLICATION_SECTIONS.map((section) => [section, true]));
+  const sectionOrder: PublicationSection[] = publicProfile?.settings?.sectionOrder?.length === PUBLICATION_SECTIONS.length
+    ? publicProfile.settings.sectionOrder
+    : [...PUBLICATION_SECTIONS];
+  const renderPublicSection = (section: PublicationSection) => {
+    if (portfolioSections[section] !== true) return null;
+    if (section === 'streak') return <ProfileHeader key={section} fullName={activeProfile.fullName} bio={activeProfile.bio} totalSolved={totalSolved} currentStreak={currentStreak} bestRating={bestRating} />;
+    if (section === 'dsa') return <section key={section} aria-labelledby="public-dsa-heading" className="profile-public-section"><h3 id="public-dsa-heading">DSA telemetry</h3><div className="platform-stats-grid">{sortedPlatforms.filter((platform) => platform.id !== 'github').map((platform) => platform.component)}</div></section>;
+    if (section === 'github') return <section key={section} aria-labelledby="public-github-heading" className="profile-public-section"><h3 id="public-github-heading">GitHub telemetry</h3><div className="platform-stats-grid">{sortedPlatforms.filter((platform) => platform.id === 'github').map((platform) => platform.component)}</div></section>;
+    if (section === 'projects') return <section key={section} aria-labelledby="public-projects-heading" className="profile-card profile-public-section"><h3 id="public-projects-heading">Verified projects</h3><p>{Array.isArray(publicProfile?.projects) ? publicProfile.projects.length : 0} verified projects are included in this portfolio.</p></section>;
+    return <section key={section} aria-labelledby="public-activity-heading" className="profile-card profile-public-section"><h3 id="public-activity-heading">Activity</h3><p>{Array.isArray(publicProfile?.activityHeatmap?.weeks) ? publicProfile.activityHeatmap.weeks.filter((day: { count?: number }) => (day.count ?? 0) > 0).length : 0} active days are represented in the public snapshot.</p></section>;
+  };
 
   // ─── Telemetry Sorting Logic (Increasing Order) ──────────────────────────
   const sortedPlatforms = React.useMemo(() => {
@@ -174,7 +188,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
   }
 
   return (
-    <div className={isPublicView ? 'profile-page-container px-4 py-6 sm:px-8' : 'profile-page-container'}>
+    <div className={`${isPublicView ? 'profile-page-container px-4 py-6 sm:px-8' : 'profile-page-container'} ${isPublicView ? `portfolio-theme-${portfolioTheme}` : ''}`} style={isPublicView && isPublicLoading ? { visibility: 'hidden' } : undefined} aria-busy={isPublicView ? isPublicLoading : undefined}>
       <div className="profile-page-glow" />
 
       <PageShell
@@ -186,16 +200,18 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
         <div className="mx-auto w-full max-w-[1000px] profile-content-wrapper">
           <div className="flex flex-col gap-8">
             {/* ─── 1. Identity Panel ───────────────────────────────────── */}
-            <ProfileHeader
-              fullName={activeProfile.fullName}
-              bio={activeProfile.bio}
-              totalSolved={totalSolved}
-              currentStreak={currentStreak}
-              bestRating={bestRating}
-            />
+            {isPublicView ? sectionOrder.map(renderPublicSection) : (
+              <ProfileHeader
+                fullName={activeProfile.fullName}
+                bio={activeProfile.bio}
+                totalSolved={totalSolved}
+                currentStreak={currentStreak}
+                bestRating={bestRating}
+              />
+            )}
 
             {/* ─── 2. Badge Ecosystem ──────────────────────────────────── */}
-            <ProfileAchievementsCard />
+            {!isPublicView && <ProfileAchievementsCard />}
 
             {/* ─── 3 + 4. Settings Matrix and Connectivity Row (owner only) ───
                 Public viewers, signed in or not, only get the read-only stats. */}
@@ -232,7 +248,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
             )}
 
             {/* ─── 5. Platform Telemetry (Sorted) ───────────────────────── */}
-            {(hasAnyStats || isLoading) && (
+            {!isPublicView && (hasAnyStats || isLoading) && (
               <motion.div
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -249,7 +265,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ isPublicView = false }) => {
             )}
 
             {/* ─── 6. Empty State ───────────────────────────────────────── */}
-            {!hasAnyStats && !isLoading && (
+            {!isPublicView && !hasAnyStats && !isLoading && (
               <div className="flex flex-col items-center justify-center py-16 bg-slate-50/50 rounded-[32px] border border-dashed border-slate-200">
                 <Icon name="chart-bar" size={32} className="text-slate-300 mb-3" />
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">No telemetry nodes active</p>

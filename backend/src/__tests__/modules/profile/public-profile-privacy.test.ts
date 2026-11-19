@@ -68,6 +68,7 @@ const publish = (body: unknown) => fetch(base + '/api/v1/profile/publication', {
   method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 });
 const unpublish = () => fetch(base + '/api/v1/profile/publication', { method: 'DELETE' });
+const readPublication = () => fetch(base + '/api/v1/profile/publication');
 const readPublic = (slug: string) => fetch(`${base}/api/v1/profile/public/${slug}`);
 const validBody = (slug: string, sections: Record<string, boolean> = { dsa: true }) => ({ slug, sections, consentVersion: '2026-11' });
 
@@ -145,11 +146,15 @@ describe('publishing', () => {
 
   it('publishes in one step: reservation, visibility, chosen sections, version, audit entry and event', async () => {
     const user = await asUser();
-    const response = await publish(validBody('Sam-Builds', { dsa: true, projects: true }));
+    const response = await publish({
+      ...validBody('Sam-Builds', { dsa: true, projects: true }),
+      settings: { theme: 'monokai-hacker', sectionOrder: ['projects', 'dsa', 'github', 'activity', 'streak'] },
+    });
     expect(response.status).toBe(200);
     expect((await response.json()).data).toMatchObject({
       published: true, slug: 'sam-builds', publicationVersion: 1, consentVersion: '2026-11',
       sections: { dsa: true, projects: true, streak: false, github: false, activity: false },
+      settings: { theme: 'monokai-hacker', sectionOrder: ['projects', 'dsa', 'github', 'activity', 'streak'] },
     });
 
     expect(await UsernameReservation.findOne({ slug: 'sam-builds' })).toMatchObject({ status: 'active' });
@@ -170,6 +175,7 @@ describe('publishing', () => {
     expect(dto.consistency).toBeUndefined();
     expect(dto.activityHeatmap).toBeUndefined();
     expect(dto.projects).toEqual([]);
+    expect(dto.settings).toEqual({ theme: 'monokai-hacker', sectionOrder: ['projects', 'dsa', 'github', 'activity', 'streak'] });
   });
 
   it('keeps the chosen handle when the profile is rebuilt later', async () => {
@@ -180,6 +186,30 @@ describe('publishing', () => {
       slug: 'my-handle', seo: { canonicalUrl: 'https://devtrack.io/u/my-handle' },
     });
     expect((await readPublic('my-handle')).status).toBe(200);
+  });
+
+  it('preserves existing portfolio settings when an older client omits them', async () => {
+    await asUser();
+    expect((await publish({
+      ...validBody('keeps-settings', { dsa: true }),
+      settings: { theme: 'monokai-hacker', sectionOrder: ['projects', 'dsa', 'github', 'activity', 'streak'] },
+    })).status).toBe(200);
+    expect((await publish(validBody('keeps-settings', { github: true }))).status).toBe(200);
+    expect(await PublicProfile.findOne({ userId: actor.id })).toMatchObject({
+      settings: { theme: 'monokai-hacker', sectionOrder: ['projects', 'dsa', 'github', 'activity', 'streak'] },
+    });
+  });
+
+  it('returns safe defaults for a legacy profile without stored settings', async () => {
+    await asUser();
+    expect((await publish(validBody('legacy-settings', { dsa: true }))).status).toBe(200);
+    await PublicProfile.updateOne({ userId: actor.id }, { $unset: { settings: 1 } });
+    const response = await readPublication();
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.settings).toEqual({
+      theme: 'modern-dark',
+      sectionOrder: ['streak', 'dsa', 'github', 'projects', 'activity'],
+    });
   });
 
   it('refuses a handle another user holds or uses as a username, and the loser keeps no reservation', async () => {

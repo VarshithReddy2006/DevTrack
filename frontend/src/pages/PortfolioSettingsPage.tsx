@@ -5,6 +5,8 @@ import { ConsentPanel, CONSENT_VERSION } from '../features/portfolio/components/
 import { HandlePicker } from '../features/portfolio/components/HandlePicker';
 import { PublishBar } from '../features/portfolio/components/PublishBar';
 import { SectionToggles } from '../features/portfolio/components/SectionToggles';
+import { PublicPortfolioThemeSwitcher } from '../features/portfolio/components/PublicPortfolioThemeSwitcher';
+import { SectionOrderCustomizer } from '../features/portfolio/components/SectionOrderCustomizer';
 import { usePublication } from '../features/portfolio/hooks/usePublication';
 import { normalizeSlug, validateSlug } from '../features/portfolio/utils/slug';
 import {
@@ -12,14 +14,17 @@ import {
   classifyPublishError,
   type PublicationSection,
   type PublicationSections,
+  type PortfolioSettings,
 } from '../services/publicationService';
 
 const HIDDEN = Object.fromEntries(PUBLICATION_SECTIONS.map((section) => [section, false])) as PublicationSections;
+const DEFAULT_SETTINGS: PortfolioSettings = { theme: 'modern-dark', sectionOrder: [...PUBLICATION_SECTIONS] };
 
 const PortfolioSettingsPage: React.FC = () => {
   const { status, isLoading, isUnavailable, isError, refetch, publish, unpublish } = usePublication();
   const [slug, setSlug] = useState('');
   const [sections, setSections] = useState<PublicationSections>(HIDDEN);
+  const [settings, setSettings] = useState<PortfolioSettings>(DEFAULT_SETTINGS);
   const [consent, setConsent] = useState(false);
   const [handleError, setHandleError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -27,6 +32,7 @@ const PortfolioSettingsPage: React.FC = () => {
   useEffect(() => {
     if (!status) return;
     setSections(status.sections);
+    setSettings(status.settings ?? DEFAULT_SETTINGS);
     if (status.slug) setSlug(status.slug);
   }, [status]);
 
@@ -46,7 +52,7 @@ const PortfolioSettingsPage: React.FC = () => {
     setHandleError(null);
     setNotice(null);
     try {
-      await publish.mutateAsync({ slug: normalizeSlug(slug), sections, consentVersion: consentVersionToSend });
+      await publish.mutateAsync({ slug: normalizeSlug(slug), sections, consentVersion: consentVersionToSend, settings });
     } catch (error) {
       const failure = classifyPublishError(error);
       if (failure.kind === 'other') setNotice(failure.message);
@@ -62,9 +68,22 @@ const PortfolioSettingsPage: React.FC = () => {
     if (!published || !status?.slug) return;
     setNotice(null);
     try {
-      await publish.mutateAsync({ slug: status.slug, sections: next, consentVersion: consentVersionToSend });
+      await publish.mutateAsync({ slug: status.slug, sections: next, consentVersion: consentVersionToSend, settings });
     } catch (error) {
       setSections(previous);
+      setNotice(`Couldn't save that change. ${classifyPublishError(error).message}`);
+    }
+  };
+
+  const saveSettings = async (next: PortfolioSettings) => {
+    const previous = settings;
+    setSettings(next);
+    if (!published || !status?.slug) return;
+    setNotice(null);
+    try {
+      await publish.mutateAsync({ slug: status.slug, sections, consentVersion: consentVersionToSend, settings: next });
+    } catch (error) {
+      setSettings(previous);
       setNotice(`Couldn't save that change. ${classifyPublishError(error).message}`);
     }
   };
@@ -131,6 +150,8 @@ const PortfolioSettingsPage: React.FC = () => {
             onUnpublish={() => void onUnpublish()}
           />
           <HandlePicker value={slug} onChange={onSlugChange} serverError={handleError} disabled={busy} />
+          <PublicPortfolioThemeSwitcher value={settings.theme} onChange={(theme) => void saveSettings({ ...settings, theme })} disabled={busy} />
+          <SectionOrderCustomizer value={settings.sectionOrder} onChange={(sectionOrder) => void saveSettings({ ...settings, sectionOrder })} disabled={busy} />
           <SectionToggles sections={sections} onToggle={(section, visible) => void onToggle(section, visible)} disabled={busy} />
           <ConsentPanel
             checked={consent}
