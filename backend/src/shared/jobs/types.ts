@@ -181,6 +181,7 @@ export const QueueNames = {
   JD_PARSE: 'jd-parse',
   JD_SCORE: 'jd-score',
   INTERVIEW_SCORE: 'interview-score',
+  INTERVIEW_EVALUATE: 'interview-evaluate',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',

@@ -91,6 +91,10 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../modules/job-targets/workers/jdScore.worker.js');
     return { start: m.startJdScoreWorker, stop: m.stopJdScoreWorker };
   } },
+  { role: 'ai', queueName: 'interview-evaluate', load: async () => {
+    const m = await import('../modules/interview/workers/interviewEvaluate.worker.js');
+    return { start: m.startInterviewEvaluateWorker, stop: m.stopInterviewEvaluateWorker };
+  } },
   { role: 'xp', queueName: 'streak-recalc', load: async () => {
     const m = await import('../shared/jobs/streakRecalcWorker.js');
     return { start: m.startStreakRecalcWorker, stop: m.stopStreakRecalcWorker };
