@@ -1,5 +1,6 @@
 // src/db/models/userSettings.model.ts
-import { Schema, model, type Document } from 'mongoose';
+import { Schema, model, Types, type Document } from 'mongoose';
+import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
 
 export interface IPlatform {
   username?: string;
@@ -115,5 +116,17 @@ const userSettingsSchema = new Schema<IUserSettings>(
 );
 
 // Indexes: userId is unique-indexed on the field itself, so it is not repeated here.
+
+// Privacy writes also occur through model callers. These best-effort purges are not authorization:
+// public reads re-check live privacy even after raw/bulk writes or a rolled-back transaction.
+userSettingsSchema.post('save', async function (doc) {
+  await invalidateCacheTag(portfolioTag(String(doc.userId)));
+});
+userSettingsSchema.post(['updateOne', 'findOneAndUpdate', 'replaceOne', 'deleteOne'], async function (result) {
+  const userId = this.getFilter().userId ?? (result as { userId?: unknown } | null)?.userId;
+  if (typeof userId === 'string' || userId instanceof Types.ObjectId) {
+    await invalidateCacheTag(portfolioTag(String(userId)));
+  }
+});
 
 export const UserSettings = model<IUserSettings>('UserSettings', userSettingsSchema);
