@@ -114,6 +114,8 @@ interface UseSseResult {
 export interface SseDiagnostics {
   connectedAt: number | null;
   lastEventAt: number | null;
+  /** Last named `heartbeat` event on the current stream; null until the server sends one. */
+  lastHeartbeatAt: number | null;
   totalEventsReceived: number;
   totalReconnects: number;
   consecutiveFailures: number;
@@ -155,6 +157,7 @@ interface StoreState {
   nextReconnectAt: number | null;
   connectedAt: number | null;
   lastEventAt: number | null;
+  lastHeartbeatAt: number | null;
   totalEventsReceived: number;
   totalReconnects: number;
   consecutiveFailures: number;
@@ -170,6 +173,7 @@ const store: StoreState = {
   nextReconnectAt: null,
   connectedAt: null,
   lastEventAt: null,
+  lastHeartbeatAt: null,
   totalEventsReceived: 0,
   totalReconnects: 0,
   consecutiveFailures: 0,
@@ -378,6 +382,8 @@ async function openGlobalStream(
     const now = Date.now();
     globalLastMessage = now;
     store.connectedAt = now;
+    // Heartbeat timing is per stream; a new stream starts unjudged, like the watchdog.
+    store.lastHeartbeatAt = null;
     store.totalReconnects = store.reconnectAttempt > 0 ? store.totalReconnects + 1 : store.totalReconnects;
     store.nextReconnectAt = null;
     store.connectionStatus = 'connected';
@@ -430,6 +436,8 @@ async function openGlobalStream(
   es.addEventListener('heartbeat', () => {
     serverSendsHeartbeatEvents = true;
     globalLastMessage = Date.now();
+    // No emitChange: status readers poll getSseDiagnostics(), so heartbeats don't re-render the app.
+    store.lastHeartbeatAt = globalLastMessage;
   });
 
   es.onmessage = (ev) => {
@@ -663,25 +671,33 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
     };
   }, [enabled, isAuthenticated]);
 
-  const avgDelay = store.reconnectDelays.length > 0
-    ? store.reconnectDelays.reduce((a, b) => a + b, 0) / store.reconnectDelays.length
-    : 0;
-
   return {
     isConnected: connectionStatus === 'connected',
     connectionStatus,
     lastEvent,
     reconnectAttempt,
     nextReconnectAt,
-    diagnostics: {
-      connectedAt: store.connectedAt,
-      lastEventAt: store.lastEventAt,
-      totalEventsReceived: store.totalEventsReceived,
-      totalReconnects: store.totalReconnects,
-      consecutiveFailures: store.consecutiveFailures,
-      avgReconnectDelay: Math.round(avgDelay),
-    },
+    diagnostics: getSseDiagnostics(),
     eventHistory: store.eventHistory,
+  };
+}
+
+/**
+ * Current stream timings and counters. Heartbeats update these without notifying
+ * subscribers, so UI that shows "last heartbeat" should read this on its own timer.
+ */
+export function getSseDiagnostics(): SseDiagnostics {
+  const avgDelay = store.reconnectDelays.length > 0
+    ? store.reconnectDelays.reduce((a, b) => a + b, 0) / store.reconnectDelays.length
+    : 0;
+  return {
+    connectedAt: store.connectedAt,
+    lastEventAt: store.lastEventAt,
+    lastHeartbeatAt: store.lastHeartbeatAt,
+    totalEventsReceived: store.totalEventsReceived,
+    totalReconnects: store.totalReconnects,
+    consecutiveFailures: store.consecutiveFailures,
+    avgReconnectDelay: Math.round(avgDelay),
   };
 }
 
@@ -697,6 +713,7 @@ export function __resetSseForTests(): void {
   store.nextReconnectAt = null;
   store.connectedAt = null;
   store.lastEventAt = null;
+  store.lastHeartbeatAt = null;
   store.totalEventsReceived = 0;
   store.totalReconnects = 0;
   store.consecutiveFailures = 0;
