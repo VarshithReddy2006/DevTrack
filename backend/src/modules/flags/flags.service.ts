@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { FeatureFlag, type FeatureFlagSettings, type IFeatureFlag } from '../../db/models/featureFlag.model.js';
+import {
+  AUDITED_FLAG_FIELDS,
+  FeatureFlagAudit,
+  type FeatureFlagChange,
+} from '../../db/models/featureFlagAudit.model.js';
+import { logger } from '../../shared/logger.js';
 import { getRedisClient, isRedisConfigured } from '../../shared/redis/client.js';
 
 const CACHE_TTL_SECONDS = 60;
@@ -95,20 +101,75 @@ export function listFlags() {
   return FeatureFlag.find().select('-_id -__v').sort({ key: 1 }).lean().exec();
 }
 
-export async function updateFlag(key: string, changes: Partial<FeatureFlagSettings>) {
+export interface FlagActor {
+  id: string;
+  username: string;
+}
+
+/** Values a flag has before its first update, matching the model defaults. */
+function newFlagDefaults(key: string): FeatureFlagSettings {
+  return { name: key, description: '', enabled: false, rolloutPercent: 0, allowedUserIds: [] };
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Field-level differences between the stored flag and this update. */
+export function diffFlagChanges(
+  before: FeatureFlagSettings,
+  changes: Partial<FeatureFlagSettings>,
+): FeatureFlagChange[] {
+  return AUDITED_FLAG_FIELDS
+    .filter(field => changes[field] !== undefined && !sameValue(before[field], changes[field]))
+    .map(field => ({ field, from: before[field], to: changes[field] }));
+}
+
+async function recordFlagAudit(key: string, version: number, created: boolean, changes: FeatureFlagChange[], actor: FlagActor) {
+  if (changes.length === 0 && !created) return;
+  try {
+    await FeatureFlagAudit.create({ flagKey: key, version, created, changes, actorId: actor.id, actorUsername: actor.username });
+  } catch (error) {
+    // The flag change already took effect; losing its audit entry must be visible in logs.
+    logger.error('[flags] Failed to record feature flag audit entry', { key, version, error });
+  }
+}
+
+export async function updateFlag(key: string, changes: Partial<FeatureFlagSettings>, actor?: FlagActor) {
   const redis = readyFlagCache();
   if (isRedisConfigured() && !redis) {
     throw cacheUnavailable('Feature flag cache is unavailable. The flag was not updated.');
   }
 
-  const flag = await FeatureFlag.findOneAndUpdate({ key }, {
+  // The pre-image is atomic with the write, so concurrent admins each get an exact "from".
+  const before = await FeatureFlag.findOneAndUpdate({ key }, {
     $set: changes,
     $setOnInsert: changes.name === undefined ? { name: key } : {},
     $inc: { version: 1 },
-  }, { new: true, upsert: true, runValidators: true }).select('-_id -__v').lean().exec();
+  }, { returnDocument: 'before', upsert: true, runValidators: true }).select('-_id -__v').lean().exec();
+
+  if (actor) {
+    const previous = before ?? newFlagDefaults(key);
+    await recordFlagAudit(key, (before?.version ?? 0) + 1, !before, diffFlagChanges(previous, changes), actor);
+  }
 
   if (redis && await cacheCommand(redis.set(CACHE_GENERATION, randomUUID())) !== 'OK') {
     throw cacheUnavailable('The flag was saved, but cache invalidation could not be confirmed.');
   }
-  return flag;
+  return FeatureFlag.findOne({ key }).select('-_id -__v').lean().exec();
+}
+
+export interface FlagAuditQuery {
+  limit: number;
+  key?: string;
+}
+
+/** Newest audit entries first, optionally for one flag. */
+export function listFlagAudit({ limit, key }: FlagAuditQuery) {
+  return FeatureFlagAudit.find(key ? { flagKey: key } : {})
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(limit)
+    .select('-__v')
+    .lean()
+    .exec();
 }
