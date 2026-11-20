@@ -68,16 +68,17 @@ it.each(['text', 'URL'])('submits a posting by %s using the selected resume prof
 
   const resumeProfile = await screen.findByLabelText('Resume profile', {}, { timeout: 5_000 });
   fireEvent.change(resumeProfile, { target: { value: 'resume-1' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add job target' }));
   if (mode === 'URL') {
-    fireEvent.click(screen.getByLabelText('Posting link'));
     fireEvent.change(screen.getByLabelText('Posting URL'), { target: { value: 'https://jobs.example/backend' } });
   } else {
-    fireEvent.change(screen.getByLabelText('Job description'), { target: { value: ' Build reliable APIs. ' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'Paste Job Description' }));
+    fireEvent.change(screen.getByLabelText('Job description'), { target: { value: ` ${'Build reliable APIs. '.repeat(34)} ` } });
   }
 
   expect(screen.getByRole('button', { name: 'Analyze job posting' })).toBeEnabled();
   fireEvent.submit(screen.getByRole('form', { name: 'New job target' }));
-  const posting = mode === 'URL' ? { jdUrl: 'https://jobs.example/backend' } : { jdText: 'Build reliable APIs.' };
+  const posting = mode === 'URL' ? { jdUrl: 'https://jobs.example/backend' } : { jdText: 'Build reliable APIs. '.repeat(34).trim() };
   await waitFor(() => expect(post).toHaveBeenCalledExactlyOnceWith('/job-targets', { resumeProfileId: 'resume-1', ...posting }));
   expect(await screen.findByText(/Parsing · This page updates automatically/, {}, { timeout: 5_000 })).toBeInTheDocument();
 });
