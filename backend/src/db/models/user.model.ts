@@ -13,6 +13,7 @@ export interface IUser extends Document {
   lastActiveAt: Date;
   isEmailVerified: boolean;
   role: 'user' | 'admin';
+  calendarTokenHash?: string | null;
 }
 
 const userSchema = new Schema<IUser>(
@@ -72,6 +73,14 @@ const userSchema = new Schema<IUser>(
       type: String,
       enum: ['user', 'admin'],
       default: 'user',
+    },
+    calendarTokenHash: {
+      type: String,
+      select: false,
+      index: {
+        unique: true,
+        partialFilterExpression: { calendarTokenHash: { $type: 'string' } },
+      },
     },
   },
   {
