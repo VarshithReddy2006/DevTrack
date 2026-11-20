@@ -19,10 +19,6 @@ import {
   X,
   Flame,
   Zap,
-  Activity,
-  Clock,
-  Wifi,
-  RefreshCw,
   Target,
   TrendingUp,
   FileText,
@@ -39,6 +35,7 @@ import { useRuntimeState } from '../../hooks/useRuntimeState';
 import { useUserStore } from '../../store/userStore';
 import { OnboardingModal } from '../../features/onboarding';
 import { useSyncIntelligence } from '../../runtime-intelligence/useSyncIntelligence';
+import { NetworkStatusIndicator } from '../../features/realtime/components/NetworkStatusIndicator';
 
 interface NavItem {
   id: string;
@@ -65,39 +62,10 @@ export const AppShell = () => {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { connectionStatus: connectionState, diagnostics } = useSse();
-  const [pingMs, setPingMs] = useState<number | null>(null);
+  const { connectionStatus: connectionState } = useSse();
 
   // Mount the Runtime Intelligence Engine synchronizer
   useSyncIntelligence();
-
-  useEffect(() => {
-    if (connectionState !== 'connected') {
-      setPingMs(null);
-      return;
-    }
-
-    const runPing = async () => {
-      const start = performance.now();
-      try {
-        const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
-        // Health endpoint is at root level, not under API base path
-        const healthUrl = baseUrl.replace(/\/api$/, '') + '/health';
-        await fetch(healthUrl, {
-          method: 'GET',
-          cache: 'no-store',
-        });
-        const duration = Math.round(performance.now() - start);
-        setPingMs(duration);
-      } catch {
-        setPingMs(null);
-      }
-    };
-
-    runPing();
-    const interval = setInterval(runPing, 15_000);
-    return () => clearInterval(interval);
-  }, [connectionState]);
 
   const toggleSearch = useUIStore((s) => s.toggleSearch);
   const { data: runtimeState } = useRuntimeState();
@@ -308,7 +276,7 @@ export const AppShell = () => {
 
               {/* Realtime Status Dot */}
               <div className="shrink-0 flex items-center border border-slate-200/80 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 rounded-full px-3 py-1.5 shadow-sm">
-                <ConnectionDot status={connectionState} pingMs={pingMs} diagnostics={diagnostics} />
+                <NetworkStatusIndicator status={connectionState} />
               </div>
 
               {/* Theme Toggle */}
@@ -429,119 +397,6 @@ function SidebarNavLink({
         <span className={cn(active ? 'text-[#7C3AED]' : 'text-slate-400 group-hover:scale-110', 'transition-all duration-300')}>{item.icon}</span>
         {!collapsed && <span className="truncate">{item.label}</span>}
       </Link>
-  );
-}
-
-/* ─── Connection status dot for topbar ─── */
-function ConnectionDot({ 
-  status, 
-  pingMs,
-  diagnostics 
-}: { 
-  status: 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
-  pingMs: number | null;
-  diagnostics: any;
-}) {
-  const [open, setOpen] = useState(false);
-  const isConnected = status === 'connected';
-  
-  const statusColorMap = {
-    connected: { dot: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50' },
-    connecting: { dot: 'bg-amber-500', text: 'text-amber-600', bg: 'bg-amber-50' },
-    reconnecting: { dot: 'bg-amber-500', text: 'text-amber-600', bg: 'bg-amber-50' },
-    disconnected: { dot: 'bg-rose-500', text: 'text-rose-600', bg: 'bg-rose-50' },
-  };
-
-  const current = statusColorMap[status] || statusColorMap.disconnected;
-  const latencyText = pingMs !== null ? `${pingMs}ms` : 'offline';
-  const latencyColor = pingMs !== null && pingMs < 100 ? 'text-emerald-500' : pingMs !== null && pingMs < 300 ? 'text-amber-500' : 'text-rose-500';
-
-  // Format date nicely
-  const connectedTime = diagnostics?.connectedAt 
-    ? new Date(diagnostics.connectedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : 'Never';
-
-  return (
-    <div className="relative">
-      <button 
-        type="button" 
-        onClick={() => setOpen(!open)}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 tracking-tight hover:text-slate-800 transition-colors focus:outline-none"
-      >
-        <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', current.dot, !isConnected && 'animate-pulse')} />
-        <span>{status === 'connected' ? 'Live' : status === 'reconnecting' ? 'Reconnecting…' : status === 'connecting' ? 'Connecting…' : 'Offline'}</span>
-      </button>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.95 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="absolute right-0 mt-2.5 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-4 text-left pointer-events-auto"
-            onMouseEnter={() => setOpen(true)}
-            onMouseLeave={() => setOpen(false)}
-          >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2">
-              <span className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400">Connection Telemetry</span>
-              <span className={cn('px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tight', current.bg, current.text)}>
-                {status}
-              </span>
-            </div>
-
-            <div className="space-y-2">
-              {/* Latency */}
-              <div className="flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-2 text-slate-500">
-                  <Wifi size={12} className="text-slate-400" />
-                  <span>Ping Latency</span>
-                </div>
-                <span className={cn('font-bold', latencyColor)}>{latencyText}</span>
-              </div>
-
-              {/* Total Events */}
-              <div className="flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-2 text-slate-500">
-                  <Activity size={12} className="text-slate-400" />
-                  <span>Events Streamed</span>
-                </div>
-                <span className="font-bold text-slate-700">{diagnostics?.totalEventsReceived ?? 0}</span>
-              </div>
-
-              {/* Reconnect attempts */}
-              <div className="flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-2 text-slate-500">
-                  <RefreshCw size={12} className="text-slate-400" />
-                  <span>Reconnects</span>
-                </div>
-                <span className="font-bold text-slate-700">{diagnostics?.totalReconnects ?? 0}</span>
-              </div>
-
-              {/* Connected since */}
-              <div className="flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-2 text-slate-500">
-                  <Clock size={12} className="text-slate-400" />
-                  <span>Session Start</span>
-                </div>
-                <span className="font-bold text-slate-700">{connectedTime}</span>
-              </div>
-            </div>
-
-            {/* Infrastructure Note */}
-            <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-[9px] text-slate-400 font-bold">Node: sse-edge-us</span>
-              <span className="text-[9px] text-emerald-500 font-bold flex items-center gap-1">
-                <span className="w-1 h-1 rounded-full bg-emerald-500 animate-ping" />
-                Active
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
   );
 }
 

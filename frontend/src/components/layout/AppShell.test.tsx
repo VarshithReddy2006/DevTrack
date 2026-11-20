@@ -20,6 +20,11 @@ const originalMatchMedia = vi.hoisted(() => {
 vi.mock('@clerk/clerk-react', () => ({ UserButton: () => <button>Account</button> }));
 vi.mock('../../hooks/useSse', () => ({
   useSse: () => ({ connectionStatus: 'disconnected', diagnostics: null, eventHistory: [] }),
+  getSseDiagnostics: () => ({
+    connectedAt: null, lastEventAt: null, lastHeartbeatAt: null,
+    totalEventsReceived: 0, totalReconnects: 0, consecutiveFailures: 0, avgReconnectDelay: 0,
+  }),
+  reconnectNow: vi.fn(),
 }));
 vi.mock('../../hooks/useRuntimeState', () => ({ useRuntimeState: () => ({ data: undefined }) }));
 vi.mock('../../runtime-intelligence/useSyncIntelligence', () => ({ useSyncIntelligence: () => undefined }));
