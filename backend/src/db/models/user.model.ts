@@ -76,9 +76,11 @@ const userSchema = new Schema<IUser>(
     },
     calendarTokenHash: {
       type: String,
-      default: null,
       select: false,
-      index: { unique: true, sparse: true },
+      index: {
+        unique: true,
+        partialFilterExpression: { calendarTokenHash: { $type: 'string' } },
+      },
     },
   },
   {
