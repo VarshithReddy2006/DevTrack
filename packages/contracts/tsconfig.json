@@ -9,6 +9,7 @@
     "outDir": "dist",
     "skipLibCheck": true
   },
+  "exclude": ["src/openapi"],
   "include": [
     "src/**/*.ts"
   ]
