@@ -90,3 +90,22 @@ and Tab/Enter/Space activation, and pending/failure/retry/success states. The te
 scaling check is not a claim of testing every browser's native zoom mode. Live API,
 authentication and persistent study-plan behavior remain unverified until the owning
 data/mutation adapters are available.
+
+## Job target form
+
+The job-target workspace retains its resume-profile selection and existing
+TanStack mutation, API service, cache invalidation and result navigation. Add job
+target opens the shared modal with URL and raw-text tabs. Validation uses the
+installed Zod directly with controlled inputs; no new form dependency is needed.
+Submission waits only for target creation, then the existing detail page follows
+background parsing/scoring. Errors preserve the draft for retry. Pending requests
+block edits, repeat submissions and dismissal. Closing clears the in-memory draft.
+
+The URL preview shows the parsed hostname with a local globe icon. It makes no
+favicon or posting requests and does not claim the posting is reachable. HTTP and
+HTTPS links require a multi-label DNS hostname without credentials. Local suffixes
+and all IPv4/IPv6 literals (including alternate IPv4 spellings) are rejected. This
+intentionally requires a hostname even for public IP addresses. Browser validation
+cannot verify DNS answers or redirects; the existing backend safe-fetch checks
+remain authoritative. Text requires at least 100 whitespace-separated words and
+at most 50,000 characters. Submitted values are trimmed.

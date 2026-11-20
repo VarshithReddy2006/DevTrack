@@ -1465,6 +1465,268 @@
         ],
         "additionalProperties": false
       },
+      "BulletRewriteModel": {
+        "type": "object",
+        "properties": {
+          "rewrites": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "prefixItems": [
+              {
+                "type": "object",
+                "properties": {
+                  "style": {
+                    "type": "string",
+                    "const": "High Impact"
+                  },
+                  "action": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "context": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  },
+                  "result": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "actionVerb": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]+$",
+                    "maxLength": 40
+                  },
+                  "metricPlaceholder": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  }
+                },
+                "required": [
+                  "style",
+                  "action",
+                  "context",
+                  "result",
+                  "actionVerb",
+                  "metricPlaceholder"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "style": {
+                    "type": "string",
+                    "const": "Technical Depth"
+                  },
+                  "action": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "context": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  },
+                  "result": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "actionVerb": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]+$",
+                    "maxLength": 40
+                  },
+                  "metricPlaceholder": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  }
+                },
+                "required": [
+                  "style",
+                  "action",
+                  "context",
+                  "result",
+                  "actionVerb",
+                  "metricPlaceholder"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "style": {
+                    "type": "string",
+                    "const": "Leadership/Ownership"
+                  },
+                  "action": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "context": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  },
+                  "result": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "actionVerb": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]+$",
+                    "maxLength": 40
+                  },
+                  "metricPlaceholder": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  }
+                },
+                "required": [
+                  "style",
+                  "action",
+                  "context",
+                  "result",
+                  "actionVerb",
+                  "metricPlaceholder"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "items": false
+          }
+        },
+        "required": [
+          "rewrites"
+        ],
+        "additionalProperties": false
+      },
+      "BulletRewriteRequest": {
+        "type": "object",
+        "properties": {
+          "bullet": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 500
+          },
+          "targetRole": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "skillsToHighlight": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "maxItems": 20
+          }
+        },
+        "required": [
+          "bullet"
+        ],
+        "additionalProperties": false
+      },
+      "BulletRewriteResponse": {
+        "type": "object",
+        "properties": {
+          "rewrites": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "High Impact",
+                    "Technical Depth",
+                    "Leadership/Ownership"
+                  ]
+                },
+                "action": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 150
+                },
+                "context": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 600
+                },
+                "result": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "actionVerb": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z]+$",
+                  "maxLength": 40
+                },
+                "metricPlaceholder": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 150
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "atsScoreGain": {
+                  "type": "integer",
+                  "minimum": -100,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "style",
+                "action",
+                "context",
+                "result",
+                "actionVerb",
+                "metricPlaceholder",
+                "text",
+                "atsScoreGain"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ai",
+              "template"
+            ]
+          },
+          "degradedReason": {
+            "type": "string",
+            "enum": [
+              "provider_unavailable",
+              "output_rejected"
+            ]
+          }
+        },
+        "required": [
+          "rewrites",
+          "mode"
+        ],
+        "additionalProperties": false
+      },
       "ContestPhase": {
         "type": "string",
         "enum": [
