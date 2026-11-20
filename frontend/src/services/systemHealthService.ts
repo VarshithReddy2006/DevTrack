@@ -22,6 +22,17 @@ export async function getApiHealth(): Promise<{ health: ApiHealth; latencyMs: nu
   return { health, latencyMs: Math.round(performance.now() - started) };
 }
 
+/** True when the backend readiness probe (`/health/ready`) answers 200. */
+export async function checkApiReady(): Promise<boolean> {
+  const url = new URL('/health/ready', new URL(envConfig.VITE_API_BASE_URL, window.location.origin));
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function getPlatformSyncStatuses(): Promise<PlatformSyncStatus[]> {
   const response = await axiosClient.get<ApiResponse<PlatformSyncStatus[]>>('/platforms/sync-status', { timeout: 8000 });
   if (!response.data.success || !Array.isArray(response.data.data)) throw new Error('Invalid platform sync response');

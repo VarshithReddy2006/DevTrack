@@ -7,7 +7,7 @@ vi.hoisted(() => {
   Object.defineProperty(window, 'matchMedia', { configurable: true, value: vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })) });
 });
 
-const revisionApi = vi.hoisted(() => ({ fetchDueCards: vi.fn(), submitRevisionReview: vi.fn() }));
+const revisionApi = vi.hoisted(() => ({ MAX_DUE_CARDS: 50, fetchDueCards: vi.fn(), submitRevisionReview: vi.fn() }));
 vi.mock('../../../services/revisionService', () => revisionApi);
 vi.mock('../../../services/dashboardService', () => ({ fetchStreakData: vi.fn().mockResolvedValue({ data: { currentStreak: 3 } }) }));
 
@@ -49,6 +49,16 @@ describe('RevisionReviewDeck', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'View session summary' }));
     fireEvent.click(screen.getByRole('button', { name: 'View session summary' }));
     expect(await screen.findByRole('dialog')).toBeTruthy();
+  });
+
+  it('limits a topic deck to due cards with that tag', async () => {
+    const tree: RevisionCard = { ...card, _id: 'card2', title: 'Invert Binary Tree', tags: [' Trees '] };
+    revisionApi.fetchDueCards.mockResolvedValue([card, tree]);
+    render(<RevisionReviewDeck topic="Trees" />);
+    expect(await screen.findByText('Invert Binary Tree')).toBeTruthy();
+    expect(screen.queryByText('Two Sum')).toBeNull();
+    expect(screen.getByText('Card 1 of 1')).toBeTruthy();
+    expect(revisionApi.fetchDueCards).toHaveBeenCalledWith(50, expect.anything());
   });
 
   it('keeps a card visible and offers refresh after a stale review', async () => {
