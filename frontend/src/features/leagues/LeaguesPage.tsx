@@ -2,9 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { PageShell } from '../../components/layout/PageShell';
 import { getCurrentStandings, setLeagueParticipation } from '../../services/leaguesService';
 import { StandingsTable } from './components/StandingsTable';
+import { LEAGUE_QUERY_KEY } from './leagueQuery';
 import { useRankDeltas } from './useRankDeltas';
-
-const LEAGUE_QUERY_KEY = ['leagues', 'current'] as const;
 
 export default function LeaguesPage() {
   const queryClient = useQueryClient();

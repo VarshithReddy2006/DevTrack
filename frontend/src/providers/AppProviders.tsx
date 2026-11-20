@@ -14,6 +14,7 @@ import { LevelUpOverlay } from '../features/gamification/overlays/LevelUpOverlay
 import { StreakMilestoneOverlay } from '../features/gamification/overlays/StreakMilestoneOverlay';
 import { AchievementUnlockOverlay } from '../features/gamification/overlays/AchievementUnlockOverlay';
 import { ChallengeCompletedOverlay } from '../features/gamification/overlays/ChallengeCompletedOverlay';
+import { LeaguePromotionCelebration } from '../features/leagues/components/LeaguePromotionModal';
 import { useXpState } from '../features/gamification/hooks/useXpState';
 
 interface AppProvidersProps {
@@ -105,6 +106,7 @@ export function AppProviders({ children }: AppProvidersProps) {
       <StreakMilestoneOverlay />
       <AchievementUnlockOverlay />
       <ChallengeCompletedOverlay />
+      <LeaguePromotionCelebration />
     </>
   );
 }
