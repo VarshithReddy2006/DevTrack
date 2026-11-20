@@ -15,13 +15,15 @@ self.addEventListener('push', (event) => {
   try {
     const payload = event.data.json();
     const title = payload.title || 'Contest Starting Soon!';
+    // The backend sends `url` at the top level; `data.url` is accepted too.
+    const url = (payload.data && payload.data.url) || payload.url || '/contests';
     const options = {
       body: payload.message || payload.body || 'A competitive programming contest is starting in 30 minutes.',
       icon: payload.icon || '/favicon.svg',
       badge: '/favicon.svg',
       actions: payload.actions || [],
       data: {
-        url: payload.url || '/dsa',
+        url,
         contestId: payload.contestId,
       },
       tag: payload.tag || `contest-alert-${payload.contestId || 'general'}`,
@@ -46,7 +48,7 @@ self.addEventListener('message', (event) => {
       icon: '/favicon.svg',
       badge: '/favicon.svg',
       data: {
-        url: data.url || '/dsa',
+        url: data.url || '/contests',
         contestId: data.contestId,
       },
       tag: `contest-alert-${data.contestId || 'local'}`,
@@ -57,20 +59,27 @@ self.addEventListener('message', (event) => {
   }
 });
 
-// Handle notification click to navigate to contest or dashboard
+// Handle notification click: focus a tab already on the target, reuse a DevTrack
+// tab for in-app pages, or open a new window (always the case for contest sites).
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.url || '/dsa';
+  let target;
+  try {
+    target = new URL(event.notification.data?.url || '/contests', self.location.origin);
+  } catch {
+    target = new URL('/contests', self.location.origin);
+  }
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      for (const client of windowClients) {
-        if (client.url.includes(targetUrl) && 'focus' in client) {
-          return client.focus();
-        }
+      const exact = windowClients.find((client) => client.url === target.href && 'focus' in client);
+      if (exact) return exact.focus();
+      if (target.origin === self.location.origin) {
+        const appTab = windowClients.find((client) => 'focus' in client && 'navigate' in client);
+        if (appTab) return appTab.focus().then((focused) => (focused || appTab).navigate(target.href));
       }
       if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
+        return clients.openWindow(target.href);
       }
     })
   );

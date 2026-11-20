@@ -8,6 +8,7 @@ import { PlatformFilterChips } from './PlatformFilterChips';
 import { getUpcomingContests } from '../../services/contestsService';
 import type { ContestPlatform } from './contestsUtils';
 import { ContestCalendarView } from './components/ContestCalendarView';
+import { PushNotificationPrompt } from '../notifications/components/PushNotificationPrompt';
 
 const ALL_PLATFORMS: ContestPlatform[] = ['leetcode', 'codeforces', 'atcoder', 'codechef'];
 
@@ -48,6 +49,7 @@ export default function ContestsPage() {
       onRetry={() => void refetch()}
     >
       <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-6 pb-12">
+        <PushNotificationPrompt />
         <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
