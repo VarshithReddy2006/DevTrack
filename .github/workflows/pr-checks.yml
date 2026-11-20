@@ -20,6 +20,26 @@ env:
   NODE_VERSION: '22'
 
 jobs:
+  contracts-openapi:
+    name: OpenAPI Contract Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - name: Install contract tooling
+        run: npm ci --workspace @devtrack/contracts --include=dev
+      - name: Test contracts, official OpenAPI schema and drift failures
+        run: npm run test --workspace @devtrack/contracts
+      - name: Regenerate and reject uncommitted specification changes
+        run: |
+          npm run contracts:build-openapi
+          git ls-files --error-unmatch packages/contracts/openapi.json
+          git diff --exit-code -- packages/contracts/openapi.json
+
   # ── Fail Fast Checks (Lint, Typecheck & Build) ─────────────────────────────
   static-checks:
     name: Static Checks & Build
