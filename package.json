@@ -4,6 +4,8 @@
   "private": true,
   "description": "DevTrack: All-in-one developer productivity + tracking platform",
   "scripts": {
+    "contracts:build-openapi": "npm run build:openapi --workspace @devtrack/contracts",
+    "contracts:check-openapi": "npm run check:openapi --workspace @devtrack/contracts",
     "dev:all": "tsx dev-orchestrator/src/index.ts",
     "dev:backend": "npm run dev --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",

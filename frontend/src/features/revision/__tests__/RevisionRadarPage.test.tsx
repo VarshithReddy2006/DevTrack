@@ -7,6 +7,19 @@ import RevisionRadarPage from '../RevisionRadarPage';
 import type { RevisionAnalytics, RevisionCard } from '../../../services/revisionService';
 import { useUserStore } from '../../../store/userStore';
 
+vi.hoisted(() => {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    value: vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    })),
+  });
+});
+
 const revisionApi = vi.hoisted(() => ({
   MAX_DUE_CARDS: 50,
   fetchDueCards: vi.fn(),
