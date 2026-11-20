@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { fetchStreakData } from '../../../services/dashboardService';
-import { fetchDueCards, submitRevisionReview, type ReviewRating, type RevisionCard } from '../../../services/revisionService';
+import { fetchDueCards, MAX_DUE_CARDS, submitRevisionReview, type ReviewRating, type RevisionCard } from '../../../services/revisionService';
+import { cardMatchesTopic, topicLabel } from '../topics';
 import { Flashcard } from './Flashcard';
 import { RatingBar } from './RatingBar';
 import { RevisionStatsPanel } from './RevisionStatsPanel';
@@ -10,7 +11,12 @@ import { summarizeSession, type SessionReview } from '../sessionSummary';
 
 type LoadState = 'loading' | 'ready' | 'error';
 
-export function RevisionReviewDeck() {
+interface RevisionReviewDeckProps {
+  /** Only review due cards tagged with this topic. */
+  topic?: string | null;
+}
+
+export function RevisionReviewDeck({ topic = null }: RevisionReviewDeckProps) {
   const [limit, setLimit] = useState(10);
   const [cards, setCards] = useState<RevisionCard[]>([]);
   const [position, setPosition] = useState(0);
@@ -32,9 +38,11 @@ export function RevisionReviewDeck() {
     setReviews([]);
     setSummaryOpen(false);
     try {
-      const due = await fetchDueCards(limit, signal);
+      // The due endpoint has no topic filter, so a topic deck is drawn from the
+      // largest due batch the API allows and then trimmed to the deck size.
+      const due = await fetchDueCards(topic ? MAX_DUE_CARDS : limit, signal);
       if (signal?.aborted || currentSession !== session.current) return;
-      setCards(due);
+      setCards(topic ? due.filter((item) => cardMatchesTopic(item, topic)).slice(0, limit) : due);
       setPosition(0);
       setFeedback('');
       setLoadState('ready');
@@ -43,7 +51,7 @@ export function RevisionReviewDeck() {
       setError((cause as { message?: string }).message || 'Could not load due cards.');
       setLoadState('error');
     }
-  }, [limit]);
+  }, [limit, topic]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -100,7 +108,7 @@ export function RevisionReviewDeck() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-dt-textSecondary">Review due problems at your own pace.</p>
+        <p className="text-sm text-dt-textSecondary">{topic ? `Reviewing due ${topicLabel(topic)} problems.` : 'Review due problems at your own pace.'}</p>
         <label className="flex items-center gap-2 text-sm text-dt-textSecondary">Deck size
           <select value={limit} disabled={submitting} onChange={(event) => setLimit(Number(event.target.value))} className="rounded-lg border border-dt-primary/20 bg-dt-surface px-3 py-2 text-dt-text" aria-label="Daily review limit">
             {[5, 10, 20, 50].map((value) => <option key={value} value={value}>{value}</option>)}
@@ -116,7 +124,7 @@ export function RevisionReviewDeck() {
         <div className="dt-card p-10 text-center" role="status">
           <p className="text-3xl" aria-hidden="true">✦</p>
           <h2 className="mt-3 text-xl font-bold text-dt-text">Deck complete</h2>
-          <p className="mt-2 text-sm text-dt-textSecondary">{cards.length === 0 ? 'No problems are due right now.' : `You reviewed all ${cards.length} cards in this deck.`}</p>
+          <p className="mt-2 text-sm text-dt-textSecondary">{cards.length === 0 ? (topic ? `No ${topicLabel(topic)} problems are due right now.` : 'No problems are due right now.') : `You reviewed all ${cards.length} cards in this deck.`}</p>
           {reviews.length > 0 && <button ref={summaryButton} type="button" onClick={() => setSummaryOpen(true)} className="dt-btn dt-btn-primary mt-5 mr-3">View session summary</button>}
           <button type="button" onClick={() => void loadCards()} className="dt-btn dt-btn-secondary dt-btn-sm mt-5">Check for more due cards</button>
         </div>
