@@ -26,6 +26,7 @@ import {
   requestNotificationPermission,
   scheduleContestAlert,
 } from './alerts/contestAlertScheduler';
+import { PushNotificationPrompt } from '../notifications/components/PushNotificationPrompt';
 
 export type ContestStatusFilter = 'all' | 'upcoming' | 'live' | 'ended';
 
@@ -184,6 +185,7 @@ export default function ContestHubPage() {
       onRetry={() => void refetch()}
     >
       <div className="mx-auto flex w-full max-w-[1240px] flex-col gap-6 pb-16">
+        <PushNotificationPrompt />
         {/* Top banner / Calendar Tools Section */}
         <section
           aria-label="Contest planner and calendar tools"
