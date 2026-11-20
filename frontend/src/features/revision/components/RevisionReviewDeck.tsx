@@ -5,6 +5,8 @@ import { fetchDueCards, submitRevisionReview, type ReviewRating, type RevisionCa
 import { Flashcard } from './Flashcard';
 import { RatingBar } from './RatingBar';
 import { RevisionStatsPanel } from './RevisionStatsPanel';
+import { CardSummaryModal } from './CardSummaryModal';
+import { summarizeSession, type SessionReview } from '../sessionSummary';
 
 type LoadState = 'loading' | 'ready' | 'error';
 
@@ -18,19 +20,26 @@ export function RevisionReviewDeck() {
   const [feedback, setFeedback] = useState('');
   const [streak, setStreak] = useState<number | null>(null);
   const submissionLock = useRef(false);
+  const [reviews, setReviews] = useState<SessionReview[]>([]);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const summaryButton = useRef<HTMLButtonElement>(null);
+  const session = useRef(0);
 
   const loadCards = useCallback(async (signal?: AbortSignal) => {
+    const currentSession = ++session.current;
     setLoadState('loading');
     setError('');
+    setReviews([]);
+    setSummaryOpen(false);
     try {
       const due = await fetchDueCards(limit, signal);
-      if (signal?.aborted) return;
+      if (signal?.aborted || currentSession !== session.current) return;
       setCards(due);
       setPosition(0);
       setFeedback('');
       setLoadState('ready');
     } catch (cause) {
-      if (signal?.aborted) return;
+      if (signal?.aborted || currentSession !== session.current) return;
       setError((cause as { message?: string }).message || 'Could not load due cards.');
       setLoadState('error');
     }
@@ -39,8 +48,17 @@ export function RevisionReviewDeck() {
   useEffect(() => {
     const controller = new AbortController();
     void loadCards(controller.signal);
-    return () => controller.abort();
+    return () => { controller.abort(); session.current += 1; };
   }, [loadCards]);
+
+  useEffect(() => {
+    if (loadState === 'ready' && cards.length > 0 && position === cards.length) {
+      // The final rating button is removed on completion. Restore focus to a
+      // persistent summary trigger when the shared modal closes.
+      summaryButton.current?.focus();
+      setSummaryOpen(true);
+    }
+  }, [loadState, cards.length, position]);
 
   useEffect(() => {
     let active = true;
@@ -57,11 +75,16 @@ export function RevisionReviewDeck() {
     setSubmitting(true);
     setError('');
     setFeedback('');
+    const currentSession = session.current;
     try {
       const updated = await submitRevisionReview(card, rating);
+      if (currentSession !== session.current) return;
+      const reviewedAt = Date.now();
+      setReviews(current => [...current, { rating, before: card, after: updated, reviewedAt }]);
       setFeedback(`Review recorded. XP reward requested. Next review in ${updated.intervalDays} day${updated.intervalDays === 1 ? '' : 's'}.`);
       setPosition((current) => current + 1);
     } catch (cause) {
+      if (currentSession !== session.current) return;
       const apiError = cause as { message?: string; code?: string; statusCode?: number };
       if (apiError.statusCode === 409 || apiError.code === 'REVISION_CARD_STALE') {
         setError('This card changed in another session. Refresh the deck before rating again.');
@@ -79,7 +102,7 @@ export function RevisionReviewDeck() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-dt-textSecondary">Review due problems at your own pace.</p>
         <label className="flex items-center gap-2 text-sm text-dt-textSecondary">Deck size
-          <select value={limit} onChange={(event) => setLimit(Number(event.target.value))} className="rounded-lg border border-dt-primary/20 bg-dt-surface px-3 py-2 text-dt-text" aria-label="Daily review limit">
+          <select value={limit} disabled={submitting} onChange={(event) => setLimit(Number(event.target.value))} className="rounded-lg border border-dt-primary/20 bg-dt-surface px-3 py-2 text-dt-text" aria-label="Daily review limit">
             {[5, 10, 20, 50].map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
         </label>
@@ -94,6 +117,7 @@ export function RevisionReviewDeck() {
           <p className="text-3xl" aria-hidden="true">✦</p>
           <h2 className="mt-3 text-xl font-bold text-dt-text">Deck complete</h2>
           <p className="mt-2 text-sm text-dt-textSecondary">{cards.length === 0 ? 'No problems are due right now.' : `You reviewed all ${cards.length} cards in this deck.`}</p>
+          {reviews.length > 0 && <button ref={summaryButton} type="button" onClick={() => setSummaryOpen(true)} className="dt-btn dt-btn-primary mt-5 mr-3">View session summary</button>}
           <button type="button" onClick={() => void loadCards()} className="dt-btn dt-btn-secondary dt-btn-sm mt-5">Check for more due cards</button>
         </div>
       )}
@@ -107,6 +131,7 @@ export function RevisionReviewDeck() {
         </>
       )}
       {feedback && <p role="status" className="rounded-lg bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">✦ {feedback}</p>}
+      <CardSummaryModal summary={summarizeSession(reviews)} open={summaryOpen} onClose={() => setSummaryOpen(false)} />
     </div>
   );
 }
