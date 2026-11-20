@@ -14,11 +14,26 @@ type Route = {
   responses: Record<number, { description: string; content: Content }>;
 };
 
+function normalize2020(node: any): any {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(normalize2020);
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k === 'items' && Array.isArray(v)) {
+      out.prefixItems = v.map(normalize2020);
+      out.items = false;
+    } else {
+      out[k] = normalize2020(v);
+    }
+  }
+  return out;
+}
+
 function jsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   const result = zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none', pipeStrategy: 'all', effectStrategy: 'input', applyRegexFlags: true });
   // The supported keywords also apply in 2020-12; inherit OpenAPI 3.1's dialect.
   delete result.$schema;
-  return result;
+  return normalize2020(result);
 }
 
 export function createOpenApiDocument() {
