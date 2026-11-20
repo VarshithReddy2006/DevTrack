@@ -14,6 +14,7 @@ export interface RevisionCard {
   intervalDays: number;
   dueAt: string;
   lastReviewedAt?: string | null;
+  createdAt?: string;
   notes?: string;
 }
 

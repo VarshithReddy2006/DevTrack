@@ -13,16 +13,24 @@
     "dist",
     "src",
     "tsconfig.json",
-    "build-for-app.mjs"
+    "build-for-app.mjs",
+    "openapi.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "build:openapi": "tsx src/openapi/build.ts",
+    "check:openapi": "tsx src/openapi/build.ts --check",
+    "typecheck:openapi": "tsc -p tsconfig.openapi.json",
+    "test": "npm run build && npm run typecheck:openapi && node --import tsx --test test/*.test.mjs"
   },
   "dependencies": {
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "typescript": "~5.9.3"
+    "@hyperjump/json-schema": "1.18.1",
+    "@types/node": "22.15.3",
+    "tsx": "4.23.15",
+    "typescript": "~5.9.3",
+    "zod-to-json-schema": "3.25.2"
   }
 }

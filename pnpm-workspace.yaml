@@ -1,0 +1,4 @@
+packages:
+  - 'packages/*'
+# npm owns installation; pnpm commands must not silently replace node_modules.
+verifyDepsBeforeRun: false

@@ -15,6 +15,7 @@ import { StreakMilestoneOverlay } from '../features/gamification/overlays/Streak
 import { AchievementUnlockOverlay } from '../features/gamification/overlays/AchievementUnlockOverlay';
 import { ChallengeCompletedOverlay } from '../features/gamification/overlays/ChallengeCompletedOverlay';
 import { MaintenanceModeScreen } from '../components/shared/MaintenanceModeScreen';
+import { LeaguePromotionCelebration } from '../features/leagues/components/LeaguePromotionModal';
 import { useXpState } from '../features/gamification/hooks/useXpState';
 
 interface AppProvidersProps {
@@ -106,6 +107,7 @@ export function AppProviders({ children }: AppProvidersProps) {
       <StreakMilestoneOverlay />
       <AchievementUnlockOverlay />
       <ChallengeCompletedOverlay />
+      <LeaguePromotionCelebration />
       {/* Above the celebration overlays: nothing else works while the API is down */}
       <MaintenanceModeScreen />
     </>
