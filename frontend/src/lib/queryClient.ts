@@ -78,4 +78,9 @@ export const queryKeys = {
     all: ['profile'] as const,
     stats: ['profile', 'stats'] as const,
   },
+  revision: {
+    all: ['revision'] as const,
+    analytics: ['revision', 'analytics'] as const,
+    dueSummary: ['revision', 'due-summary'] as const,
+  },
 } as const;

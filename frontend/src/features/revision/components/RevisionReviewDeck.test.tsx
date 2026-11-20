@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RevisionReviewDeck } from './RevisionReviewDeck';
 import type { RevisionCard } from '../../../services/revisionService';
 
-const revisionApi = vi.hoisted(() => ({ fetchDueCards: vi.fn(), submitRevisionReview: vi.fn() }));
+const revisionApi = vi.hoisted(() => ({ MAX_DUE_CARDS: 50, fetchDueCards: vi.fn(), submitRevisionReview: vi.fn() }));
 vi.mock('../../../services/revisionService', () => revisionApi);
 vi.mock('../../../services/dashboardService', () => ({ fetchStreakData: vi.fn().mockResolvedValue({ data: { currentStreak: 3 } }) }));
 
@@ -36,6 +36,16 @@ describe('RevisionReviewDeck', () => {
     await waitFor(() => expect(revisionApi.submitRevisionReview).toHaveBeenCalledWith(card, 'hard'));
     expect(await screen.findByText('Deck complete')).toBeTruthy();
     expect(screen.getByText(/You reviewed all 1 cards/)).toBeTruthy();
+  });
+
+  it('limits a topic deck to due cards with that tag', async () => {
+    const tree: RevisionCard = { ...card, _id: 'card2', title: 'Invert Binary Tree', tags: [' Trees '] };
+    revisionApi.fetchDueCards.mockResolvedValue([card, tree]);
+    render(<RevisionReviewDeck topic="Trees" />);
+    expect(await screen.findByText('Invert Binary Tree')).toBeTruthy();
+    expect(screen.queryByText('Two Sum')).toBeNull();
+    expect(screen.getByText('Card 1 of 1')).toBeTruthy();
+    expect(revisionApi.fetchDueCards).toHaveBeenCalledWith(50, expect.anything());
   });
 
   it('keeps a card visible and offers refresh after a stale review', async () => {
