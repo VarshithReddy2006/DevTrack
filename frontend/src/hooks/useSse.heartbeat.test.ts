@@ -117,6 +117,25 @@ describe('SSE idle watchdog and the server heartbeat', () => {
     disconnectGlobalSse(vi.fn());
   });
 
+  it('exposes the last heartbeat time per stream through getSseDiagnostics', async () => {
+    const { connectGlobalSse, disconnectGlobalSse, getSseDiagnostics } = await loadHook();
+    await connectGlobalSse(vi.fn(), vi.fn());
+    const first = FakeEventSource.instances[0];
+    first.onopen!();
+    expect(getSseDiagnostics().lastHeartbeatAt).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(25_000);
+    first.dispatch('heartbeat');
+    expect(getSseDiagnostics().lastHeartbeatAt).toBe(Date.now());
+
+    first.onerror!();
+    await vi.advanceTimersByTimeAsync(3_000);
+    FakeEventSource.instances[1].onopen!();
+    // a new stream hasn't proven its heartbeat yet
+    expect(getSseDiagnostics().lastHeartbeatAt).toBeNull();
+    disconnectGlobalSse(vi.fn());
+  });
+
   it('a reconnected stream is judged on its own heartbeats, not the previous stream timestamp', async () => {
     const { connectGlobalSse, disconnectGlobalSse } = await loadHook();
     await connectGlobalSse(vi.fn(), vi.fn());

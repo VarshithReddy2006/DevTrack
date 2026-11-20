@@ -19,7 +19,7 @@ import { EditorNavigationGuard } from '../features/resume-tracker/context/Editor
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const DsaPage = lazy(() => import('../pages/DsaPage'));
 const RevisionPage = lazy(() => import('../pages/RevisionPage'));
-const ContestsPage = lazy(() => import('../features/contests/ContestsPage'));
+const ContestsPage = lazy(() => import('../features/contests/ContestHubPage'));
 const LeaguesPage = lazy(() => import('../features/leagues/LeaguesPage'));
 const ProjectsPage = lazy(() => import('../pages/ProjectsPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
