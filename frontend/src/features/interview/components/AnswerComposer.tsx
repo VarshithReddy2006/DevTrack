@@ -2,9 +2,11 @@ import { useState } from 'react';
 import { Mic, MicOff } from 'lucide-react';
 import { useSpeechDictation } from '../hooks/useSpeechDictation';
 import { INTERVIEW_ANSWER_LIMIT } from '../interview';
+import { LiveAudioWaveform } from './LiveAudioWaveform';
 
 export function AnswerComposer({ pending, onAnswer }: { pending: boolean; onAnswer: (text: string) => void }) {
   const [draft, setDraft] = useState('');
+  const [monitorRequested, setMonitorRequested] = useState(false);
   const dictation = useSpeechDictation(text => setDraft(previous => {
     const separator = previous && !/\s$/.test(previous) ? ' ' : '';
     return `${previous}${separator}${text}`.slice(0, INTERVIEW_ANSWER_LIMIT);
@@ -16,6 +18,7 @@ export function AnswerComposer({ pending, onAnswer }: { pending: boolean; onAnsw
       onSubmit={event => {
         event.preventDefault();
         if (!canSubmit) return;
+        setMonitorRequested(false);
         if (dictation.isListening) dictation.stop();
         onAnswer(draft.trim());
       }}>
@@ -36,7 +39,10 @@ export function AnswerComposer({ pending, onAnswer }: { pending: boolean; onAnsw
           {pending ? 'Submitting…' : 'Submit answer'}
         </button>
         {!dictation.unavailableReason && (
-          <button type="button" disabled={pending} onClick={dictation.isListening ? dictation.stop : dictation.start}
+          <button type="button" disabled={pending} onClick={() => {
+            setMonitorRequested(!dictation.isListening);
+            if (dictation.isListening) dictation.stop(); else dictation.start();
+          }}
             className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium">
             {dictation.isListening ? <MicOff size={16} aria-hidden="true" /> : <Mic size={16} aria-hidden="true" />}
             {dictation.isListening ? 'Stop dictation' : 'Start dictation'}
@@ -46,6 +52,7 @@ export function AnswerComposer({ pending, onAnswer }: { pending: boolean; onAnsw
           {INTERVIEW_ANSWER_LIMIT - draft.length} characters left · Ctrl+Enter to submit
         </p>
       </div>
+      <LiveAudioWaveform active={monitorRequested && dictation.isListening && !pending} />
       {dictation.unavailableReason && (
         <p className="text-sm text-slate-600" title={dictation.unavailableReason}>{dictation.unavailableReason}</p>
       )}
