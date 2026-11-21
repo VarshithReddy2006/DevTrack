@@ -2,11 +2,11 @@ import express, { type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FeatureFlag, User, type IFeatureFlag } from '../../../db/models/index.js';
+import { FeatureFlag, FeatureFlagAudit, User, type IFeatureFlag } from '../../../db/models/index.js';
 import { authMiddleware } from '../../../middleware/auth.js';
 import { errorHandler } from '../../../middleware/error.js';
 import { flagRoutes } from '../../../modules/flags/flags.routes.js';
-import { evaluateFlag, isFlagEnabled } from '../../../modules/flags/flags.service.js';
+import { diffFlagChanges, evaluateFlag, isFlagEnabled } from '../../../modules/flags/flags.service.js';
 import { requireFlag } from '../../../modules/flags/requireFlag.js';
 import { opsRoutes } from '../../../modules/ops/ops.routes.js';
 
@@ -45,6 +45,7 @@ let origin: string;
 
 beforeAll(async () => {
   await FeatureFlag.init();
+  await FeatureFlagAudit.init();
   const app = express();
   app.use(express.json());
   app.use('/api/v1/flags', flagRoutes);
@@ -207,6 +208,13 @@ describe('flags endpoints and middleware', () => {
     expect((await FeatureFlag.findOne({ key: 'revision' }))?.enabled).toBe(false);
   });
 
+  it('returns the updated flag from a patch', async () => {
+    const response = await patch({ enabled: true, rolloutPercent: 40 });
+    expect(await response.json()).toMatchObject({
+      data: { key: 'revision', name: 'revision', enabled: true, rolloutPercent: 40, version: 1 },
+    });
+  });
+
   it('uses MongoDB in deployments without Redis and during cache outages', async () => {
     fixture.configured = false;
     expect((await patch({ enabled: true, rolloutPercent: 100 })).status).toBe(200);
@@ -218,5 +226,73 @@ describe('flags endpoints and middleware', () => {
     expect((await request('/guarded', member.clerkId)).status).toBe(204);
     expect((await patch({ enabled: false })).status).toBe(503);
     expect((await FeatureFlag.findOne({ key: 'revision' }))?.enabled).toBe(true);
+  });
+});
+
+describe('feature flag audit log', () => {
+  it('records who changed which settings, from what, to what', async () => {
+    await patch({ enabled: true, rolloutPercent: 20 });
+    await patch({ rolloutPercent: 60, description: 'Revision radar' });
+
+    const entries = await FeatureFlagAudit.find({ flagKey: 'revision' }).sort({ version: 1 }).lean();
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      version: 1, created: true, actorId: admin._id, actorUsername: admin.username,
+      changes: [{ field: 'enabled', from: false, to: true }, { field: 'rolloutPercent', from: 0, to: 20 }],
+    });
+    expect(entries[1]).toMatchObject({
+      version: 2, created: false,
+      changes: [{ field: 'description', from: '', to: 'Revision radar' }, { field: 'rolloutPercent', from: 20, to: 60 }],
+    });
+  });
+
+  it('skips updates that change nothing', async () => {
+    await patch({ enabled: true });
+    await patch({ enabled: true });
+    expect(await FeatureFlagAudit.countDocuments()).toBe(1);
+  });
+
+  it('keeps an exact history when admins patch at the same time', async () => {
+    await patch({ enabled: true });
+    await Promise.all([patch({ rolloutPercent: 100 }), patch({ description: 'Radar' })]);
+    const entries = await FeatureFlagAudit.find({ flagKey: 'revision' }).sort({ version: 1 }).lean();
+    expect(entries.map(entry => entry.version)).toEqual([1, 2, 3]);
+    const fields = entries.slice(1).flatMap(entry => entry.changes.map(change => `${change.field}:${String(change.from)}`));
+    expect(fields.sort()).toEqual(['description:', 'rolloutPercent:0']);
+  });
+
+  it('still saves the flag if writing the audit entry fails', async () => {
+    vi.spyOn(FeatureFlagAudit, 'create').mockRejectedValueOnce(new Error('write failed'));
+    expect((await patch({ enabled: true })).status).toBe(200);
+    expect((await FeatureFlag.findOne({ key: 'revision' }))?.enabled).toBe(true);
+  });
+
+  it('serves the newest entries first to admins only, with an optional flag filter', async () => {
+    await patch({ enabled: true });
+    await request('/api/v1/ops/flags/search', admin.clerkId, { enabled: true });
+    await patch({ rolloutPercent: 50 });
+
+    expect((await request('/api/v1/ops/flags/audit', member.clerkId)).status).toBe(403);
+    const all = await (await request('/api/v1/ops/flags/audit', admin.clerkId)).json();
+    expect(all.data.map((entry: { flagKey: string; version: number }) => `${entry.flagKey}@${entry.version}`))
+      .toEqual(['revision@2', 'search@1', 'revision@1']);
+
+    const one = await (await request('/api/v1/ops/flags/audit?key=search&limit=5', admin.clerkId)).json();
+    expect(one.data).toHaveLength(1);
+    expect(one.data[0]).toMatchObject({ flagKey: 'search', actorUsername: admin.username });
+
+    const limited = await (await request('/api/v1/ops/flags/audit?limit=1', admin.clerkId)).json();
+    expect(limited.data).toHaveLength(1);
+    for (const query of ['limit=0', 'limit=101', 'key=bad%20key', 'other=1']) {
+      expect((await request(`/api/v1/ops/flags/audit?${query}`, admin.clerkId)).status).toBe(400);
+    }
+  });
+});
+
+describe('diffFlagChanges', () => {
+  it('compares allowlists by value', () => {
+    const before = { name: 'x', description: '', enabled: true, rolloutPercent: 0, allowedUserIds: [member._id] };
+    expect(diffFlagChanges(before, { allowedUserIds: [member._id] })).toEqual([]);
+    expect(diffFlagChanges(before, { allowedUserIds: [] })).toEqual([{ field: 'allowedUserIds', from: [member._id], to: [] }]);
   });
 });

@@ -6,11 +6,9 @@ import {
   Users, 
   CheckCircle, 
   AlertTriangle, 
-  Sliders, 
   AlertCircle, 
   Mail, 
   Plus, 
-  Percent,
   RefreshCw,
   XOctagon,
   Radio,
@@ -23,6 +21,8 @@ import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from '../comp
 import { getTelemetryBuffer } from '../lib/telemetry';
 import { useSse } from '../hooks/useSse';
 import { useUIStore } from '../store/uiStore';
+import { FeatureFlagsDashboard } from '../features/admin/FeatureFlagsDashboard';
+import { adminFlagKeys } from '../features/admin/hooks/useAdminFlags';
 
 type Tab = 
   | 'retention' | 'beta' | 'feature-gates' | 'kill-switches' | 'system'
@@ -35,7 +35,7 @@ const CATEGORIES = [
     name: 'Operations',
     tabs: [
       { id: 'retention', label: 'Retention' },
-      { id: 'feature-gates', label: 'Feature Gates' },
+      { id: 'feature-gates', label: 'Feature Flags' },
       { id: 'kill-switches', label: 'Kill Switches' },
       { id: 'system', label: 'System Health' },
     ]
@@ -96,14 +96,6 @@ export const AdminPage = () => {
     },
   });
 
-  const { data: featureGatesData, isLoading: loadingGates, refetch: refetchGates } = useQuery({
-    queryKey: ['ops-feature-gates'],
-    queryFn: async () => {
-      const { data } = await axiosClient.get('/ops/feature-gates');
-      return data;
-    },
-  });
-
   const { data: killSwitchesData, isLoading: loadingSwitches, refetch: refetchSwitches } = useQuery({
     queryKey: ['ops-kill-switches'],
     queryFn: async () => {
@@ -122,22 +114,6 @@ export const AdminPage = () => {
   });
 
   // ─── Mutations ───
-  const toggleGateMutation = useMutation({
-    mutationFn: async ({ featureName, enabled }: { featureName: string; enabled: boolean }) => {
-      const { data } = await axiosClient.post('/ops/feature-gates/toggle', { featureName, enabled });
-      return data;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ops-feature-gates'] }),
-  });
-
-  const configureGateMutation = useMutation({
-    mutationFn: async (payload: { featureName: string; rolloutPercentage: number; rules?: any }) => {
-      const { data } = await axiosClient.post('/ops/feature-gates/configure', payload);
-      return data;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ops-feature-gates'] }),
-  });
-
   const toggleKillSwitchMutation = useMutation({
     mutationFn: async ({ switchId, enabled, reason }: { switchId: string; enabled: boolean; reason: string }) => {
       const { data } = await axiosClient.post('/ops/kill-switches/toggle', { switchId, enabled, reason });
@@ -194,7 +170,7 @@ export const AdminPage = () => {
             onClick={() => {
               refetchRetention();
               refetchBeta();
-              refetchGates();
+              void queryClient.invalidateQueries({ queryKey: adminFlagKeys.all });
               refetchSwitches();
               refetchMetrics();
             }}
@@ -254,12 +230,7 @@ export const AdminPage = () => {
                 />
               )}
 
-              {activeTab === 'feature-gates' && (
-                <FeatureGatesTab 
-                  data={featureGatesData} loading={loadingGates}
-                  toggleGate={toggleGateMutation} configureGate={configureGateMutation}
-                />
-              )}
+              {activeTab === 'feature-gates' && <FeatureFlagsDashboard />}
 
               {activeTab === 'kill-switches' && (
                 <KillSwitchesTab 
@@ -704,138 +675,7 @@ const BetaManagementTab: React.FC<BetaManagementTabProps> = ({
   );
 };
 
-/* ─── TAB 3: FEATURE GATES & ROLLOUTS ─── */
-interface FeatureGatesTabProps {
-  data: any;
-  loading: boolean;
-  toggleGate: any;
-  configureGate: any;
-}
-
-const FeatureGatesTab: React.FC<FeatureGatesTabProps> = ({
-  data,
-  loading,
-  toggleGate,
-  configureGate,
-}) => {
-  const [editingGate, setEditingGate] = useState<string | null>(null);
-  const [editingPercent, setEditingPercent] = useState<number>(0);
-
-  if (loading) return <TabLoader />;
-  if (!data?.success) return <TabError error="Could not load active feature gates." />;
-
-  return (
-    <Card className="bg-zinc-950/40 border-zinc-800/80">
-      <CardHeader className="pb-3 border-b border-zinc-900">
-        <CardTitle className="text-sm font-bold flex items-center gap-2">
-          <Sliders size={15} className="text-emerald-400" />
-          Feature Release Gates & Rollouts
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-4">
-        <div className="space-y-4">
-          {data.gates?.length === 0 ? (
-            <div className="py-8 text-center text-zinc-500">No feature gates found.</div>
-          ) : (
-            data.gates?.map((gate: any) => (
-              <div 
-                key={gate.featureName} 
-                className="bg-zinc-900/25 border border-zinc-900 hover:border-zinc-850 p-4 rounded-xl space-y-3 transition-all duration-200"
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <h3 className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
-                      {gate.featureName}
-                      <span className={`w-1.5 h-1.5 rounded-full ${gate.isEnabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                    </h3>
-                    <p className="text-[10px] text-zinc-500 mt-0.5 capitalize">Type: {gate.rules?.type || 'standard rollout'}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button 
-                      size="sm" 
-                      variant="secondary" 
-                      onClick={() => {
-                        setEditingGate(gate.featureName);
-                        setEditingPercent(gate.rolloutPercentage || 0);
-                      }}
-                      className="text-[10px] font-bold border-zinc-850 px-2.5 h-7"
-                    >
-                      Tune Gate
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      variant={gate.isEnabled ? 'danger' : 'success'}
-                      disabled={toggleGate.isPending}
-                      onClick={() => toggleGate.mutate({ featureName: gate.featureName, enabled: !gate.isEnabled })}
-                      className="text-[10px] font-bold px-3 h-7"
-                    >
-                      {gate.isEnabled ? 'Global Kill' : 'Global Enable'}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] text-zinc-500 font-bold bg-zinc-950/20 px-3 py-1.5 rounded-lg border border-zinc-900/60">
-                  <div className="flex items-center gap-2">
-                    <Percent size={12} className="text-zinc-600" />
-                    <span>Graduated Rollout Threshold:</span>
-                  </div>
-                  <span className="font-mono text-zinc-300">{gate.rolloutPercentage || 0}% of users</span>
-                </div>
-
-                {/* Rollout slider overlay */}
-                {editingGate === gate.featureName && (
-                  <motion.div 
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    className="border-t border-zinc-900/80 pt-3 mt-2 space-y-3"
-                  >
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="text-[11px] font-bold text-zinc-500">Rollout Level</span>
-                      <span className="text-xs font-mono font-bold text-emerald-400">{editingPercent}%</span>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <input 
-                        type="range" 
-                        min="0" 
-                        max="100" 
-                        value={editingPercent}
-                        onChange={(e) => setEditingPercent(parseInt(e.target.value) || 0)}
-                        className="flex-1 accent-emerald-500"
-                      />
-                      <Button 
-                        size="sm" 
-                        disabled={configureGate.isPending}
-                        onClick={() => {
-                          configureGate.mutate({
-                            featureName: gate.featureName,
-                            rolloutPercentage: editingPercent,
-                          }, {
-                            onSuccess: () => setEditingGate(null)
-                          });
-                        }}
-                        className="h-7 text-[10px] font-bold bg-emerald-500 hover:bg-emerald-600 text-white"
-                      >
-                        Apply Rollout
-                      </Button>
-                      <Button 
-                        size="sm" 
-                        variant="secondary"
-                        onClick={() => setEditingGate(null)}
-                        className="h-7 text-[10px] font-bold border-zinc-850"
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  </motion.div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-};
+/* ─── TAB 3: FEATURE FLAGS — see features/admin/FeatureFlagsDashboard ─── */
 
 /* ─── TAB 4: KILL SWITCHES & SAFETY CONTROLS ─── */
 interface KillSwitchesTabProps {
