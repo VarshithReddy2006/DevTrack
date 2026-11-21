@@ -2,13 +2,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   connect: vi.fn(), start: vi.fn(), stop: vi.fn(), queuesClose: vi.fn(), redisClose: vi.fn(), flush: vi.fn(),
   auditFlush: vi.fn(), sseDrain: vi.fn(), sseClose: vi.fn(), mongoClose: vi.fn(),
-  setSync: vi.fn(), setXp: vi.fn(), ready: true,
+  setSync: vi.fn(), setXp: vi.fn(), indexAudit: vi.fn(), ready: true,
 }));
 vi.mock('../../config/env.js', () => ({ env: {} }));
 vi.mock('../../db/connection.js', () => ({ connectDatabase: state.connect, disconnectDatabase: state.mongoClose }));
 vi.mock('../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({ unifiedRuntimeStateService: { flushPendingEvents: state.flush } }));
 vi.mock('../../modules/ai/audit/AIResponseAuditLog.js', () => ({ AIResponseAuditLog: { flushPendingWrites: state.auditFlush } }));
 vi.mock('../../db/migrations/index-setup.js', () => ({ setupProductionIndexes: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../db/migrations/indexAuditor.js', () => ({ startIndexAudit: state.indexAudit }));
 vi.mock('../../shared/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../../shared/sse/index.js', () => ({ eventBus: { broadcastShutdown: state.sseDrain, shutdown: state.sseClose } }));
 vi.mock('../../shared/redis/index.js', () => ({
@@ -52,6 +53,14 @@ it('starts the shared registry and drains it before closing queue and Redis hand
   expect(state.flush.mock.invocationCallOrder[0]).toBeGreaterThan(state.queuesClose.mock.invocationCallOrder[0]);
   expect(state.redisClose).toHaveBeenCalledAfter(state.flush);
   expect(state.redisClose).toHaveBeenCalledAfter(state.auditFlush);
+});
+it('starts the index audit after MongoDB connects without waiting for index builds', async () => {
+  state.indexAudit.mockReturnValueOnce(new Promise(() => {}));
+  const result = await startup(express());
+  expect(state.indexAudit).toHaveBeenCalledOnce();
+  expect(state.indexAudit).toHaveBeenCalledAfter(state.connect);
+  expect(result.success).toBe(true);
+  expect(result.phases.mongodb).toBe(true);
 });
 it('reports the scheduler healthy from the queues alone, the API starts no cron timers', async () => {
   const intervals = vi.spyOn(globalThis, 'setInterval');
