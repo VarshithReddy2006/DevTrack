@@ -18,6 +18,7 @@ import '../../db/models/activityEvent.model.js';
 import '../../db/models/aiConversation.model.js';
 import '../../db/models/aiResponseAuditLog.model.js';
 import '../../db/models/analyticsEvent.model.js';
+import '../../db/models/antiGamingDecision.model.js';
 import '../../db/models/atsAnalysis.model.js';
 import '../../db/models/behavioralTelemetry.model.js';
 import '../../db/models/betaCohort.model.js';

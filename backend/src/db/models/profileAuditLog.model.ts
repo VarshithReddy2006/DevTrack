@@ -10,6 +10,8 @@ export type ProfileAuditEventType =
   | 'project_rejected'
   | 'visibility_changed'
   | 'dossier_downloaded'
+  | 'anti_gaming_pardoned'
+  | 'anti_gaming_penalized'
   | 'ACCOUNT_ERASURE_TOMBSTONE';
 
 export interface IProfileAuditLog extends Document {
@@ -55,6 +57,8 @@ const ProfileAuditLogSchema = new Schema<IProfileAuditLog>(
         'visibility_changed',
         'dossier_downloaded',
         'ACCOUNT_ERASURE_TOMBSTONE',
+        'anti_gaming_pardoned',
+        'anti_gaming_penalized',
       ],
       required: true,
     },
@@ -79,7 +83,8 @@ ProfileAuditLogSchema.index(
   { sequenceNumber: 1 },
   { unique: true, partialFilterExpression: { sequenceNumber: { $type: 'number' } } }
 );
-// TTL: 90 days (auto-expire old audit logs)
+// TTL: 90 days (auto-expire old audit logs). Maintainer anti-gaming decisions are also written to
+// AntiGamingDecision, which has no TTL, so the permanent record does not depend on this collection.
 ProfileAuditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
 
 export const ProfileAuditLog = mongoose.model<IProfileAuditLog>('ProfileAuditLog', ProfileAuditLogSchema);

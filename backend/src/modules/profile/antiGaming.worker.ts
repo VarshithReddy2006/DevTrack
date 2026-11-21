@@ -7,8 +7,12 @@ import { subtractDays } from '../../shared/date.js';
 import { createDomainEvent, type ProfileFlaggedPayload } from '../../shared/events/eventContract.js';
 import { runConsumersForEvent } from '../../shared/events/runConsumer.js';
 import { logger } from '../../shared/logger.js';
+import { auditRowsFor, decryptChainedAuditEvent } from '../audit/auditLedger.service.js';
 import { PublicProfileService } from './publicProfile.service.js';
 import { SUSPICION_FLAG_THRESHOLD } from './verification.engine.js';
+
+/** Entries that record the flag state a later sweep compares against. */
+const BASELINE_EVENTS = ['anti_gaming_check', 'anti_gaming_pardoned', 'anti_gaming_penalized'];
 
 function auditIdFor(kind: string, day: string, userId: Types.ObjectId): Types.ObjectId {
   return new Types.ObjectId(createHash('sha256').update(`${kind}:${day}:${userId}`).digest('hex').slice(0, 24));
@@ -35,17 +39,27 @@ export class AntiGamingWorker {
         try {
           if (await ProfileAuditLog.exists({ _id: auditId })) continue;
 
-          // The previous audit is the baseline, not the profile document: profile rebuilds
-          // overwrite the score between sweeps and would hide a flag from the audit trail.
-          const previous = await ProfileAuditLog.findOne({ userId: _id, eventType: 'anti_gaming_check' })
-            .sort({ createdAt: -1 }).select('suspicionScoreAfter').lean();
+          // The previous audit (or maintainer decision) is the baseline, not the profile document:
+          // profile rebuilds overwrite the score between sweeps and would hide a flag from the audit trail.
+          // Focus and league checks reuse the event type without a score, so they are not a baseline.
+          const previous = await ProfileAuditLog
+            .findOne({ ...await auditRowsFor(_id), eventType: { $in: BASELINE_EVENTS }, suspicionScoreAfter: { $ne: null } })
+            .sort({ createdAt: -1 }).select('suspicionScoreAfter details encryptedDetails subjectHash').lean();
           const before = previous?.suspicionScoreAfter ?? null;
 
           const score = await PublicProfileService.computeProfile(_id);
-          await PublicProfile.updateOne({ userId: _id }, { $max: { 'antiGaming.lastAuditedAt': scheduledAt } });
+          const profile = await PublicProfile.findOneAndUpdate(
+            { userId: _id },
+            { $max: { 'antiGaming.lastAuditedAt': scheduledAt } },
+            { new: true, projection: { 'antiGaming.isFlagged': 1 } },
+          ).lean();
 
-          const wasFlagged = before !== null && before > SUSPICION_FLAG_THRESHOLD;
-          const isFlagged = score.suspicionScore > SUSPICION_FLAG_THRESHOLD;
+          // Entries written before reviews existed only have the score.
+          const details = previous?.encryptedDetails ? await decryptChainedAuditEvent(previous, _id) : previous?.details;
+          const recorded = details?.isFlagged;
+          const wasFlagged = typeof recorded === 'boolean' ? recorded : before !== null && before > SUSPICION_FLAG_THRESHOLD;
+          // The profile holds the effective state, which includes a pardon or a confirmed penalty.
+          const isFlagged = profile?.antiGaming?.isFlagged ?? score.suspicionScore > SUSPICION_FLAG_THRESHOLD;
           if (isFlagged !== wasFlagged) {
             await this.recordFlagChange(_id, day, isFlagged, before, score);
           }
@@ -58,7 +72,7 @@ export class AntiGamingWorker {
                 userId: _id,
                 eventType: 'anti_gaming_check',
                 triggeredBy: 'system',
-                details: score,
+                details: { ...score, isFlagged },
                 suspicionScoreBefore: before,
                 suspicionScoreAfter: score.suspicionScore,
               },

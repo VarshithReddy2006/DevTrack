@@ -207,6 +207,20 @@ export async function decryptChainedAuditEvent<T = Record<string, unknown>>(
 }
 
 /**
+ * Filter for every ledger row about one user: rows stored with a plain userId, and
+ * chained rows, which only carry the salted subject hash.
+ */
+export async function auditRowsFor(
+  userId: Types.ObjectId,
+  session?: ClientSession | null
+): Promise<{ $or: Array<{ userId: Types.ObjectId } | { subjectHash: string }> }> {
+  const key = await AuditEncryptionKey.findOne({ userId }, null, session ? { session } : undefined).lean();
+  return {
+    $or: [{ userId }, ...(key ? [{ subjectHash: pseudonymizeAuditSubject(String(userId), key.saltHex) }] : [])],
+  };
+}
+
+/**
  * Appends an immutable ACCOUNT_ERASURE_TOMBSTONE record to the hash chain without
  * mutating any historical audit log records.
  */
