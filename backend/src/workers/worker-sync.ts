@@ -6,6 +6,7 @@ import { connectDatabase, disconnectDatabase } from '../db/index.js';
 import { logger } from '../shared/logger.js';
 import { startPlatformSyncWorker, stopPlatformSyncWorker } from '../shared/jobs/platformSyncWorker.js';
 import { WorkerHealthMonitor } from './WorkerHealthMonitor.js';
+import { tokenPoolManager } from '../modules/sync/tokenPoolManager.service.js';
 
 async function main(): Promise<void> {
   logger.info('[worker-sync] Starting platform sync worker', {
@@ -15,6 +16,9 @@ async function main(): Promise<void> {
   });
 
   await connectDatabase();
+  
+  // Initialize multi-token pool manager
+  tokenPoolManager.init();
   
   // Start health monitoring
   const healthMonitor = new WorkerHealthMonitor('sync');
@@ -40,6 +44,7 @@ async function shutdown(signal: string): Promise<void> {
 
   try {
     await stopPlatformSyncWorker();
+    await tokenPoolManager.close();
     
     const healthMonitor = (global as any).healthMonitor;
     if (healthMonitor) {
