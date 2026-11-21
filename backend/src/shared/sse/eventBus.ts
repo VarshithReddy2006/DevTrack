@@ -7,6 +7,9 @@ import { z } from 'zod';
 import { logger } from '../logger.js';
 import { captureTraceContext, runTraceOperation, type TraceCarrier } from '../tracing/propagation.js';
 import { createRedisConnection, getRedisClient, getRedisHealth, isRedisConfigured } from '../redis/client.js';
+import { RedisStreamAdapter } from './redisStreamAdapter.js';
+import { TOTAL_SHARDS } from './shardRouter.js';
+import type { ShardedStreamEvent, ShardedAdapterMetrics } from './redisStreamAdapter.types.js';
 
 // ─── Zod validation schemas for SSE event payloads ─────────────────────────
 const syncStartedPayload = z.object({
@@ -349,10 +352,51 @@ class EventBus extends EventEmitter {
   private pendingPatches = new Map<string, { delta: Record<string, unknown>; timer: NodeJS.Timeout }>();
   private readonly PATCH_COALESCE_MS = 3000; // 3 seconds
 
-  constructor() {
+  // Sharded Redis Stream Consumer Group Adapter for horizontal scaling
+  readonly streamAdapter: RedisStreamAdapter;
+  private readonly recentlyDeliveredIds = new Set<string>();
+
+  constructor(customRedisClient?: any) {
     super();
     this.setMaxListeners(this.MAX_CLIENTS);
+    this.streamAdapter = new RedisStreamAdapter(
+      this.instanceId,
+      { numShards: TOTAL_SHARDS },
+      customRedisClient
+    );
+    this.setupStreamAdapter();
     this.initRedisPubSub();
+  }
+
+  private setupStreamAdapter(): void {
+    this.streamAdapter.on('message', (streamEvent: ShardedStreamEvent) => {
+      // INV-08: Skip own echo (already delivered locally)
+      if (streamEvent.origin === this.instanceId) return;
+
+      if (streamEvent.id) {
+        if (this.recentlyDeliveredIds.has(streamEvent.id)) return;
+        this.trackDeliveredId(streamEvent.id);
+      }
+
+      const sseEvent: SseEvent = {
+        id: streamEvent.id,
+        type: streamEvent.type,
+        timestamp: streamEvent.timestamp,
+        userId: streamEvent.userId,
+        payload: streamEvent.payload,
+      };
+
+      // INV-02: User isolation
+      this.publishLocal(sseEvent, streamEvent.userId);
+    });
+  }
+
+  private trackDeliveredId(id: string): void {
+    this.recentlyDeliveredIds.add(id);
+    if (this.recentlyDeliveredIds.size > 2000) {
+      const first = this.recentlyDeliveredIds.values().next().value;
+      if (first) this.recentlyDeliveredIds.delete(first);
+    }
   }
 
   // ─── Redis pub/sub for horizontal scaling ─────────────────────────────────
@@ -479,8 +523,17 @@ class EventBus extends EventEmitter {
   }
 
   private async publishToRedis(event: SseEvent): Promise<void> {
-    if (!isRedisConfigured()) return;
+    if (!this.streamAdapter.hasConfiguredRedis()) return;
     await runTraceOperation('sse.publish', async () => {
+      // 1. Publish to sharded Redis Streams for horizontal scaling
+      await this.streamAdapter.publishEvent({
+        origin: this.instanceId,
+        userId: event.userId || 'system',
+        type: event.type,
+        sequence: 0,
+        timestamp: event.timestamp || new Date().toISOString(),
+        payload: event.payload || {},
+      });
       const payload = JSON.stringify({ origin: this.instanceId, event, ...captureTraceContext() });
       if (this.redisPublisher && (this.redisPublisher as any).status === 'ready') {
         await (this.redisPublisher as any).publish(SSE_CHANNEL, payload);
@@ -538,6 +591,14 @@ class EventBus extends EventEmitter {
     this.clients.set(client.id, client);
     this.totalConnections++;
 
+    // Shard routing & activation
+    void this.streamAdapter.registerUser(client.userId).catch((err) => {
+      logger.warn('[sse] Stream adapter shard activation error', {
+        userId: client.userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
     logger.info('[sse] Client connected', {
       event: 'sse_client_connected',
       clientId: client.id,
@@ -552,9 +613,16 @@ class EventBus extends EventEmitter {
     if (!client) return;
 
     const lifetime = Date.now() - client.connectedAt;
+    const userId = client.userId;
     this.clients.delete(clientId);
     this.totalDisconnects++;
     client.destroy();
+
+    // If no remaining clients on this pod for this user, release shard
+    const hasMoreForUser = Array.from(this.clients.values()).some((c) => c.userId === userId);
+    if (!hasMoreForUser) {
+      this.streamAdapter.unregisterUser(userId);
+    }
 
     logger.info('[sse] Client disconnected', {
       event: 'sse_client_disconnected',
@@ -1082,6 +1150,18 @@ class EventBus extends EventEmitter {
     };
     await redis.expire(streamKey, 300); // 5 minutes
     await redis.xtrim(streamKey, 'MAXLEN', '~', 100);
+
+    // Also publish to horizontal sharded streams
+    void this.streamAdapter.publishEvent({
+      origin: this.instanceId,
+      userId,
+      type,
+      sequence,
+      timestamp,
+      payload: validatedPayload,
+      correlationId: correlationId || eventId,
+      schemaVersion: schemaVersion || 1,
+    });
     
     // Publish as legacy event for backward compatibility
     this.publish(
@@ -1119,7 +1199,7 @@ class EventBus extends EventEmitter {
     }
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     this.stopHeartbeat();
     for (const { timer } of this.pendingPatches.values()) {
       clearTimeout(timer);
@@ -1134,6 +1214,9 @@ class EventBus extends EventEmitter {
       client.destroy();
     }
     this.clients.clear();
+
+    await this.streamAdapter.shutdown();
+
     if (this.redisSubscriber) {
       try {
         (this.redisSubscriber as any).disconnect();
