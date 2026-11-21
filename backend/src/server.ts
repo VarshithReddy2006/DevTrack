@@ -18,7 +18,9 @@ import { sanitizeRequest } from './middleware/validation.js';
 import { logger } from './shared/logger.js';
 import { eventBus } from './shared/sse/index.js';
 import { syncState } from './shared/syncState.js';
-import { getRedisHealth } from './shared/redis/index.js';
+import { getRedisHealth, getRedisClient, isRedisConfigured } from './shared/redis/index.js';
+import { metricsMiddleware, metricsRegistry, renderMetrics, parseRedisUsedMemory, hasValidMetricsToken, type MetricsSources } from './shared/observability/metrics.js';
+import { livenessHandler, readinessHandler } from './shared/runtime/healthProbes.js';
 import { validateStartup } from './shared/startup-validation.js';
 import { getOrCreateQueue, QueueNames } from './shared/jobs/index.js';
 import { getWorkerStatus, getXpWorkerStatus } from './shared/jobs/index.js';
@@ -57,6 +59,7 @@ export async function createApp(): Promise<express.Express> {
 
   // Phase 1: Core middleware (before any async work)
   app.use(requestMetricsMiddleware);
+  app.use(metricsMiddleware);
 
   app.use(securityHeaders({ isProd: env.IS_PROD }));
 
@@ -318,60 +321,58 @@ export function setupHealthEndpoints(
     });
   });
 
-  app.get('/metrics', authMiddleware, adminMiddleware, (_req: AuthenticatedRequest, res: express.Response) => {
-    const snapshot = getMetricsSnapshot();
-    const endpoints = getEndpointLatencies();
+  // Prometheus scrape endpoint. A scraper presents METRICS_BEARER_TOKEN; without one configured,
+  // only a signed-in admin can read it.
+  const metricsSources: MetricsSources = {
+    queues: async () => {
+      const out: Record<string, { waiting?: number; active?: number }> = {};
+      for (const name of Object.values(QueueNames)) {
+        const c = await getOrCreateQueue(name).getJobCounts();
+        out[name] = { waiting: c.waiting, active: c.active };
+      }
+      return out;
+    },
+    sseConnections: () => ({ default: eventBus.getMetrics().activeConnections }),
+    redis: async () => {
+      const health = getRedisHealth();
+      const connected = health.status === 'connected';
+      if (!connected) return { connected };
+      const info = await getRedisClient().info('memory');
+      return { connected, usedMemoryBytes: parseRedisUsedMemory(info) };
+    },
+  };
+  const serveMetrics = async (_req: express.Request, res: express.Response) => {
+    res.setHeader('Content-Type', metricsRegistry.contentType);
+    res.send(await renderMetrics(metricsSources));
+  };
+  app.get(
+    '/metrics',
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (!hasValidMetricsToken(req.headers.authorization, process.env.METRICS_BEARER_TOKEN)) return next();
+      serveMetrics(req, res).catch(next);
+    },
+    ...authMiddleware,
+    adminMiddleware,
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      serveMetrics(req, res).catch(next);
+    },
+  );
 
-    // Prometheus-style text format for scrape-compatible tooling
-    const lines: string[] = [
-      `# HELP devtrack_uptime_seconds Server uptime in seconds`,
-      `# TYPE devtrack_uptime_seconds gauge`,
-      `devtrack_uptime_seconds ${snapshot.uptime}`,
-      ``,
-      `# HELP devtrack_total_requests Total HTTP requests processed`,
-      `# TYPE devtrack_total_requests counter`,
-      `devtrack_total_requests ${snapshot.totalRequests}`,
-      ``,
-      `# HELP devtrack_total_errors Total HTTP errors (4xx/5xx)`,
-      `# TYPE devtrack_total_errors counter`,
-      `devtrack_total_errors ${snapshot.totalErrors}`,
-      ``,
-      `# HELP devtrack_error_rate Error rate percentage`,
-      `# TYPE devtrack_error_rate gauge`,
-      `devtrack_error_rate ${snapshot.errorRate}`,
-      ``,
-      `# HELP devtrack_active_requests Current in-flight requests`,
-      `# TYPE devtrack_active_requests gauge`,
-      `devtrack_active_requests ${snapshot.activeRequests}`,
-      ``,
-      `# HELP devtrack_requests_per_second Requests per second`,
-      `# TYPE devtrack_requests_per_second gauge`,
-      `devtrack_requests_per_second ${snapshot.requestsPerSecond}`,
-      ``,
-      `# HELP devtrack_avg_latency_ms Average endpoint latency in ms`,
-      `# TYPE devtrack_avg_latency_ms gauge`,
-      `devtrack_avg_latency_ms ${snapshot.avgLatencyMs}`,
-    ];
-
-    // Per-endpoint metrics
-    for (const [key, stats] of Object.entries(endpoints)) {
-      const [method, ...pathParts] = key.split(':');
-      const path = pathParts.join(':');
-      const base = `devtrack_endpoint{method="${method}",path="${path}"}`;
-      lines.push(
-        `${base}_total ${stats.count}`,
-        `${base}_errors ${stats.errors}`,
-        `${base}_latency_avg_ms ${stats.totalLatencyMs > 0 ? Math.round(stats.totalLatencyMs / stats.count) : 0}`,
-        `${base}_latency_max_ms ${stats.maxLatencyMs}`,
-        `${base}_latency_p50_ms ${stats.p50LatencyMs}`,
-        `${base}_latency_p95_ms ${stats.p95LatencyMs}`,
-        `${base}_latency_p99_ms ${stats.p99LatencyMs}`,
-      );
-    }
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(lines.join('\n'));
-  });
+  // Kubernetes-style probes: /healthz is liveness (event loop responsive), /readyz is readiness
+  // (MongoDB, Redis and the queues all answer). /health/live and /health/ready stay as they were.
+  app.get('/healthz', livenessHandler());
+  const redisUp = isRedisConfigured();
+  app.get('/readyz', readinessHandler({
+    pingMongo: async () => {
+      const db = mongoose.connection?.db;
+      if (!db) throw new Error('mongo not connected');
+      return db.admin().command({ ping: 1 });
+    },
+    pingRedis: redisUp ? () => getRedisClient().ping() : undefined,
+    checkQueues: redisUp
+      ? () => Promise.all(Object.values(QueueNames).map((q) => getOrCreateQueue(q).getJobCounts()))
+      : undefined,
+  }));
 
   app.get('/api/system/realtime-status', authMiddleware, adminMiddleware, (_req: AuthenticatedRequest, res: express.Response) => {
     const metrics = eventBus.getMetrics();
