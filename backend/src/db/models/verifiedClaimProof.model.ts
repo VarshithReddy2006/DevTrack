@@ -41,7 +41,6 @@ const verifiedClaimProofSchema = new Schema<IVerifiedClaimProof>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     userId: {
       type: String,
@@ -70,7 +69,6 @@ const verifiedClaimProofSchema = new Schema<IVerifiedClaimProof>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     verificationKeyId: {
       type: String,
