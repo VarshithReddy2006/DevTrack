@@ -320,7 +320,7 @@ async function performShutdown(server?: Server): Promise<void> {
 
   await runPhase('Redis teardown', 1_000, async () => {
     try {
-      eventBus.shutdown();
+      await eventBus.shutdown();
     } finally {
       await disconnectRedis();
     }
