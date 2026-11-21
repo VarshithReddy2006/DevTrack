@@ -95,15 +95,17 @@ export class OutboxRelay {
       await withTraceContext({ traceparent: event.traceContext?.traceparent }, async () => {
         for (const queue of queues) await this.opts.enqueue(queue, event.eventId, envelope);
       });
+      const now = this.now();
       await OutboxEvent.updateOne(
         { _id: event._id, status: 'processing', leaseExpiresAt: event.leaseExpiresAt },
-        { $set: { status: 'published', publishedAt: this.now(), leaseExpiresAt: null, lastError: null } },
+        { $set: { status: 'published', publishedAt: now, lastAttemptAt: now, leaseExpiresAt: null, lastError: null } },
       );
       return 'published';
     } catch (err) {
       this.opts.onError?.(err, event);
       const attempts = event.attempts + 1;
       const dead = attempts >= this.maxAttempts;
+      const now = this.now();
       await OutboxEvent.updateOne(
         { _id: event._id, status: 'processing', leaseExpiresAt: event.leaseExpiresAt },
         {
@@ -111,7 +113,8 @@ export class OutboxRelay {
             status: dead ? 'dead' : 'pending',
             attempts,
             leaseExpiresAt: null,
-            nextAttemptAt: new Date(this.now().getTime() + backoffMs(attempts)),
+            nextAttemptAt: new Date(now.getTime() + backoffMs(attempts)),
+            lastAttemptAt: now,
             lastError: err instanceof Error ? err.message : String(err),
           },
         },
