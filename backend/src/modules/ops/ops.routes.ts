@@ -49,5 +49,8 @@ router.post('/contests/refresh', authMiddleware, adminMiddleware, opsController.
   
   // Diagnostics Tooling (Phase 6)
   router.get('/diagnostics', authMiddleware, adminMiddleware, opsController.diagnostics);
+
+  // SLO / Error Budget Burn-Rate (Phase 10)
+  router.get('/slo', authMiddleware, adminMiddleware, opsController.sloStatus);
   
   export { router as opsRoutes };

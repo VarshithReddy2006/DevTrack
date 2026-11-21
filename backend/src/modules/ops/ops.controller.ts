@@ -675,6 +675,19 @@ export const opsController = {
     }
   },
 
+  // ─── SLO / Error Budget Status ────────────────────────────────────────
+  async sloStatus(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { sloEngine } = await import('../../shared/observability/sloEngine.js');
+      const evaluation = sloEngine.evaluate();
+
+      res.json({ success: true, slo: evaluation });
+    } catch (error) {
+      logger.error('[ops] Failed to evaluate SLO status', error);
+      res.status(500).json({ error: 'Failed to evaluate SLO status' });
+    }
+  },
+
   async refreshContests(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { contestRefreshService } = await import('../platform-sync/contests/contestRefresh.service.js');
