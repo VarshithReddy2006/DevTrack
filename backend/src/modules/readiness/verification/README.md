@@ -104,6 +104,32 @@ again. Delivery is at least once: clients can deduplicate by claim id/inputHash.
 The existing process-local SSE fallback during Redis outages cannot guarantee
 cross-process browser receipt; this change does not replace that transport.
 
+## Architectural profile
+
+Once a GitHub commit proof is verified, the worker queues an `analyze-architecture`
+job on the same queue (job id `architecture-<claimId>-<inputHash>`; the 60-second
+sweep re-queues verified commit claims that have no profile for their current
+input). `../dependencyAnalyzer.service.ts` reads the repository at the verified
+commit through the same `githubJson` client: the repository, one recursive tree
+(the top level only when the tree passes the 1 MiB limit), and up to eight
+manifests (`package.json`, `requirements.txt`, `pyproject.toml`, `go.mod`,
+`Cargo.toml`, `pom.xml`, at most two directories deep, vendored, example and
+fixture folders skipped) through the contents API. It parses them with
+`../intelligence/manifestParsers.ts`.
+
+The 0-100 score adds framework 20, ORM 15 (a driver alone 10), test library or
+built-in test runner 20, test files present 15, lint/type tooling 10, CI 10 and a
+Dockerfile or compose file 10. Each package from the curated deprecated/insecure
+list (for example `request`, `node-sass`, `pycrypto`, `github.com/dgrijalva/jwt-go`,
+`log4j:log4j`) takes 5 off, at most 20. The result is stored in
+`metadata.architecturalProfile` with the input hash it was computed for. The write
+does not touch `updatedAt`, so it cannot break a pending verification
+compare-and-set. A private or deleted repository gets `status: 'unavailable'`
+with a reason instead of a score. The analysis reads dependency names, not
+versions or lockfiles, so it does not resolve CVEs for specific versions or the
+depth of the transitive graph. Its GitHub requests share the queue-wide rate
+limit described above.
+
 ## Verification commands
 
 Run `npm run test:evidence-verification` and `npm run build` from `backend/`.

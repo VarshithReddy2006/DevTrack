@@ -6,6 +6,10 @@ export interface GitHubIdentity { accountId: string; verifiedEmails: string[] }
 export class GitHubBackoffError extends RetryableError {
   constructor(public readonly retryAfterMs: number) { super('GitHub verification rate limited'); }
 }
+/** The response passed the 1 MiB limit; callers can ask for something smaller instead of retrying. */
+export class GitHubResponseTooLargeError extends RetryableError {
+  constructor() { super('GitHub verification API response too large'); }
+}
 export function parseCommitReference(raw: string): { owner: string; repo: string; sha: string } | undefined {
   try {
     if (raw.length > 2048) return;
@@ -45,7 +49,7 @@ export async function githubJson(path: string): Promise<unknown | null> {
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > 1024 * 1024) throw new RetryableError('GitHub verification API response too large');
+      if (bytes > 1024 * 1024) throw new GitHubResponseTooLargeError();
       chunks.push(chunk.value);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));

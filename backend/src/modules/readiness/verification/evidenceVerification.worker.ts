@@ -13,8 +13,9 @@ import { getRedisClient } from '../../../shared/redis/index.js';
 import { eventBus } from '../../../shared/sse/eventBus.js';
 import { logger } from '../../../shared/logger.js';
 import { evidenceInputHash, evidenceProof, hasExternalFlag, sha256, type EvidenceProof, type VerifiableClaim, type VerificationDecision } from './evidenceProof.js';
-import { enqueueEvidenceVerification } from './evidenceVerification.queue.js';
+import { ARCHITECTURE_JOB, enqueueArchitecturalProfile, enqueueEvidenceVerification } from './evidenceVerification.queue.js';
 import { GitHubBackoffError, verifyGitHubCommit, type GitHubIdentity } from './githubVerifier.service.js';
+import { needsArchitecturalProfile, processArchitecturalProfile } from '../dependencyAnalyzer.service.js';
 
 export interface VerificationClaim extends VerifiableClaim {
   updatedAt: Date;
@@ -53,12 +54,15 @@ export interface EvidenceVerificationDeps {
   dsa: typeof verifyDsaProof;
   commit: (claim: VerificationClaim, inputHash: string, decision: VerificationDecision, hash: string | null, checkedAt: Date) => Promise<boolean>;
   notify: (userId: string, claimId: string, inputHash: string, hash: string, receipt: Record<string, unknown>) => Promise<void>;
+  /** Follow-up for a verified GitHub commit: queue the repository dependency analysis. */
+  analyze?: (claim: VerificationClaim) => Promise<void>;
   now: () => Date;
 }
 
 const defaults: EvidenceVerificationDeps = {
   load: (userId, claimId) => ResumeEvidenceClaim.findOne({ _id: claimId, userId }).lean(),
   identity: verifiedGitHubIdentity, github: verifyGitHubCommit, dsa: verifyDsaProof, now: () => new Date(),
+  analyze: enqueueArchitecturalProfile,
   async commit(claim, inputHash, decision, hash, checkedAt) {
     const result = await ResumeEvidenceClaim.updateOne({ _id: claim._id, userId: claim.userId, updatedAt: claim.updatedAt,
       claimText: claim.claimText, source: claim.source ?? null, sourceUrl: claim.sourceUrl ?? null,
@@ -118,6 +122,7 @@ export async function processEvidenceVerification(raw: unknown, deps: EvidenceVe
   const hash = decision.verified ? sha256({ version: 1, userId, claimId, inputHash, receipt: decision.receipt }) : null;
   if (!await deps.commit(claim, inputHash, decision, hash, deps.now())) return;
   if (hash) await deps.notify(userId, claimId, inputHash, hash, decision.receipt);
+  if (hash && proof?.kind === 'github_commit') await deps.analyze?.(claim);
 }
 
 export async function sweepPendingEvidence(): Promise<void> {
@@ -126,6 +131,7 @@ export async function sweepPendingEvidence(): Promise<void> {
   try {
     for await (const claim of cursor) {
       if (hasExternalFlag(claim) || (!evidenceProof(claim) && !claim.proofVerification)) continue;
+      if (needsArchitecturalProfile(claim)) await enqueueArchitecturalProfile(claim);
       if (claim.proofVerification?.inputHash === evidenceInputHash(claim) && !claim.proofVerification.notificationPending) continue;
       await enqueueEvidenceVerification(claim);
     }
@@ -138,6 +144,7 @@ export async function startEvidenceVerificationWorker(): Promise<Worker> {
   worker = createDlqWorker(QueueNames.EVIDENCE_VERIFICATION, async job => {
     try {
       if (job.name === 'sweep') return await sweepPendingEvidence();
+      if (job.name === ARCHITECTURE_JOB) return void await processArchitecturalProfile(job.data);
       await processEvidenceVerification(job.data);
     } catch (error) {
       if (error instanceof GitHubBackoffError) {

@@ -5,7 +5,7 @@ import { GitHubBackoffError } from './githubVerifier.service.js';
 import type { EvidenceVerificationDeps, VerificationClaim } from './evidenceVerification.worker.js';
 
 const mocks = vi.hoisted(() => ({ add: vi.fn(), schedule: vi.fn(), close: vi.fn(), rateLimit: vi.fn(), create: vi.fn(),
-  find: vi.fn(), getUser: vi.fn(), userFind: vi.fn(), submissionFind: vi.fn(), problemExists: vi.fn() }));
+  find: vi.fn(), getUser: vi.fn(), userFind: vi.fn(), submissionFind: vi.fn(), problemExists: vi.fn(), profile: vi.fn() }));
 vi.mock('../../../shared/jobs/queueFactory.js', () => ({ getOrCreateQueue: () => ({ add: mocks.add, upsertJobScheduler: mocks.schedule }) }));
 vi.mock('../../../shared/jobs/dlq.service.js', () => ({ createDlqWorker: mocks.create }));
 vi.mock('../../../shared/redis/index.js', () => ({ getRedisClient: () => ({ status: 'ready' }) }));
@@ -14,6 +14,9 @@ vi.mock('../../../db/models/user.model.js', () => ({ User: { findById: mocks.use
 vi.mock('../../../db/models/resumeEvidenceClaim.model.js', () => ({ ResumeEvidenceClaim: { find: mocks.find } }));
 vi.mock('../../../db/models/dsaSubmission.model.js', () => ({ DsaSubmission: { findOne: mocks.submissionFind } }));
 vi.mock('../../../db/models/dsaProblem.model.js', () => ({ DsaProblem: { exists: mocks.problemExists } }));
+vi.mock('../dependencyAnalyzer.service.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../dependencyAnalyzer.service.js')>(), processArchitecturalProfile: mocks.profile,
+}));
 const { processEvidenceVerification, sweepPendingEvidence, startEvidenceVerificationWorker, stopEvidenceVerificationWorker,
   verifiedGitHubIdentity, verifyDsaProof } = await import('./evidenceVerification.worker.js');
 const { enqueueEvidenceVerification } = await import('./evidenceVerification.queue.js');
@@ -100,6 +103,24 @@ describe('proof verification processing', () => {
   it.each([{}, { userId, claimId, inputHash: 'bad' }])('rejects malformed job data', async value => {
     await expect(processEvidenceVerification(value, fixture().deps)).rejects.toBeInstanceOf(NonRetryableError);
   });
+  it('queues the dependency analysis only after a verified GitHub commit', async () => {
+    const verified = fixture();
+    const analyze = vi.fn(async () => {});
+    await processEvidenceVerification(verified.job, { ...verified.deps, analyze });
+    expect(analyze).toHaveBeenCalledExactlyOnceWith(verified.claim);
+    expect(analyze.mock.invocationCallOrder[0]).toBeGreaterThan(verified.deps.notify.mock.invocationCallOrder[0]);
+
+    const rejected = fixture();
+    rejected.decision.verified = false; rejected.decision.reason = 'signature_not_verified';
+    analyze.mockClear();
+    await processEvidenceVerification(rejected.job, { ...rejected.deps, analyze });
+    expect(analyze).not.toHaveBeenCalled();
+
+    const dsa = fixture(); delete dsa.claim.sourceUrl;
+    dsa.claim.evidenceSources = [{ type: 'dsa', referenceType: 'dsa_problem', referenceId: '3'.repeat(24), metadata: { platform: 'leetcode' } }];
+    await processEvidenceVerification({ userId, claimId, inputHash: evidenceInputHash(dsa.claim) }, { ...dsa.deps, analyze });
+    expect(analyze).not.toHaveBeenCalled();
+  });
   it('routes an explicit DSA proof without calling GitHub or Clerk', async () => {
     const { claim, deps } = fixture(); delete claim.sourceUrl;
     claim.evidenceSources = [{ type: 'dsa', referenceType: 'dsa_problem', referenceId: '3'.repeat(24), metadata: { platform: 'codeforces' } }];
@@ -151,6 +172,29 @@ describe('durable enqueue and worker lifecycle', () => {
     mocks.find.mockReturnValue({ sort: () => ({ lean: () => ({ cursor: () => cursor }) }) });
     await sweepPendingEvidence();
     expect(mocks.add).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+  });
+  it('sweeps verified commit claims that have no profile for their current input into the analysis queue', async () => {
+    const { claim } = fixture();
+    const inputHash = evidenceInputHash(claim);
+    const verified = { ...claim, verificationStatus: 'verified',
+      proofVerification: { state: 'verified', reason: 'ok', inputHash, receipt: {}, notificationPending: false } };
+    const profiled = { ...verified, metadata: { flaggedReason: null, architecturalProfile: { inputHash } } };
+    const stale = { ...verified, metadata: { flaggedReason: null, architecturalProfile: { inputHash: 'f'.repeat(64) } } };
+    const cursor = { async *[Symbol.asyncIterator]() { yield verified; yield profiled; yield stale; }, close: vi.fn() };
+    mocks.find.mockReturnValue({ sort: () => ({ lean: () => ({ cursor: () => cursor }) }) });
+    await sweepPendingEvidence();
+    expect(mocks.add).toHaveBeenCalledTimes(2);
+    expect(mocks.add).toHaveBeenCalledWith('analyze-architecture', { userId, claimId, inputHash },
+      expect.objectContaining({ jobId: `architecture-${claimId}-${inputHash}`, attempts: 5 }));
+    expect(mocks.add.mock.calls.every(([name]) => name === 'analyze-architecture')).toBe(true);
+  });
+  it('hands analyze-architecture jobs to the dependency analyzer', async () => {
+    await startEvidenceVerificationWorker();
+    const run = mocks.create.mock.calls[0][1];
+    const data = { userId, claimId, inputHash: 'e'.repeat(64) };
+    await run({ name: 'analyze-architecture', data });
+    expect(mocks.profile).toHaveBeenCalledExactlyOnceWith(data);
+    expect(mocks.getUser).not.toHaveBeenCalled();
   });
   it('starts once, schedules catch-up and periodic scans, and drains on shutdown', async () => {
     await startEvidenceVerificationWorker(); await startEvidenceVerificationWorker();
