@@ -17,10 +17,11 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const portfolio = ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/[^/]+(\/dossier\.pdf)?\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/portfolio\/[^/]+\/dossier\/token\/?$/i.test(req.path));
     const readinessScore = (req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/score\/?$/i.test(req.path);
+    const readinessZkp = /^\/readiness\/zkp(\/.*)?$/i.test(req.path);
     const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/readiness\/roadmap\/generate\/?$/i.test(req.path))
       || (req.method === 'PATCH' && /^\/readiness\/roadmap\/milestones\/[^/]+\/tasks\/[^/]+\/?$/i.test(req.path));
-    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || roadmap ? routes(req, res, next) : next();
+    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

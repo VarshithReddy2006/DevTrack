@@ -3,8 +3,12 @@ import { authMiddleware } from '../../middleware/auth.js';
 import { ReadinessController } from './readiness.controller.js';
 import dsaRoutes from './dsa/routes/dsa.routes.js';
 import roadmapRoutes from './roadmap.routes.js';
+import { zkpRoutes } from './zkp.routes.js';
 
 const router = Router();
+
+// ZKP anonymous benchmarking & verification (verify is public for recruiters, generate uses auth inside zkp.routes)
+router.use('/zkp', zkpRoutes);
 
 router.use(authMiddleware);
 
