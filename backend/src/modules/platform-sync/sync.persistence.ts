@@ -1,10 +1,24 @@
-import { Types } from 'mongoose';
+import mongoose, { Types, type ClientSession } from 'mongoose';
 import { DsaProblem, DsaSubmission, DsaContest, DsaTopicProgress } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
-import { createActivity, incrementDailyActivity } from '../activity/activity.service.js';
+import { createActivity } from '../activity/activity.service.js';
+import { cacheManager } from '../../shared/cache/cacheManager.js';
+import { projectSubmission } from './submission-projections.js';
 import { dsaProblemIdentity } from '../dsa/dsa-problem-identity.js';
 import type { PlatformSubmission, PlatformContest, FetchedPlatformStats } from './adapters/types.js';
 import { enqueueSubmissionEvaluation } from '../revision/cardGenerator.service.js';
+
+async function admissionTransaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await mongoose.connection.transaction(work);
+    } catch (error) {
+      // Concurrent first imports can race on the source/problem unique indexes.
+      // Start a fresh transaction; never continue inside an aborted session.
+      if ((error as { code?: number }).code !== 11000 || attempt >= 2) throw error;
+    }
+  }
+}
 
 export async function persistSubmissions(userId: string, submissions: PlatformSubmission[]): Promise<number> {
   const userObjId = new Types.ObjectId(userId);
@@ -16,15 +30,19 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
       throw new Error('Invalid submission runtime percentile');
     }
     const key = { userId: userObjId, platform: sub.platform, externalId: sub.externalId };
-    const existingSubmission = await DsaSubmission.findOne(key).select('_id revisionEvaluationQueued').lean();
-    if (existingSubmission) {
-      if (!existingSubmission.revisionEvaluationQueued) evaluations.add(existingSubmission._id.toString());
-      continue;
-    }
-    const problemKey = { userId: userObjId, platform: sub.platform, externalId: sub.problemExternalId };
-    let problem;
-    try {
-      problem = await DsaProblem.findOneAndUpdate(problemKey, { $setOnInsert: {
+    // Source admission, problem projection and daily bucket commit together.
+    // Absolute reconciliation also heals legacy partial writes on duplicate sync.
+    const outcome = await admissionTransaction(async session => {
+      const existingSubmission = await DsaSubmission.findOne(key).session(session).lean();
+      if (existingSubmission) {
+        await projectSubmission(
+          userObjId, new Types.ObjectId(existingSubmission.problemId.toString()),
+          existingSubmission.submittedAt, session,
+        );
+        return { id: existingSubmission._id.toString(), created: false, queue: !existingSubmission.revisionEvaluationQueued };
+      }
+      const problemKey = { userId: userObjId, platform: sub.platform, externalId: sub.problemExternalId };
+      const problem = await DsaProblem.findOneAndUpdate(problemKey, { $setOnInsert: {
         ...problemKey, title: sub.title, difficulty: sub.difficulty === 'unknown' ? 'medium' : sub.difficulty,
         problemKey: sub.platform === 'github' ? undefined : dsaProblemIdentity({
           platform: sub.platform, externalId: sub.problemExternalId, url: sub.problemUrl,
@@ -32,40 +50,22 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
         difficultyKnown: sub.difficulty !== 'unknown',
         url: sub.problemUrl ?? '', tags: [], category: sub.category ?? 'General',
         status: sub.status === 'accepted' ? 'solved' : 'attempted', isFavorite: false, submissionCount: 0,
-      } }, { upsert: true, new: true });
-    } catch (error) {
-      if ((error as { code?: number }).code !== 11000) throw error;
-      problem = await DsaProblem.findOne(problemKey);
-    }
-    if (!problem) throw new Error('Failed to persist synced problem');
-    let savedSubmission;
-    try {
-      savedSubmission = await DsaSubmission.create({ ...key, problemId: problem._id,
+      } }, { upsert: true, new: true, session });
+      if (!problem) throw new Error('Failed to persist synced problem');
+      const [savedSubmission] = await DsaSubmission.create([{ ...key, problemId: problem._id,
         status: sub.status === 'accepted' ? 'accepted' : sub.status === 'time_limit' ? 'time_limit_exceeded'
           : sub.status === 'runtime_error' ? 'runtime_error' : sub.status === 'compilation_error' ? 'compilation_error' : 'wrong',
         language: sub.language ?? 'unknown', codeSnippet: null, submittedAt: sub.submittedAt,
-        executionTime: sub.runtimeMs ?? null, memoryUsed: sub.memoryKb ?? null, runtimePercentile: sub.runtimePercentile ?? null });
-    } catch (error) {
-      if ((error as { code?: number }).code === 11000) {
-        const duplicate = await DsaSubmission.exists(key);
-        if (duplicate) evaluations.add(duplicate._id.toString());
-        continue;
-      }
-      throw error;
-    }
-    // Count and heatmap only after the unique submission key was admitted.
-    await DsaProblem.updateOne({ _id: problem._id }, [{ $set: {
-      submissionCount: { $add: [{ $ifNull: ['$submissionCount', 0] }, 1] },
-      lastSubmittedAt: { $max: [{ $ifNull: ['$lastSubmittedAt', sub.submittedAt] }, sub.submittedAt] },
-      ...(sub.difficulty !== 'unknown' ? { difficulty: sub.difficulty, difficultyKnown: true } : {}),
-      ...(sub.status === 'accepted' ? { status: 'solved',
-        solvedAt: { $min: [{ $ifNull: ['$solvedAt', sub.submittedAt] }, sub.submittedAt] },
-      } : {}),
-    } }]);
-    await incrementDailyActivity(userId, sub.submittedAt, 'submission');
-    ingested++;
-    evaluations.add(savedSubmission._id.toString());
-    if (sub.status === 'accepted') {
+        executionTime: sub.runtimeMs ?? null, memoryUsed: sub.memoryKb ?? null, runtimePercentile: sub.runtimePercentile ?? null }], { session });
+      await projectSubmission(userObjId, new Types.ObjectId(problem._id.toString()), sub.submittedAt, session);
+      if (sub.difficulty !== 'unknown') await DsaProblem.updateOne({ _id: problem._id, userId: userObjId }, {
+        $set: { difficulty: sub.difficulty, difficultyKnown: true },
+      }, { session });
+      return { id: savedSubmission._id.toString(), created: true, queue: true };
+    });
+    if (outcome.created) ingested++;
+    if (outcome.queue) evaluations.add(outcome.id);
+    if (outcome.created && sub.status === 'accepted') {
       const { checkChallengeCompletion } = await import('../daily-challenge/daily-challenge.service.js');
       void checkChallengeCompletion(userId, sub.platform, sub.problemExternalId, sub.submittedAt)
         .catch(error => logger.warn('[sync] Challenge completion check failed', { userId, error }));
@@ -74,6 +74,7 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
   // Providers commonly return newest first. Publish only after admitting the
   // whole batch so a fast consumer can see earlier failures before acceptance.
   for (const submissionId of evaluations) await enqueueSubmissionEvaluation(userId, submissionId);
+  if (submissions.length) await cacheManager.invalidateDashboard(userId);
   return ingested;
 }
 
