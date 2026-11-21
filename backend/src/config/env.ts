@@ -127,6 +127,9 @@ export const env = {
   // Unset in production means previews keep the static image.
   PUBLIC_API_URL: getEnvVar('PUBLIC_API_URL', IS_PROD ? '' : `http://localhost:${getEnvVarNumber('PORT', 3001)}`),
 
+  // Custom portfolio domains must be a CNAME for this edge hostname.
+  CUSTOM_DOMAIN_CNAME_TARGET: getEnvVar('CUSTOM_DOMAIN_CNAME_TARGET', 'cname.devtrack.sh'),
+
   // Reverse proxy hops (Render / nginx = 1). Unset = not behind a proxy.
   TRUST_PROXY: parseTrustProxy(process.env.TRUST_PROXY),
 

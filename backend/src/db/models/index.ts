@@ -70,6 +70,7 @@ export { FocusSession, type IFocusSession } from './focusSession.model.js';
 // Verified Proof-of-Work Models
 export { PublicProfile, type IPublicProfile } from './publicProfile.model.js';
 export { UsernameReservation, type IUsernameReservation } from './usernameReservation.model.js';
+export { CustomDomain, CUSTOM_DOMAIN_STATUSES, type ICustomDomain, type CustomDomainStatus } from './customDomain.model.js';
 export { VerifiedProject, type IVerifiedProject } from './verifiedProject.model.js';
 export {
   ProfileAuditLog,

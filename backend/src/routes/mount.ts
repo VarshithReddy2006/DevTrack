@@ -2,7 +2,7 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose the v2 revision, resume revision, portfolio, push, readiness score, roadmap, and search APIs through shared
+  // Expose the v2 revision, resume revision, portfolio (incl. custom domains), push, readiness score, roadmap, and search APIs through shared
   // middleware, including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
     const quests = ((req.method === 'GET' || req.method === 'HEAD') && /^\/quests\/?$/i.test(req.path)) || (req.method === 'POST' && /^\/quests\/[^/]+\/claim\/?$/i.test(req.path));
@@ -16,6 +16,8 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const pushSubscription = req.method === 'POST' && /^\/notifications\/(subscribe|unsubscribe)\/?$/i.test(req.path);
     const portfolio = ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/[^/]+(\/dossier\.pdf)?\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/portfolio\/[^/]+\/dossier\/token\/?$/i.test(req.path));
+    const customDomain = (req.method === 'POST' && /^\/portfolio\/custom-domain(\/verify)?\/?$/i.test(req.path))
+      || ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/custom-domain\/status\/?$/i.test(req.path));
     const readinessScore = (req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/score\/?$/i.test(req.path);
     const readinessZkp = /^\/readiness\/zkp(\/.*)?$/i.test(req.path);
     const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap\/?$/i.test(req.path))
@@ -24,7 +26,7 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const search = (req.method === 'GET' || req.method === 'HEAD') && /^\/search\/?$/i.test(req.path);
     const interview = /^\/interview\/[^/]+\/(audio(\/(chunk|status))?|webrtc\/signal)\/?$/i.test(req.path);
     const privacy = /^\/privacy(\/.*)?$/i.test(req.path);
-    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap || search || interview || privacy ? routes(req, res, next) : next();
+    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || customDomain || readinessScore || readinessZkp || roadmap || search || interview || privacy ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

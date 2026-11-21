@@ -357,6 +357,12 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
         case 'submission_archive':
           await (await import('../../modules/dsa/submissionArchive.worker.js')).handleSubmissionArchiveJob();
           break;
+        case 'verify_custom_domain':
+          if (job.data.domainId) await (await import('../../modules/profile/customDomainVerifier.worker.js')).verifyCustomDomain(job.data.domainId);
+          break;
+        case 'audit_custom_domains':
+          await (await import('../../modules/profile/customDomainVerifier.worker.js')).auditCustomDomains();
+          break;
         default:
           logger.warn('[maintenance] Unknown task type', { task });
       }
@@ -577,6 +583,18 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
       jobId: 'maintenance-audit-public-profiles',
       attempts: 3,
       backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
+    }
+  );
+
+  // Re-check custom portfolio domains weekly, Sundays 04:00 UTC; missing records suspend the domain.
+  await _queue.add(
+    'audit-custom-domains',
+    { task: 'audit_custom_domains' },
+    {
+      repeat: { pattern: '0 4 * * 0', tz: 'UTC' },
+      jobId: 'maintenance-audit-custom-domains',
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 10 },
     }

@@ -32,6 +32,7 @@ import {
   NotificationPreference,
   CareerIntent,
   CareerRoadmap,
+  CustomDomain,
 } from '../../db/models/index.js';
 import { runInTransaction } from '../../db/transaction.js';
 import { logger } from '../../shared/logger.js';
@@ -125,6 +126,7 @@ export async function executeAccountErasure(
       ['NotificationPreference', NotificationPreference, { userId: String(userId) }],
       ['CareerIntent', CareerIntent, userFilter],
       ['CareerRoadmap', CareerRoadmap, userFilter],
+      ['CustomDomain', CustomDomain, userFilter],
     ];
 
     if (mongoose.models.InterviewSession) {
