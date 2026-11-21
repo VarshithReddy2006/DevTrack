@@ -64,3 +64,4 @@ export { FeedbackReportModel, type IFeedbackReport } from './feedbackReport.mode
 export { FeatureFlag, type IFeatureFlag } from './featureFlag.model.js';
 export { FeatureFlagAudit, type IFeatureFlagAudit, type FeatureFlagChange } from './featureFlagAudit.model.js';
 export { RevisionCard, type IRevisionCard, type ProblemDifficulty } from './revisionCard.model.js';
+export { VerifiedClaimProof, type IVerifiedClaimProof, type IZkpProofPayload, type IZkpPublicSignals } from './verifiedClaimProof.model.js';
