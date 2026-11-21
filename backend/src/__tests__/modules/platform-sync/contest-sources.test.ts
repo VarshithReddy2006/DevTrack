@@ -183,13 +183,13 @@ describe('Contest Ingestion Adapters & Circuit Breaker', () => {
               <table>
                 <tbody>
                   <tr>
-                    <td class="text-center"><a href="http://timeanddate.com">2026-11-20 21:00:00+0900</a></td>
+                    <td class="text-center"><a href="http://timeanddate.com">2099-11-20 21:00:00+0900</a></td>
                     <td><span class="user-blue">◉</span> <a href="/contests/abc380">AtCoder Beginner Contest 380</a></td>
                     <td class="text-center">01:40</td>
                     <td class="text-center">~ 1999</td>
                   </tr>
                   <tr>
-                    <td class="text-center"><a href="http://timeanddate.com">2026-11-21 21:00:00+0900</a></td>
+                    <td class="text-center"><a href="http://timeanddate.com">2099-11-21 21:00:00+0900</a></td>
                     <td><span class="user-orange">◉</span> <a href="/contests/arc188">AtCoder Regular Contest 188</a></td>
                     <td class="text-center">02:00</td>
                     <td class="text-center">1200 ~ 2799</td>

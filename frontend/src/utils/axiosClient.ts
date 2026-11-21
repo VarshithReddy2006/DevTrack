@@ -11,6 +11,7 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from 'axios';
 import type { ApiError } from '../types/api.types';
+import { reportServiceUnavailable } from '../store/maintenanceStore';
 import { envConfig } from './envCheck';
 
 // Add Clerk to Window interface
@@ -85,6 +86,12 @@ axiosClient.interceptors.response.use(
       } catch {
         // ignore
       }
+    }
+
+    // 503 with Retry-After means planned maintenance; show the maintenance screen.
+    // Other 503s (for example an unconfigured optional feature) stay ordinary errors.
+    if (error.response?.status === 503) {
+      reportServiceUnavailable(error.response.headers?.['retry-after']);
     }
 
     // Normalize error for consumers
