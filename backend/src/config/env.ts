@@ -77,6 +77,14 @@ export const env = {
 
   // Platform Tokens
   GITHUB_TOKEN: getEnvVar('GITHUB_TOKEN', ''),
+  GITHUB_TOKENS: (process.env.GITHUB_TOKENS || process.env.GITHUB_TOKEN || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean),
+  LEETCODE_TOKENS: (process.env.LEETCODE_TOKENS || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean),
 
   // CORS
   CORS_ORIGIN: getCorsOrigin(),
