@@ -41,10 +41,22 @@ export function originMatches(origin: string, allowed: string[]): boolean {
   if (!o) return false;
   const host = new URL(o);
   for (const entry of allowed) {
-    const star = entry.match(/^(https?):\/\/\*\.(.+)$/i);
+    const star = entry.match(/^(https?):\/\/\*\.([^:/]+)(?::(\d+))?$/i);
     if (star) {
+      const starProto = `${star[1].toLowerCase()}:`;
+      const starDomain = star[2].toLowerCase();
+      const starPort = star[3] ?? '';
+
+      // Check protocol
+      if (host.protocol !== starProto) continue;
+
+      // Check port
+      if (host.port !== starPort) continue;
+
       // *.example.com matches a.example.com and a.b.example.com, never example.com itself or evilexample.com.
-      if (host.protocol === `${star[1].toLowerCase()}:` && host.hostname.endsWith(`.${star[2].toLowerCase()}`)) return true;
+      if (host.hostname.endsWith(`.${starDomain}`) && host.hostname.length > starDomain.length + 1) {
+        return true;
+      }
       continue;
     }
     if (normalizeOrigin(entry) === o) return true;
@@ -61,13 +73,15 @@ export function originValidation(options: OriginValidationOptions): RequestHandl
   const exempt = options.exemptPathPrefixes ?? DEFAULT_EXEMPT_PREFIXES;
 
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (!STATE_CHANGING.has(req.method.toUpperCase())) return next();
+    const method = req.method ? req.method.toUpperCase() : '';
+    if (!STATE_CHANGING.has(method)) return next();
     const path = req.originalUrl ?? req.url ?? '';
     if (exempt.some((p) => path.startsWith(p))) return next();
 
     const origin = header(req, 'origin');
     const referer = header(req, 'referer');
-    const site = header(req, 'sec-fetch-site')?.toLowerCase();
+    const rawSite = header(req, 'sec-fetch-site');
+    const site = rawSite ? rawSite.toLowerCase().trim() : undefined;
 
     const reject = (reason: string): void => {
       try {

@@ -25,3 +25,11 @@ export {
   type IdempotencyOptions,
   type StoredIdempotencyPayload,
 } from './idempotency.js';
+
+export {
+  originValidation,
+  originMatches,
+  parseAllowedOrigins,
+  DEFAULT_EXEMPT_PREFIXES,
+  type OriginValidationOptions,
+} from './originValidation.js';
