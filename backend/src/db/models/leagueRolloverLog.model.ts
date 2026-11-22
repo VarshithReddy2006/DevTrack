@@ -49,6 +49,7 @@ export interface ILeagueRolloverLog extends Document {
   startedAt: Date;
   completedAt?: Date | null;
   compensatedAt?: Date | null;
+  notifiedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -95,6 +96,7 @@ const leagueRolloverLogSchema = new Schema<ILeagueRolloverLog>(
     startedAt: { type: Date, required: true },
     completedAt: { type: Date, default: null },
     compensatedAt: { type: Date, default: null },
+    notifiedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
