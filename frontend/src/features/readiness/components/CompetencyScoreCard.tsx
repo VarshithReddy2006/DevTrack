@@ -5,6 +5,7 @@ export interface CompetencyDimension {
   label: string;
   /** Candidate score on a 0-100 scale. */
   score: number;
+  unavailable?: boolean;
   /** Target role benchmark on a 0-100 scale. */
   target: number;
   percentile?: number;
@@ -29,7 +30,7 @@ export const CompetencyScoreCard: React.FC<Props> = ({ dimension, className = ''
     >
       <p className="font-semibold">{label}</p>
       <p className="mt-1">
-        Score {Math.round(score)}/100 <span className="text-slate-400">({deltaText})</span>
+        Score {dimension.unavailable ? 'Unknown' : `${Math.round(score)}/100`} <span className="text-slate-400">({dimension.unavailable ? 'no evidence' : deltaText})</span>
       </p>
       {percentile !== undefined && <p className="text-slate-400">Percentile {Math.round(percentile)}</p>}
       {gap && <p className="mt-1 text-slate-300">Gap: {gap}</p>}
