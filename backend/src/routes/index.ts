@@ -38,6 +38,7 @@ import { bulletRewriteRoutes } from '../modules/resume/bulletRewrite.routes.js';
 import { bulletRevisionRoutes } from '../modules/resume/resume.routes.js';
 import { leaguesRoutes } from '../modules/leagues/index.js';
 import { aiQuotaRoutes } from '../modules/ai/quota.routes.js';
+import { searchRoutes } from '../modules/search/index.js';
 import { rateLimiters } from '../middleware/rateLimitAdvanced.js';
 
 const router = Router();
@@ -105,5 +106,6 @@ router.use('/revision', revisionRoutes);
 router.use('/leagues', leaguesRoutes);
 router.use('/quests', questRoutes);
 router.use('/ai', rateLimiters.ai, aiQuotaRoutes);
+router.use('/search', searchRoutes);
 
 export default router;
