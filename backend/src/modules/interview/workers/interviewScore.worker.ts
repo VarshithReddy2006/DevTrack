@@ -42,6 +42,7 @@ import {
   TURN_REPLY_TEMPERATURE,
   buildTurnReplyPrompt,
 } from '../prompts/turnReply.prompt.js';
+import { speculativePrefetchService } from '../speculativePrefetch.service.js';
 import {
   CHECKLIST_SCORER_MODEL,
   CHECKLIST_SCORER_VERSION,
@@ -223,34 +224,55 @@ export async function processInterviewScoreJob(
   let promptVersion = CHECKLIST_SCORER_VERSION;
 
   if (!fallbackReason) {
-    const reply = buildTurnReplyPrompt({
-      role: session.role,
-      turnIndex: data.turnIndex,
-      totalTurns: session.totalTurns,
-      question: turn.question,
-      answer,
-      history: session.turns
-        .slice(0, data.turnIndex)
-        .flatMap((earlier) => (earlier.answer ? [{ prompt: earlier.question.prompt, answer: earlier.answer }] : [])),
-    });
-    let seq = 0;
-    const streamed = await runCompletion(
-      deps,
-      session,
-      { prompt: reply.prompt, systemPrompt: reply.systemPrompt, temperature: TURN_REPLY_TEMPERATURE, maxTokens: TURN_REPLY_MAX_TOKENS },
-      (delta) => {
-        events.turnDelta(session.userId, {
-          sessionId: session.id, turnIndex: data.turnIndex, stateVersion: data.stateVersion, delta, seq: seq++,
-        });
-        deltas++;
-      },
-    );
-    if (streamed.ok) {
-      feedback = streamed.content;
-      model = streamed.model;
-      promptVersion = TURN_REPLY_PROMPT_VERSION;
+    // Check speculative prefetch cache for instant (< 100ms) branch delivery
+    const prefetched = await speculativePrefetchService.matchOrFallback(session.id, data.turnIndex, answer);
+    if (prefetched.matched && prefetched.branch) {
+      feedback = prefetched.branch.feedback;
+      model = 'speculative-prefetch-v1';
+      promptVersion = 'speculative-branch-hit';
+      events.turnDelta(session.userId, {
+        sessionId: session.id, turnIndex: data.turnIndex, stateVersion: data.stateVersion, delta: feedback, seq: 0,
+      });
+      deltas++;
     } else {
-      fallbackReason = streamed.reason;
+      const reply = buildTurnReplyPrompt({
+        role: session.role,
+        turnIndex: data.turnIndex,
+        totalTurns: session.totalTurns,
+        question: turn.question,
+        answer,
+        history: session.turns
+          .slice(0, data.turnIndex)
+          .flatMap((earlier) => (earlier.answer ? [{ prompt: earlier.question.prompt, answer: earlier.answer }] : [])),
+      });
+      let seq = 0;
+      const streamed = await runCompletion(
+        deps,
+        session,
+        { prompt: reply.prompt, systemPrompt: reply.systemPrompt, temperature: TURN_REPLY_TEMPERATURE, maxTokens: TURN_REPLY_MAX_TOKENS },
+        (delta) => {
+          events.turnDelta(session.userId, {
+            sessionId: session.id, turnIndex: data.turnIndex, stateVersion: data.stateVersion, delta, seq: seq++,
+          });
+          deltas++;
+        },
+      );
+      if (streamed.ok) {
+        feedback = streamed.content;
+        model = streamed.model;
+        promptVersion = TURN_REPLY_PROMPT_VERSION;
+      } else {
+        fallbackReason = streamed.reason;
+      }
+    }
+
+    // Prefetch next turn branch candidates in background
+    if (!isFinal && session.turns[data.turnIndex + 1]) {
+      speculativePrefetchService.registerPrefetch(
+        session.id,
+        data.turnIndex + 1,
+        session.turns[data.turnIndex + 1].question.prompt
+      );
     }
   }
 

@@ -4,6 +4,7 @@
 // browser token by token, so it is free text (not JSON) and kept short.
 import type { InterviewRole, Question } from '../questionBank/index.js';
 import { cleanUntrustedText, fence } from './promptInput.js';
+import { contextCompressorService } from '../contextCompressor.service.js';
 
 /** Stored next to the reply so a stored answer can be traced to the wording that produced it. */
 export const TURN_REPLY_PROMPT_VERSION = 'turn-reply-v1';
@@ -50,9 +51,9 @@ export function buildTurnReplyPrompt(ctx: TurnReplyContext): BuiltPrompt {
     'Do not promise a job, a hire decision or a salary.',
   ].join('\n');
 
-  const history = ctx.history
-    .map((turn, index) => `Earlier question ${index + 1}: ${turn.prompt}\n${fence('candidate_answer', cleanUntrustedText(turn.answer, 1_500))}`)
-    .join('\n\n');
+  // Use extractive dialogue context compressor when turns exceed 3
+  const optimized = contextCompressorService.buildOptimizedTurnContext(ctx.history, ctx.turnIndex);
+  const history = optimized.formattedHistory;
 
   const prompt = [
     `Question ${ctx.turnIndex + 1} of ${ctx.totalTurns}:`,
