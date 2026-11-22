@@ -13,6 +13,7 @@ import { QueueNames } from '../../../shared/jobs/types.js';
 import { disconnectRedis, getRedisClient, getRedisHealth } from '../../../shared/redis/index.js';
 import { eventBus } from '../../../shared/sse/index.js';
 import { workerDefinitions } from '../../../workers/worker-runtime.js';
+import { scanPdf } from './scanned-resume-fixture.js';
 
 vi.unmock('bullmq');
 vi.unmock('ioredis');
@@ -56,15 +57,16 @@ describe.skipIf(!redisUrl)('resume upload with real BullMQ workers', () => {
     }
   });
 
-  async function submitResume() {
+  async function submitResume(pdf?: Buffer) {
     const directory = await fs.mkdtemp(path.join(tmpdir(), 'resume-stage-'));
-    const filePath = path.join(directory, 'resume.txt');
+    const filename = pdf ? 'resume.pdf' : 'resume.txt';
+    const filePath = path.join(directory, filename);
     const text = 'Sam Engineer\nSummary: Software engineer\nExperience: Built and tested a service.\nSkills: TypeScript, Docker\nEducation: Computer Science';
     try {
-      await fs.writeFile(filePath, text);
+      await fs.writeFile(filePath, pdf ?? text);
       return await upload.processUpload({
-        path: filePath, filename: 'resume.txt', originalname: 'resume.txt',
-        mimetype: 'text/plain', size: Buffer.byteLength(text),
+        path: filePath, filename, originalname: filename,
+        mimetype: pdf ? 'application/pdf' : 'text/plain', size: pdf?.length ?? Buffer.byteLength(text),
       } as Express.Multer.File, new Types.ObjectId().toString());
     } finally {
       await fs.unlink(filePath).catch(() => {});
@@ -86,6 +88,21 @@ describe.skipIf(!redisUrl)('resume upload with real BullMQ workers', () => {
       provider: 'openai', model: 'test-provider', tokensUsed: 0, latency: 0, cached: false, fallbackTriggered: false,
     }));
   }
+
+  it.runIf(process.env.RUN_RESUME_OCR_INTEGRATION === '1')('hands scanned PDF text to ATS through the upload queue', async () => {
+    mockProvider();
+    const result = await submitResume(scanPdf([[[
+      'Sam Engineer', 'Professional Summary', 'Built reliable billing services',
+      'Skills', 'TypeScript and Docker',
+    ]]]));
+    await vi.waitFor(async () => {
+      const session = await ResumeSession.findOne({ sessionId: result.sessionId }).lean();
+      expect(session?.atsState.analyzed).toBe(true);
+      expect(session?.parsedContent.text).toContain('Built reliable billing services');
+      expect(session?.runtimeEvents.find(event => event.metadata?.event === 'resume.ocr_completed'))
+        .toMatchObject({ stage: 'PARSING', metadata: { ocrPages: 1 } });
+    }, { timeout: 12_000 });
+  });
 
   it.each([false, true])('dispatches all stages and persists provider diagnostics (invalid output: %s)', async malformed => {
     mockProvider(malformed);

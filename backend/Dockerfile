@@ -28,8 +28,8 @@ FROM node:22-alpine AS runner
 # Set Node environment to production
 ENV NODE_ENV=production
 
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+# Install init and local English OCR tools for the resume upload worker.
+RUN apk add --no-cache dumb-init poppler-utils tesseract-ocr tesseract-ocr-data-eng
 
 # Create a non-root user to run the app
 RUN addgroup -g 1001 -S nodejs && \
