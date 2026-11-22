@@ -55,7 +55,7 @@ export const ReadinessSpiderChart: React.FC<Props> = ({
   const [active, setActive] = useState<number | null>(null);
   const count = dimensions.length;
   const center = size / 2;
-  const radius = size / 2 - 56;
+  const radius = size / 2 - 80;
 
   if (count < 3) {
     return (
@@ -68,7 +68,7 @@ export const ReadinessSpiderChart: React.FC<Props> = ({
   const scores = dimensions.map((d) => clamp(d.score));
   const targets = dimensions.map((d) => clamp(d.target));
   const summary = dimensions
-    .map((d) => `${d.label} ${Math.round(clamp(d.score))} of 100, target ${Math.round(clamp(d.target))}`)
+    .map((d) => `${d.label} ${d.unavailable ? 'Unknown' : Math.round(clamp(d.score)) + ' of 100'}, target ${Math.round(clamp(d.target))}`)
     .join('; ');
 
   return (
@@ -141,7 +141,7 @@ export const ReadinessSpiderChart: React.FC<Props> = ({
               r={active === i ? 6 : 4}
               fill="rgb(99 102 241)"
               tabIndex={0}
-              aria-label={`${d.label}: ${Math.round(clamp(d.score))} of 100`}
+              aria-label={`${d.label}: ${d.unavailable ? 'Unknown' : Math.round(clamp(d.score)) + ' of 100'}`}
               onMouseEnter={() => setActive(i)}
               onMouseLeave={() => setActive(null)}
               onFocus={() => setActive(i)}
@@ -175,7 +175,7 @@ export const ReadinessSpiderChart: React.FC<Props> = ({
           {dimensions.map((d) => (
             <tr key={d.key}>
               <th scope="row">{d.label}</th>
-              <td>{Math.round(clamp(d.score))}</td>
+              <td>{d.unavailable ? 'Unknown' : Math.round(clamp(d.score))}</td>
               <td>{Math.round(clamp(d.target))}</td>
               <td>{d.percentile !== undefined ? Math.round(d.percentile) : 'n/a'}</td>
               <td>{d.gap ?? 'n/a'}</td>

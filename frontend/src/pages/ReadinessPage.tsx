@@ -1,3 +1,4 @@
+import { PlacementRadarPanel } from '../features/readiness/components/PlacementRadarPanel';
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
@@ -168,6 +169,7 @@ const ReadinessPage: React.FC = () => {
       >
         {/* 1. READINESS HERO */}
         <ReadinessHero data={data} />
+        <PlacementRadarPanel />
 
         {/* 2. CORE INTELLIGENCE DOMAINS */}
         <div>
