@@ -11,6 +11,7 @@ import { configureTrustProxy } from './config/trustProxy.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import { requestContextMiddleware } from './middleware/requestContext.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
+import { originValidation, originMatches } from './middleware/originValidation.js';
 import { tracingMiddleware } from './shared/tracing/tracing.js';
 import { authMiddleware, adminMiddleware, type AuthenticatedRequest } from './middleware/auth.js';
 import { requestMetricsMiddleware, getMetricsSnapshot, getEndpointLatencies } from './shared/requestMetrics.js';
@@ -64,11 +65,20 @@ export async function createApp(): Promise<express.Express> {
   app.use(securityHeaders({ isProd: env.IS_PROD }));
 
   app.use(cors({
-    origin: env.CORS_ORIGIN,
+    origin: (origin, callback) => {
+      if (!origin || originMatches(origin, env.ALLOWED_ORIGINS)) {
+        return callback(null, true);
+      }
+      return callback(null, false);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'traceparent', 'Idempotency-Key'],
     exposedHeaders: ['Content-Length', 'X-Request-ID', 'X-Trace-ID', 'X-Span-ID', 'Retry-After', 'Idempotent-Replayed'],
+  }));
+
+  app.use(originValidation({
+    allowedOrigins: env.ALLOWED_ORIGINS,
   }));
 
   app.use(morgan(':method :status :response-time ms'));

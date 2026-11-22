@@ -52,6 +52,31 @@ function getCorsOrigin(): string {
 
 const IS_PROD = NODE_ENV === 'production';
 
+function getAllowedOrigins(): string[] {
+  const corsOrigin = getCorsOrigin();
+  const raw = process.env.ALLOWED_ORIGINS;
+  if (raw !== undefined && raw.trim() !== '') {
+    const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    if (IS_PROD) {
+      for (const origin of list) {
+        const star = origin.match(/^(https?):\/\/\*\.([^:/]+)(?::(\d+))?$/i);
+        if (star) {
+          if (star[1].toLowerCase() !== 'https') {
+            throw new Error(`ALLOWED_ORIGINS wildcard must use HTTPS in production. Got: ${origin}`);
+          }
+        } else {
+          const isLocalhost = origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1');
+          if (!origin.startsWith('https://') && !isLocalhost) {
+            throw new Error(`ALLOWED_ORIGINS must use HTTPS in production. Got: ${origin}`);
+          }
+        }
+      }
+    }
+    return list;
+  }
+  return [corsOrigin];
+}
+
 // ---------------------------------------------------------------------------
 // In production, critical secrets MUST be explicitly provided.
 // Dev defaults are only used in development/test environments.
@@ -88,6 +113,7 @@ export const env = {
 
   // CORS
   CORS_ORIGIN: getCorsOrigin(),
+  ALLOWED_ORIGINS: getAllowedOrigins(),
 
   // Public origin of this API, used for absolute og:image links in shared portfolio previews.
   // Unset in production means previews keep the static image.
