@@ -267,6 +267,7 @@ export type SseEventType =
   | 'quest.claimed'
   | 'streak_updated'
   | 'league_week_finalized'
+  | 'league.rollover_completed'
   // AI mock interview studio
   | 'interview.turn.delta'
   | 'interview.session.completed'
