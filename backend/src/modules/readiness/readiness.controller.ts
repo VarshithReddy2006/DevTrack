@@ -1,3 +1,4 @@
+import { getPlacementRadar } from './placementRadar.service.js';
 import { z } from 'zod';
 import { CareerIntentService } from './services/CareerIntentService.js';
 import { ReadinessOrchestratorService } from './engine/ReadinessOrchestratorService.js';
@@ -28,6 +29,10 @@ async function readinessInputsFor(userId: string) {
 }
 
 export const ReadinessController = {
+  getPlacementRadar: withAuth('[readiness]', 'get placement radar', async (userId, _req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    ApiResponse.success(res, await getPlacementRadar(userId));
+  }),
   getScore: withAuth('[readiness]', 'get readiness score', async (userId, _req, res) => {
     res.set('Cache-Control', 'private, no-store');
     ApiResponse.success(res, await getReadinessScore(userId));

@@ -12,6 +12,7 @@ router.use('/zkp', zkpRoutes);
 
 router.use(authMiddleware);
 
+router.get('/placement-radar', ReadinessController.getPlacementRadar);
 router.get('/score', ReadinessController.getScore);
 router.get('/snapshot', ReadinessController.getSnapshot);
 router.get('/domain/:domain', ReadinessController.getDomainIntelligence);

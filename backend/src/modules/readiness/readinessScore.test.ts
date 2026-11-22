@@ -194,6 +194,15 @@ describe('HTTP routing and compatibility', () => {
   });
   afterEach(() => { server.closeIdleConnections(); });
   afterAll(async () => { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
+  it('serves an owner-scoped radar and ignores a foreign query identity', async () => {
+    const now = new Date();
+    await ReadinessDsa.create({userId:OTHER,computedAt:now,topics:[{name:'array',masteryLevel:99,evidenceCoverage:100,recency:now}]});
+    await ReadinessDsa.create({userId:OWNER,computedAt:now,topics:[{name:'array',masteryLevel:30,evidenceCoverage:100,recency:now}]});
+    expect((await fetch(`${url}/api/v1/readiness/placement-radar`)).status).toBe(401);
+    const response=await fetch(`${url}/api/v1/readiness/placement-radar?userId=${OTHER}`,{headers:{authorization:`Bearer ${OWNER}`}});
+    expect(response.status).toBe(200);expect(response.headers.get('cache-control')).toBe('private, no-store');
+    const {data}=await response.json();expect(data.axes[0].score).toBe(30);expect(data.axes[4].score).toBeNull();expect(data.plan).toHaveLength(7);
+  });
   it('requires auth and serves an owner-scoped private v2 score; keeps the old snapshot contract', async () => {
     expect((await fetch(`${url}/api/v2/readiness/score`)).status).toBe(401);
     const headers = { authorization: `Bearer ${OWNER}` };
