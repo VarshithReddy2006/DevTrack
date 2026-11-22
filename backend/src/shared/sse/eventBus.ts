@@ -589,16 +589,22 @@ class EventBus extends EventEmitter {
       throw new Error('Server at capacity');
     }
 
+    const isFirstClientForUser = !Array.from(this.clients.values()).some(
+      (c) => c.userId === client.userId
+    );
+
     this.clients.set(client.id, client);
     this.totalConnections++;
 
-    // Shard routing & activation
-    void this.streamAdapter.registerUser(client.userId).catch((err) => {
-      logger.warn('[sse] Stream adapter shard activation error', {
-        userId: client.userId,
-        error: err instanceof Error ? err.message : String(err),
+    // Shard routing & activation (only register shard on first connection for user on this pod)
+    if (isFirstClientForUser) {
+      void this.streamAdapter.registerUser(client.userId).catch((err) => {
+        logger.warn('[sse] Stream adapter shard activation error', {
+          userId: client.userId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
-    });
+    }
 
     logger.info('[sse] Client connected', {
       event: 'sse_client_connected',
