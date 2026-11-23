@@ -112,32 +112,69 @@ export class RolloverSagaOrchestrator {
       result.assigned = assigned;
 
       // ── Phase 4: User Notification ────────────────────────────────────────
-      for (const s of finalizedNow) {
+      const unnotifiedStandings = await LeagueStanding.find({
+        weekKey,
+        status: 'finalized',
+        $or: [{ notifiedAt: null }, { notifiedAt: { $exists: false } }],
+      })
+        .select('userId division rank points cohortSize outcome nextDivision')
+        .lean<Array<{
+          userId: Types.ObjectId;
+          division: LeagueDivision;
+          rank: number | null;
+          points: number;
+          cohortSize: number | null;
+          outcome: LeagueOutcome | null;
+          nextDivision: LeagueDivision | null;
+        }>>();
+
+      const notifiedIds: Types.ObjectId[] = [];
+
+      for (const s of unnotifiedStandings) {
         try {
-          await this.notify(s.userId, {
+          await this.notify(s.userId.toString(), {
             weekKey,
             division: s.division,
-            rank: s.rank,
-            points: s.points,
-            cohortSize: s.cohortSize,
-            outcome: s.outcome,
-            nextDivision: s.nextDivision,
+            rank: s.rank ?? 1,
+            points: s.points ?? 0,
+            cohortSize: s.cohortSize ?? 1,
+            outcome: s.outcome ?? 'stayed',
+            nextDivision: s.nextDivision ?? s.division,
           });
+          notifiedIds.push(s.userId);
         } catch (error) {
           logger.warn('[saga] User notification failed', {
             event: 'league_week_finalized_notify_failed',
             weekKey,
-            userId: s.userId,
+            userId: s.userId.toString(),
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
 
+      if (notifiedIds.length > 0) {
+        for (let i = 0; i < notifiedIds.length; i += WRITE_BATCH) {
+          const batch = notifiedIds.slice(i, i + WRITE_BATCH);
+          await LeagueStanding.updateMany(
+            { weekKey, userId: { $in: batch } },
+            { $set: { notifiedAt: this.now } },
+          );
+        }
+        await LeagueRolloverLog.updateMany(
+          { weekKey, status: 'committed' },
+          { $set: { notifiedAt: this.now } },
+        );
+      }
+
       // ── Phase 5: Completion Event Emission ────────────────────────────────
+      const totalFinalized = await LeagueStanding.countDocuments({
+        weekKey,
+        status: 'finalized',
+      });
       eventBus.emit('league.rollover_completed', {
         weekKey,
         upcomingWeekKey,
-        totalFinalized: result.finalized,
+        totalFinalized,
         totalAssigned: result.assigned,
         timestamp: this.now.toISOString(),
       });
@@ -147,14 +184,14 @@ export class RolloverSagaOrchestrator {
         payload: {
           weekKey,
           upcomingWeekKey,
-          totalFinalized: result.finalized,
+          totalFinalized,
           totalAssigned: result.assigned,
         },
       });
       logger.info('[saga] Weekly league rollover completed successfully', {
         event: 'league_rollover_completed',
         weekKey,
-        finalized: result.finalized,
+        finalized: totalFinalized,
         assigned: result.assigned,
       });
     } else {
@@ -181,11 +218,20 @@ export class RolloverSagaOrchestrator {
       .select('userId nextDivision')
       .lean<Array<{ userId: Types.ObjectId; nextDivision: LeagueDivision }>>();
 
-    const optedIn = new Set(
-      (await UserSettings.find({ userId: { $in: finished.map(f => f.userId) }, 'leagues.participate': true })
+    const optedIn = new Set<string>();
+    const finishedUserIds = finished.map((f) => f.userId);
+    for (let i = 0; i < finishedUserIds.length; i += WRITE_BATCH) {
+      const userBatch = finishedUserIds.slice(i, i + WRITE_BATCH);
+      const settings = await UserSettings.find({
+        userId: { $in: userBatch },
+        'leagues.participate': true,
+      })
         .select('userId')
-        .lean<Array<{ userId: Types.ObjectId }>>()).map(s => s.userId.toString()),
-    );
+        .lean<Array<{ userId: Types.ObjectId }>>();
+      for (const s of settings) {
+        optedIn.add(s.userId.toString());
+      }
+    }
 
     const byDivision = new Map<LeagueDivision, string[]>();
     for (const row of finished) {
@@ -233,6 +279,7 @@ export class RolloverSagaOrchestrator {
                   outcome: null,
                   nextDivision: null,
                   finalizedAt: null,
+                  notifiedAt: null,
                 },
               },
               upsert: true,

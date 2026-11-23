@@ -196,6 +196,7 @@ export const sagaCohortSteps: ISagaStep[] = [
               outcome: null,
               nextDivision: null,
               finalizedAt: null,
+              notifiedAt: null,
             },
           },
         );
@@ -216,6 +217,7 @@ export const sagaCohortSteps: ISagaStep[] = [
               outcome: null,
               nextDivision: null,
               finalizedAt: null,
+              notifiedAt: null,
             },
           },
         );

@@ -346,4 +346,66 @@ describe('RolloverSagaOrchestrator — Adversarial Integration Tests', () => {
     const log = await LeagueRolloverLog.findOne({ weekKey: WEEK, division: 'platinum', cohortId: 'c1' });
     expect(log?.status).toBe('in_progress');
   });
+
+  it('partial cohort failure preserves unnotified standings across retries and delivers notifications to all members', async () => {
+    const goldIds = await makeCohort('gold', 'c1', 10);
+    const silverIds = await makeCohort('silver', 'c1', 10);
+
+    const notifiedUsers = new Set<string>();
+    const notifySpy = vi.fn(async (userId: string, _payload: WeekFinalizedPayload) => {
+      notifiedUsers.add(userId);
+    });
+
+    const completedEvents: any[] = [];
+    const eventListener = vi.fn((evt: any) => completedEvents.push(evt));
+    eventBus.on('league.rollover_completed', eventListener);
+
+    // Fail silver cohort during persist_standings on first run
+    const originalBulkWrite = LeagueStanding.bulkWrite.bind(LeagueStanding);
+    let failSilver = true;
+    vi.spyOn(LeagueStanding, 'bulkWrite').mockImplementation(async (ops: any[], options?: any) => {
+      const isSilverFinalize = ops?.some((op: any) =>
+        silverIds.some((sid) => op?.updateOne?.filter?.userId?.toString() === sid) &&
+        op?.updateOne?.update?.$set?.status === 'finalized'
+      );
+      if (failSilver && isSilverFinalize) {
+        failSilver = false;
+        throw new Error('Simulated transient failure on silver cohort');
+      }
+      return originalBulkWrite(ops, options);
+    });
+
+    // Run 1: Gold succeeds, Silver fails -> partial failure, no notifications sent
+    const run1 = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT, notify: notifySpy });
+    expect(run1.compensatedCohorts).toBe(1);
+    expect(run1.finalized).toBe(10); // gold finalized
+    expect(notifiedUsers.size).toBe(0);
+    expect(eventListener).not.toHaveBeenCalled();
+
+    // Restore bulkWrite and run retry
+    vi.restoreAllMocks();
+
+    // Run 2 (retry): Silver succeeds.
+    // Both Gold (finalized in run 1) and Silver (finalized in run 2) must receive notifications!
+    const run2 = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT, notify: notifySpy });
+    expect(run2.compensatedCohorts).toBe(0);
+    expect(run2.finalized).toBe(10); // silver finalized in run 2
+    expect(run2.assigned).toBe(20);
+
+    // All 20 members (10 gold + 10 silver) received notifications
+    expect(notifiedUsers.size).toBe(20);
+    for (const gid of goldIds) {
+      expect(notifiedUsers.has(gid)).toBe(true);
+    }
+    for (const sid of silverIds) {
+      expect(notifiedUsers.has(sid)).toBe(true);
+    }
+
+    // Lifecycle completion event emitted with totalFinalized = 20
+    expect(eventListener).toHaveBeenCalledTimes(1);
+    expect(completedEvents[0].totalFinalized).toBe(20);
+    expect(completedEvents[0].totalAssigned).toBe(20);
+
+    eventBus.off('league.rollover_completed', eventListener);
+  });
 });
