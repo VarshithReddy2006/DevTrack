@@ -83,10 +83,23 @@ describe('period mission generation', () => {
     expect(getMissionPeriod('daily', sunday).key).toBe('daily:2027-01-03');
     expect(getMissionPeriod('daily', new Date(+sunday - DAY_MS)).key).toBe('daily:2027-01-02');
   });
+
+  it('batches user mission generation across active users', async () => {
+    const users = await Promise.all(Array.from({ length: 5 }, (_, i) => User.create({
+      clerkId: `mission_batch_${i}`, username: `batchuser_${i}`,
+      displayName: `Batch User ${i}`, email: `batch_${i}@example.test`,
+      lastActiveAt: new Date(),
+    })));
+    const now = new Date();
+    await generator.generateDailyMissions(now);
+    for (const u of users) {
+      expect(await Mission.countDocuments({ userId: u._id, type: 'daily' })).toBe(3);
+    }
+  });
 });
 
 describe('scheduled mission sweep', () => {
-  it('skips a competing replica and releases only its own lease', async () => {
+  it('skips a competing replica and preserves the period lock on successful completion', async () => {
     const now = new Date('2026-11-12T00:05:00Z');
     let owner: string | undefined;
     redis.set.mockImplementation(async (_key, token: string) => {
@@ -108,12 +121,15 @@ describe('scheduled mission sweep', () => {
     await runScheduledMissionSweep('daily', now);
     expect(daily).toHaveBeenCalledExactlyOnceWith(now);
     expect(redis.set).toHaveBeenCalledWith('missions:scheduler:daily:2026-11-12', owner, 'PX', 900_000, 'NX');
-    owner = 'replacement-token'; // Another replica took over after lease expiry.
     finish();
     await first;
-    expect(redis.eval).toHaveBeenCalledWith(expect.stringContaining("redis.call('GET'"), 1,
-      'missions:scheduler:daily:2026-11-12', expect.not.stringMatching('replacement-token'));
-    expect(owner).toBe('replacement-token');
+    // On success, the lock is preserved across workers throughout its TTL and NOT deleted.
+    expect(redis.eval).not.toHaveBeenCalled();
+    expect(owner).toBeDefined();
+
+    // A competing replica triggering after completion is still blocked by the period lock
+    await runScheduledMissionSweep('daily', now);
+    expect(daily).toHaveBeenCalledTimes(1);
   });
 
   it('releases the weekly lease when generation fails', async () => {
