@@ -408,6 +408,19 @@ export class TokenPoolManager {
       } catch (err) {
         logger.error('[token-pool] Failed to pause platform sync queue', err);
       }
+    } else {
+      this.pausedQueues.add(platform);
+    }
+
+    if (isRedisConfigured()) {
+      try {
+        const redis = getRedisClient();
+        const backpressureKey = `token_pool:backpressure:${platform}`;
+        const ttlSec = Math.max(1, Math.ceil((resetEpochMs - now) / 1000));
+        await redis.set(backpressureKey, String(resetEpochMs), 'EX', ttlSec);
+      } catch (err) {
+        logger.debug('[token-pool] Redis backpressure set error', { error: err });
+      }
     }
 
     // Clear existing timer if any
@@ -454,7 +467,17 @@ export class TokenPoolManager {
       this.resumeTimers.delete(platform);
     }
 
-    if (queue) {
+    if (isRedisConfigured()) {
+      try {
+        const redis = getRedisClient();
+        const backpressureKey = `token_pool:backpressure:${platform}`;
+        await redis.del(backpressureKey);
+      } catch (err) {
+        logger.debug('[token-pool] Redis backpressure del error', { error: err });
+      }
+    }
+
+    if (queue && this.pausedQueues.size === 0) {
       try {
         await queue.resume();
         logger.info('[token-pool] Platform sync queue resumed', {
@@ -464,11 +487,41 @@ export class TokenPoolManager {
       } catch (err) {
         logger.error('[token-pool] Failed to resume platform sync queue', err);
       }
+    } else if (this.pausedQueues.size > 0) {
+      logger.info('[token-pool] Platform sync queue remains paused for other platforms', {
+        resumedPlatform: platform,
+        remainingPausedPlatforms: Array.from(this.pausedQueues),
+      });
     }
   }
 
-  public isQueuePaused(platform: string): boolean {
-    return this.pausedQueues.has(platform);
+  /**
+   * Reconcile paused queue backpressure state from Redis (e.g. after worker restart).
+   */
+  public async syncBackpressureFromRedis(): Promise<void> {
+    if (!isRedisConfigured()) return;
+    try {
+      const redis = getRedisClient();
+      for (const platform of this.pools.keys()) {
+        const backpressureKey = `token_pool:backpressure:${platform}`;
+        const val = await redis.get(backpressureKey);
+        if (val) {
+          const resetEpochMs = parseInt(val, 10);
+          if (!Number.isNaN(resetEpochMs) && resetEpochMs > Date.now()) {
+            await this.triggerQueueBackpressure(platform, resetEpochMs);
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug('[token-pool] syncBackpressureFromRedis failed', { error: err });
+    }
+  }
+
+  public isQueuePaused(platform?: string): boolean {
+    if (platform) {
+      return this.pausedQueues.has(platform);
+    }
+    return this.pausedQueues.size > 0;
   }
 
   public getTokenStatuses(platform: string): TokenStatus[] {

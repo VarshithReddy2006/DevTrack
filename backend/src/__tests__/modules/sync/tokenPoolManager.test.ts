@@ -174,6 +174,38 @@ describe('TokenPoolManager', () => {
       expect(status.remaining).toBe(0);
       expect(status.resetEpochMs).toBeGreaterThan(Date.now());
     });
+
+    it('prevents premature queue resumption when another platform is still rate-limited', async () => {
+      const now = Date.now();
+      manager.registerTokens('github', ['gh-tok']);
+      manager.registerTokens('leetcode', ['lc-tok']);
+
+      // GitHub rate limited for 1 hour
+      await manager.triggerQueueBackpressure('github', now + 3600000);
+      // LeetCode rate limited for 60 seconds
+      await manager.triggerQueueBackpressure('leetcode', now + 60000);
+
+      expect(mockQueue.pause).toHaveBeenCalled();
+      expect(manager.isQueuePaused('github')).toBe(true);
+      expect(manager.isQueuePaused('leetcode')).toBe(true);
+      expect(manager.isQueuePaused()).toBe(true);
+
+      // Advance time by 61 seconds so LeetCode resumes
+      vi.advanceTimersByTime(61000);
+
+      // LeetCode should be unpaused, but GitHub still paused -> queue should NOT resume
+      expect(manager.isQueuePaused('leetcode')).toBe(false);
+      expect(manager.isQueuePaused('github')).toBe(true);
+      expect(mockQueue.resume).not.toHaveBeenCalled();
+
+      // Advance time by another hour so GitHub resumes
+      vi.advanceTimersByTime(3600000);
+
+      // Now all platforms are clear -> queue should resume
+      expect(manager.isQueuePaused('github')).toBe(false);
+      expect(manager.isQueuePaused()).toBe(false);
+      expect(mockQueue.resume).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('Concurrency & Lease Release', () => {
