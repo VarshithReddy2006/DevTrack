@@ -5,11 +5,11 @@
   "routes": [
     {
       "src": "/u/(.*)",
-      "dest": "https://devtrack-backend-la3j.onrender.com/u/$1"
+      "dest": "https://devtrack-x5f5.onrender.com/u/$1"
     },
     {
       "src": "/api/(.*)",
-      "dest": "https://devtrack-backend-la3j.onrender.com/api/$1",
+      "dest": "https://devtrack-x5f5.onrender.com/api/$1",
       "headers": {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
@@ -49,6 +49,6 @@
     }
   ],
   "env": {
-    "VITE_API_BASE_URL": "https://devtrack-backend-la3j.onrender.com/api"
+    "VITE_API_BASE_URL": "https://devtrack-x5f5.onrender.com/api"
   }
 }
