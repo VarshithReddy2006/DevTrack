@@ -45,6 +45,7 @@ import '../../db/models/fineTuneRun.model.js';
 import '../../db/models/focusSession.model.js';
 import '../../db/models/intelligenceRecommendation.model.js';
 import '../../db/models/interviewReport.model.js';
+import '../../db/models/interviewSession.model.js';
 import '../../db/models/jobTarget.model.js';
 import '../../db/models/leagueRolloverLog.model.js';
 import '../../db/models/leagueStanding.model.js';
