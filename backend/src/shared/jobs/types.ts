@@ -157,7 +157,19 @@ export interface DossierRenderJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData;
+export interface InterviewTranscriptionJobData {
+  sessionId: string;
+  userId?: string;
+  audioBase64?: string;
+  durationMs?: number;
+  totalChunks?: number;
+  trimmedLeadingChunks?: number;
+  trimmedTrailingChunks?: number;
+  completedAt?: string;
+  requestId?: string;
+}
+
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData | InterviewTranscriptionJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -184,6 +196,7 @@ export const QueueNames = {
   INTERVIEW_SCORE: 'interview-score',
   INTERVIEW_GUARD: 'interview-guard',
   INTERVIEW_EVALUATE: 'interview-evaluate',
+  INTERVIEW_TRANSCRIPTION: 'interview-transcription',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',

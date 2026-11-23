@@ -5,6 +5,7 @@ import { connectDatabase, disconnectDatabase } from '../db/index.js';
 import { logger } from '../shared/logger.js';
 import { WorkerHealthMonitor } from './WorkerHealthMonitor.js';
 import { startInterviewEvaluateWorker, stopInterviewEvaluateWorker } from '../modules/interview/workers/interviewEvaluate.worker.js';
+import { startInterviewTranscriptionWorker, stopInterviewTranscriptionWorker } from '../modules/interview/workers/interviewTranscription.worker.js';
 import { contextCompressorService } from '../modules/interview/contextCompressor.service.js';
 import {
   speculativePrefetchService,
@@ -129,6 +130,7 @@ export async function startAIWorker(): Promise<void> {
 
   await startInterviewEvaluateWorker();
   await startSpeculativePrefetchWorker();
+  await startInterviewTranscriptionWorker();
 
   isRunning = true;
   logger.info('[worker-ai] AI worker process ready', {
@@ -147,6 +149,7 @@ export async function stopAIWorker(): Promise<void> {
   try {
     await stopInterviewEvaluateWorker();
     await stopSpeculativePrefetchWorker();
+    await stopInterviewTranscriptionWorker();
 
     const healthMonitor = (global as any).healthMonitor;
     if (healthMonitor) {
