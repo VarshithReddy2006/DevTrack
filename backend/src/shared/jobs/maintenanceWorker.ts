@@ -324,6 +324,18 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
         case 'reap_stale_focus_sessions':
           await focusEngine.reapStaleSessions();
           break;
+        case 'data_export':
+          if (job.data.userId) {
+            const { generateAndNotifyDataExport } = await import('../../modules/privacy/dataExport.service.js');
+            await generateAndNotifyDataExport(job.data.userId);
+          }
+          break;
+        case 'account_erasure':
+          if (job.data.userId) {
+            const { executeAccountErasure } = await import('../../modules/privacy/accountErasure.worker.js');
+            await executeAccountErasure(job.data.userId, job.data.options as any);
+          }
+          break;
         default:
           logger.warn('[maintenance] Unknown task type', { task });
       }
