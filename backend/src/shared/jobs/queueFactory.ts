@@ -91,3 +91,8 @@ export function getResumeRecommendationQueue(): Queue {
 export function getResumeReplayQueue(): Queue {
   return getOrCreateQueue(QueueNames.RESUME_REPLAY);
 }
+
+// DSA Execution Queue Getter
+export function getDsaEvalQueue(): Queue {
+  return getOrCreateQueue(QueueNames.DSA_EVAL);
+}
