@@ -253,8 +253,10 @@ describe('ContestHubPage integration', () => {
     });
 
     // Check localStorage
-    const saved = JSON.parse(localStorage.getItem('devtrack_contest_reminders') || '[]');
-    expect(saved).toContain('leetcode:weekly-contest-400');
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem('devtrack_contest_reminders') || '[]');
+      expect(saved).toContain('leetcode:weekly-contest-400');
+    });
   });
 
   it('displays empty state when no contests match and allows resetting filters', async () => {

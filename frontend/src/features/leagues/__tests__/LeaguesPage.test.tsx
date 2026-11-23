@@ -45,7 +45,7 @@ describe('LeaguesPage', () => {
 
   it('fails gracefully when the endpoint is not available and lets the user retry', async () => {
     load.mockRejectedValueOnce(new Error('Request failed with status code 404'));
-    load.mockResolvedValueOnce(makeView());
+    load.mockResolvedValue(makeView());
     renderPage();
 
     expect(await screen.findByText('Request failed with status code 404')).toBeInTheDocument();
@@ -57,7 +57,7 @@ describe('LeaguesPage', () => {
 
   it('joins the league and then shows the cohort', async () => {
     load.mockResolvedValueOnce(idle);
-    load.mockResolvedValueOnce(makeView());
+    load.mockResolvedValue(makeView());
     join.mockResolvedValue({ participating: true });
     renderPage();
 
