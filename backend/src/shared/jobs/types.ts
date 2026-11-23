@@ -175,6 +175,21 @@ export interface DsaEvaluationJobData {
 
 export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData | DsaEvaluationJobData;
 
+export interface ResumeRenderJobData {
+  userId: string;
+  resumeId?: string;
+  resumeData: Record<string, unknown>;
+  options?: {
+    template?: 'classic-academic' | 'modern-tech' | 'minimal-single-column';
+    targetPages?: number;
+    paperSize?: 'a4' | 'us-letter';
+    strictPagination?: boolean;
+    fontSizePt?: number;
+  };
+  exportPath?: string;
+  requestId?: string;
+}
+
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
   CONTEST_REFRESH: 'contest-refresh',
@@ -192,6 +207,7 @@ export const QueueNames = {
   // Render pool (WORKER_TYPE=render)
   OG_RENDER: 'domain-og-render',
   DOSSIER_RENDER: 'dossier-render',
+  RESUME_RENDER: 'resume-render',
 
   // AI pool (WORKER_TYPE=ai): job description parsing, match scoring, interview scoring
   JD_PARSE: 'jd-parse',

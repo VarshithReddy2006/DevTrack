@@ -9,6 +9,8 @@ import { randomBytes } from 'crypto';
 import fs from 'node:fs/promises';
 import path from 'path';
 import { escapeHtml, renderExportPdf } from './renderExportPdf.js';
+import { typstCompilerService } from './typstCompiler.service.js';
+import type { TemplateId } from './latexTemplates.js';
 import type { ExportResumeDTO } from '../dto/index.js';
 import { Document, Packer, Paragraph, HeadingLevel } from 'docx';
 
@@ -25,6 +27,8 @@ export interface IExportOptions {
   resumeProfileId: Types.ObjectId;
   variantId?: string;
   exportType: ExportResumeDTO['exportType'];
+  template?: TemplateId;
+  targetPages?: number;
   includeATSAnalysis?: boolean;
   sessionId?: string;
 }
@@ -122,8 +126,26 @@ export class ResumeExportService {
     const skills = profile.selectedSkills || [];
     const skillList = skills.join(', ') || 'None';
     switch (options.exportType) {
-      case 'pdf':
-        return this.generateProfilePDF(summary, skillList);
+      case 'pdf': {
+        const structuredResume = typstCompilerService.mapProfileToStructuredResume(profile);
+        const result = await typstCompilerService.compileToPdf(structuredResume, {
+          template: options.template ?? 'modern-tech',
+          targetPages: options.targetPages ?? 1,
+        });
+        return result.pdf;
+      }
+      case 'typst': {
+        const structuredResume = typstCompilerService.mapProfileToStructuredResume(profile);
+        return typstCompilerService.generateTypstSource(structuredResume, {
+          template: options.template ?? 'modern-tech',
+        });
+      }
+      case 'latex': {
+        const structuredResume = typstCompilerService.mapProfileToStructuredResume(profile);
+        return typstCompilerService.generateLatexSource(structuredResume, {
+          template: options.template ?? 'modern-tech',
+        });
+      }
       case 'docx':
         return this.generateProfileDOCX(profile);
       case 'txt':
