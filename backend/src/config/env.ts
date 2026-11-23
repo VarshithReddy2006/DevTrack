@@ -36,12 +36,14 @@ const isRender = process.env.RENDER === 'true';
 const defaultEnv = isRender ? 'production' : 'development';
 const NODE_ENV = getEnvVar('NODE_ENV', defaultEnv);
 
+const IS_PROD = NODE_ENV === 'production';
+
 function getCorsOrigin(): string {
-  const origin = getEnvVar('CORS_ORIGIN', 'http://localhost:5173');
-  const isProd = NODE_ENV === 'production';
+  const defaultOrigin = IS_PROD ? 'https://dev-track.app' : 'http://localhost:5173';
+  const origin = getEnvVar('CORS_ORIGIN', defaultOrigin);
 
   // In production, validate it's an HTTPS origin or a localhost / 127.0.0.1 simulation
-  if (isProd) {
+  if (IS_PROD) {
     const isLocalhost = origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1');
     if (!origin.startsWith('https://') && !isLocalhost) {
       throw new Error(`CORS_ORIGIN must use HTTPS in production. Got: ${origin}`);
@@ -50,7 +52,13 @@ function getCorsOrigin(): string {
   return origin;
 }
 
-const IS_PROD = NODE_ENV === 'production';
+const DEFAULT_PRODUCTION_ORIGINS = [
+  'https://dev-track.app',
+  'https://*.dev-track.app',
+  'https://devtrack.sh',
+  'https://*.devtrack.sh',
+  'https://app.devtrack.sh',
+];
 
 function getAllowedOrigins(): string[] {
   const corsOrigin = getCorsOrigin();
@@ -72,9 +80,9 @@ function getAllowedOrigins(): string[] {
         }
       }
     }
-    return list;
+    return Array.from(new Set([...list, corsOrigin]));
   }
-  return [corsOrigin];
+  return IS_PROD ? Array.from(new Set([corsOrigin, ...DEFAULT_PRODUCTION_ORIGINS])) : [corsOrigin];
 }
 
 // ---------------------------------------------------------------------------
