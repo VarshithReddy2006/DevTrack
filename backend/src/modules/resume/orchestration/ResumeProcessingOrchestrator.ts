@@ -204,7 +204,7 @@ export class ResumeProcessingOrchestrator {
         } catch (err) {
           attempt++;
           logger.warn('[ProcessingOrchestrator] Stage execution failed', { attempt, stage: nextStage, error: err });
-          if (attempt >= 3) throw err;
+          if (err instanceof NonRetryableError || attempt >= 3) throw err;
           await new Promise(resolve => setTimeout(resolve, 500 * attempt)); // retry backoff
         }
       }
@@ -238,6 +238,9 @@ export class ResumeProcessingOrchestrator {
         await this.streamProgress(updatedSession, updatedSession.degradedState.degraded ? 'degraded' : 'completed', undefined, undefined, {
           latencyMs: durationMs,
           attemptCount: attempt + 1,
+          ...(nextStage === 'PARSING' && updatedSession.parsedContent.metadata?.ocrPages
+            ? { event: 'resume.ocr_completed', ocrPages: updatedSession.parsedContent.metadata.ocrPages }
+            : {}),
         });
       }
     } catch (error) {
@@ -356,7 +359,9 @@ export class ResumeProcessingOrchestrator {
     );
 
     if (!result.success || !result.document) {
-      throw new Error(result.error || 'Parsing failed');
+      const message = result.error || 'Parsing failed';
+      if (result.retryable === false) throw new NonRetryableError(message);
+      throw new Error(message);
     }
 
     session.parsedContent = {

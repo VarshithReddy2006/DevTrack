@@ -3,6 +3,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { promises as fs } from 'fs';
 import { logger } from '../../../shared/logger.js';
 import { layoutPageToText, type PositionedTextItem } from './pdf-layout.js';
+import { countResumeWords, NonRetryableResumeOcrError, OCR_WORD_THRESHOLD, recognizeResumePdf } from './ocr-fallback.js';
 
 export interface IParsedPDF {
   text: string;
@@ -41,14 +42,37 @@ export class PDFParser {
       try {
         const textResult = await parser.getText();
         const infoResult = await parser.getInfo();
-        const text = await this.applyColumnLayout(dataBuffer, textResult.text, textResult.pages);
+        const pages = infoResult.total || 1;
+        const selectableText = textResult.pages?.length
+          ? textResult.pages.map(page => page.text).join(' ')
+          : textResult.text.replace(/^-- \d+ of \d+ --\s*$/gm, '');
+        const selectableWords = countResumeWords(selectableText);
+        let text = await this.applyColumnLayout(dataBuffer, textResult.text, textResult.pages);
+        let ocrPages: number | undefined;
+
+        if (selectableWords < OCR_WORD_THRESHOLD) {
+          try {
+            const ocr = await recognizeResumePdf(dataBuffer, pages);
+            if (countResumeWords(ocr.text) > selectableWords) {
+              text = ocr.text;
+              ocrPages = ocr.pages;
+            } else if (selectableWords === 0) {
+              throw new NonRetryableResumeOcrError('No readable text was found. Upload a clearer scan or a text-based PDF.');
+            }
+          } catch (error) {
+            if (selectableWords === 0) throw error;
+            // Preserve the existing selectable output if a short PDF cannot be improved by OCR.
+            logger.warn('[PDFParser] OCR did not improve the selectable text');
+          }
+        }
 
         const result: IParsedPDF = {
           text,
-          pages: infoResult.total || 1,
+          pages,
           metadata: {
             info: infoResult.info || {},
             version: '2.0',
+            ...(ocrPages === undefined ? {} : { ocrPages }),
           },
         };
 
@@ -62,6 +86,7 @@ export class PDFParser {
       }
     } catch (error) {
       logger.error('[PDFParser] Error parsing PDF:', error);
+      if (error instanceof NonRetryableResumeOcrError) throw error;
       throw new Error(`PDF parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }

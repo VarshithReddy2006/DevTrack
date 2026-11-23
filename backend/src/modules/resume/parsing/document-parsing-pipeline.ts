@@ -1,5 +1,6 @@
 // src/modules/resume-intelligence/parsing/document-parsing-pipeline.ts
 import { PDFParser } from './pdf-parser.js';
+import { NonRetryableResumeOcrError } from './ocr-fallback.js';
 import { DOCXParser } from './docx-parser.js';
 import { TextParser } from './text-parser.js';
 import { logger } from '../../../shared/logger.js';
@@ -30,6 +31,7 @@ export interface IParsingResult {
   success: boolean;
   document?: IParsedDocument;
   error?: string;
+  retryable?: false;
 }
 
 /**
@@ -101,6 +103,7 @@ export class DocumentParsingPipeline {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown parsing error',
+        ...(error instanceof NonRetryableResumeOcrError ? { retryable: false as const } : {}),
       };
     }
   }
