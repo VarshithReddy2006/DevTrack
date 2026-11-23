@@ -109,6 +109,11 @@ export const env = {
   REDIS_PASSWORD: getEnvVar('REDIS_PASSWORD', ''),
   REDIS_URL: getEnvVar('REDIS_URL', ''),
 
+  // Redis Sentinel for high availability
+  REDIS_SENTINEL_HOSTS: getEnvVar('REDIS_SENTINEL_HOSTS', ''), // Comma-separated host:port pairs
+  REDIS_SENTINEL_MASTER_NAME: getEnvVar('REDIS_SENTINEL_MASTER_NAME', 'mymaster'),
+  REDIS_SENTINEL_PASSWORD: getEnvVar('REDIS_SENTINEL_PASSWORD', ''),
+
   // Beta Controls
   CLOSED_BETA: getEnvVar('CLOSED_BETA', 'false') === 'true',
 
