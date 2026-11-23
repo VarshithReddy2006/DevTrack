@@ -47,7 +47,10 @@ export interface StreakDayItem {
 // ─── Core streak recorder ─────────────────────────────────────────────────────
 
 export async function recordActivity(payload: RecordActivityPayload, options?: { trustedCompletion?: boolean }): Promise<void> {
-  const { userId, streakType, source, activityDate = new Date(), timezone = 'UTC', metadata = {} } = payload;
+  const { userId, streakType, source, activityDate = new Date(), metadata = {} } = payload;
+  const timezone = payload.timezone && payload.timezone !== 'UTC'
+    ? payload.timezone
+    : (await getUserTimezone(userId)) || 'UTC';
   const userObjId = new Types.ObjectId(userId);
 
   // ── Step 1: Normalize date to user's timezone midnight ───────────────────
@@ -337,7 +340,7 @@ function calculateCurrentStreak(
   // Group by date
   const dateMap = new Map<string, number>();
   for (const log of logs) {
-    const dateKey = log.date.toISOString().split('T')[0];
+    const dateKey = (log as any).dateKey ?? log.date.toISOString().split('T')[0];
     const existing = dateMap.get(dateKey) ?? 0;
     dateMap.set(dateKey, existing + (log.activityCount || 1));
   }
