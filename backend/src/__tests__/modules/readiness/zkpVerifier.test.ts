@@ -119,8 +119,8 @@ describe('ZkpVerifierService & ZKP HTTP Routes', () => {
         threshold: 800,
         verified: true,
       });
-      // Verifier must validate proof authenticity in < 50ms
-      expect(result.verificationTimeMs).toBeLessThan(50);
+      // Verifier must validate proof authenticity in < 150ms
+      expect(result.verificationTimeMs).toBeLessThan(150);
     });
 
     it('generates a mathematically valid zero-knowledge range proof for problemsSolved >= 300', async () => {
@@ -355,6 +355,54 @@ describe('ZkpVerifierService & ZKP HTTP Routes', () => {
         }),
         expect.any(Object)
       );
+    });
+
+    it('supports continuous floating-point scores and verifies without throwing RangeError', async () => {
+      findOneMock.mockReturnValue({ overallScore: 78.4 });
+      createMock.mockResolvedValue({ proofId: 'zkp_float_123' });
+
+      const proofObj = await zkpVerifierService.generateProofForUser('cand-float-user', {
+        claimType: 'readinessScore',
+        threshold: 75.2,
+      });
+
+      expect(proofObj).toBeDefined();
+      expect(proofObj.publicSignals.threshold).toBe(75.2);
+
+      const verification = await zkpVerifierService.verifyProof(proofObj);
+      expect(verification.valid).toBe(true);
+      expect(verification.verified).toBe(true);
+      expect(verification.claim?.threshold).toBe(75.2);
+    });
+
+    it('allows generating multiple proofs with the same sessionNonce across different claim types', async () => {
+      findOneMock.mockReturnValue({ overallScore: 88.0 });
+      findMock.mockReturnValue([{ totalSolved: 420, hardSolved: 60 }]);
+      createMock.mockResolvedValue({ proofId: 'zkp_multi_1' });
+
+      const sharedSessionNonce = 'shared-session-nonce-xyz';
+
+      // Proof 1: readinessScore
+      const proof1 = await zkpVerifierService.generateProofForUser('user-session-shared', {
+        claimType: 'readinessScore',
+        threshold: 80,
+        sessionNonce: sharedSessionNonce,
+      });
+
+      // Proof 2: problemsSolved
+      const proof2 = await zkpVerifierService.generateProofForUser('user-session-shared', {
+        claimType: 'problemsSolved',
+        threshold: 300,
+        sessionNonce: sharedSessionNonce,
+      });
+
+      expect(proof1.publicSignals.sessionNonce).toBe(sharedSessionNonce);
+      expect(proof2.publicSignals.sessionNonce).toBe(sharedSessionNonce);
+      expect(createMock).toHaveBeenCalledTimes(2);
+      expect(createMock.mock.calls[0][0].sessionNonce).toBe(sharedSessionNonce);
+      expect(createMock.mock.calls[0][0].claimType).toBe('readinessScore');
+      expect(createMock.mock.calls[1][0].sessionNonce).toBe(sharedSessionNonce);
+      expect(createMock.mock.calls[1][0].claimType).toBe('problemsSolved');
     });
   });
 

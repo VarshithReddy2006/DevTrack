@@ -165,7 +165,15 @@ export class ZkpVerifierService {
       );
     }
 
-    const delta = BigInt(secretValue - threshold);
+    const intSecret = Math.round(secretValue);
+    const intThreshold = Math.round(threshold);
+
+    const delta = BigInt(intSecret - intThreshold);
+    if (delta < 0n) {
+      throw new Error(
+        `Claim threshold not met: candidate's verified ${claimType} (${secretValue}) is less than requested threshold (${threshold})`
+      );
+    }
     if (delta >= (1n << BigInt(RANGE_BITS))) {
       throw new Error(`Excess value ${delta} exceeds maximum supported range limit (2^${RANGE_BITS})`);
     }
@@ -186,7 +194,7 @@ export class ZkpVerifierService {
     }
 
     // Overall Pedersen commitment C = g^v * h^r mod p
-    const C = (modPow(G, BigInt(secretValue), P) * modPow(H, r, P)) % P;
+    const C = (modPow(G, BigInt(intSecret), P) * modPow(H, r, P)) % P;
 
     // Bit commitments C_j = g^b_j * h^r_j mod p
     const cBits: bigint[] = [];
@@ -408,8 +416,8 @@ export class ZkpVerifierService {
         };
       }
 
-      const threshold = BigInt(publicSignals.threshold);
-      if (threshold < 0n) {
+      const thresholdNum = Number(publicSignals.threshold);
+      if (isNaN(thresholdNum) || thresholdNum < 0) {
         return {
           valid: false,
           verified: false,
@@ -417,6 +425,8 @@ export class ZkpVerifierService {
           error: 'Invalid negative threshold in publicSignals.',
         };
       }
+
+      const threshold = BigInt(Math.round(thresholdNum));
 
       const C = BigInt('0x' + proof.commitment);
       const publicC = BigInt('0x' + publicSignals.commitment);

@@ -68,7 +68,7 @@ const verifiedClaimProofSchema = new Schema<IVerifiedClaimProof>(
     sessionNonce: {
       type: String,
       required: true,
-      unique: true,
+      index: true,
     },
     verificationKeyId: {
       type: String,
@@ -109,6 +109,7 @@ const verifiedClaimProofSchema = new Schema<IVerifiedClaimProof>(
 );
 
 verifiedClaimProofSchema.index({ userId: 1, claimType: 1, createdAt: -1 });
+verifiedClaimProofSchema.index({ userId: 1, claimType: 1, sessionNonce: 1 }, { unique: true });
 
 export const VerifiedClaimProof = mongoose.models.VerifiedClaimProof ||
   mongoose.model<IVerifiedClaimProof>('VerifiedClaimProof', verifiedClaimProofSchema);
