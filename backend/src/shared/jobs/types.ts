@@ -157,7 +157,23 @@ export interface DossierRenderJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData;
+export interface DsaEvaluationJobData {
+  submissionId: string;
+  problemId?: string;
+  userId?: string;
+  code: string;
+  language: 'javascript' | 'typescript' | 'python' | 'cpp' | 'wasm';
+  testCases?: Array<{
+    input: string;
+    expectedOutput: string;
+    isHidden?: boolean;
+  }>;
+  timeoutMs?: number;
+  memoryLimitMb?: number;
+  requestId?: string;
+}
+
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData | DsaEvaluationJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -184,6 +200,9 @@ export const QueueNames = {
   INTERVIEW_SCORE: 'interview-score',
   INTERVIEW_GUARD: 'interview-guard',
   INTERVIEW_EVALUATE: 'interview-evaluate',
+
+  // DSA Execution & Evaluation
+  DSA_EVAL: 'dsa-eval',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',
