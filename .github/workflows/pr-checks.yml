@@ -119,8 +119,15 @@ jobs:
           npm run test --workspace @devtrack/contracts
           npm run test --workspace @devtrack/ats-core
 
+      - name: Install resume OCR tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
+
       - name: Run Backend Unit Tests
         working-directory: ./backend
+        env:
+          RUN_RESUME_OCR_INTEGRATION: '1'
         run: npm run test:unit --if-present
 
       - name: Run Backend Chaos Tests

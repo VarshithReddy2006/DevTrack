@@ -67,6 +67,13 @@ Follow the existing architecture and module conventions when adding or modifying
 
 Some integrations and AI features require optional API credentials.
 
+For local scanned-resume PDF support, install Poppler and Tesseract 5 with English
+language data so `pdftoppm` and `tesseract` are on the worker's PATH. On
+Debian/Ubuntu, install `poppler-utils tesseract-ocr tesseract-ocr-eng`. The
+production Docker image includes the same tools. Set
+`RUN_RESUME_OCR_INTEGRATION=1` when running the backend test suite to exercise
+the two executables against synthetic scans.
+
 ### Installation
 
 1. Fork the repository on GitHub.

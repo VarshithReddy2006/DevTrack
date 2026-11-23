@@ -228,6 +228,40 @@ describe('Horizontal Redis Stream SSE Scaling (INV-01 through INV-10)', () => {
     await pod.shutdown();
   });
 
+  it('prevents shard refCount leak when a user has multiple concurrent clients', async () => {
+    const pod = new EventBus(cluster as any);
+    const userId = 'multi-client-user';
+    const shardId = getShardForUser(userId);
+
+    // Register 3 clients for the same user (e.g. 3 open tabs)
+    const { client: client1 } = await registerTestClient(pod, userId);
+    const { client: client2 } = await registerTestClient(pod, userId);
+    const { client: client3 } = await registerTestClient(pod, userId);
+
+    expect(pod.streamAdapter.isShardActive(shardId)).toBe(true);
+    // Since only 1 unique user is on this shard, refCount must be 1, not 3
+    const shardStatsBefore = pod.streamAdapter.getMetrics().shards.find((s) => s.shardId === shardId);
+    expect(shardStatsBefore?.refCount).toBe(1);
+
+    // Unregister first client (2 remaining)
+    pod.unregister(client1.id);
+    expect(pod.streamAdapter.isShardActive(shardId)).toBe(true);
+    expect(pod.streamAdapter.isShardDraining(shardId)).toBe(false);
+
+    // Unregister second client (1 remaining)
+    pod.unregister(client2.id);
+    expect(pod.streamAdapter.isShardActive(shardId)).toBe(true);
+    expect(pod.streamAdapter.isShardDraining(shardId)).toBe(false);
+
+    // Unregister last client (0 remaining) -> should enter draining
+    pod.unregister(client3.id);
+    expect(pod.streamAdapter.isShardDraining(shardId)).toBe(true);
+    const shardStatsAfter = pod.streamAdapter.getMetrics().shards.find((s) => s.shardId === shardId);
+    expect(shardStatsAfter?.refCount).toBe(0);
+
+    await pod.shutdown();
+  });
+
   it('INV-05: Stream operations always use isolated single-shard cluster keys', () => {
     for (let s = 0; s < 16; s++) {
       const key = getShardStreamKey(s);

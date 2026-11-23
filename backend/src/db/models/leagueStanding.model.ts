@@ -37,6 +37,7 @@ export interface ILeagueStanding extends Document {
   outcome: LeagueOutcome | null;
   nextDivision: LeagueDivision | null;
   finalizedAt: Date | null;
+  notifiedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -55,6 +56,7 @@ const leagueStandingSchema = new Schema<ILeagueStanding>(
     outcome: { type: String, enum: ['promoted', 'demoted', 'stayed', null], default: null },
     nextDivision: { type: String, enum: [...LEAGUE_DIVISIONS, null], default: null },
     finalizedAt: { type: Date, default: null },
+    notifiedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
