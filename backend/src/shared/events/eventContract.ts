@@ -77,6 +77,7 @@ export type DomainEventType =
   | 'jobtarget.scored'
   | 'contest.starting-soon'
   | 'league.week.finalized'
+  | 'interview.turn.answered'
   // Public profile integrity
   | 'profile.flagged'
   // Public portfolio publication
@@ -180,6 +181,19 @@ export const jobTargetScoredV1Schema = z.object({
 });
 
 export type JobTargetScoredPayload = z.infer<typeof jobTargetScoredV1Schema>;
+
+/**
+ * Emitted in the transaction that accepts an interview answer. `stateVersion` is the session
+ * version at which the answer was accepted (state SCORING); the interview-score job needs
+ * exactly these three fields.
+ */
+export const interviewTurnAnsweredV1Schema = z.object({
+  sessionId: z.string().regex(/^[a-fA-F0-9]{24}$/),
+  turnIndex: z.number().int().min(0).max(4),
+  stateVersion: z.number().int().nonnegative(),
+});
+
+export type InterviewTurnAnsweredPayload = z.infer<typeof interviewTurnAnsweredV1Schema>;
 
 export interface OrchestrationStageFailedPayload {
   stage: string;

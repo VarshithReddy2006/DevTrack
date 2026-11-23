@@ -16,12 +16,13 @@
 //     without writing, and `interview.session.completed` is only emitted for an applied
 //     final result.
 //
-// Storage is behind InterviewSessionPort (see interviewSessionPort.ts). Starting the BullMQ
-// consumer needs a port, so it is deliberately not in workerDefinitions yet: it gets
-// registered, together with a `ai` worker role, by whoever lands the InterviewSession model.
+// Storage is behind InterviewSessionPort (see interviewSessionPort.ts). The production adapter is
+// createMongoInterviewSessionPort in ../interviewSession.port.ts, and worker-runtime.ts starts this
+// consumer under the `ai` role with it.
 import { Job, type Worker } from 'bullmq';
 import { AIQuotaExceededError } from '../../ai/quota.service.js';
 import { llmGateway, type LLMGateway } from '../../ai/provider/LLMGateway.js';
+import { interviewTurnAnsweredV1Schema, type DomainEventEnvelope } from '../../../shared/events/eventContract.js';
 import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { getOrCreateQueue } from '../../../shared/jobs/queueFactory.js';
 import { JobRetryConfig, QueueNames, type InterviewScoreJobData } from '../../../shared/jobs/types.js';
@@ -345,6 +346,19 @@ export async function processInterviewScoreJob(
 
 let _worker: Worker<InterviewScoreJobData> | null = null;
 
+/**
+ * Jobs arrive in two shapes: the bare job data from enqueueInterviewScore, or the domain event
+ * envelope the outbox relay delivers for `interview.turn.answered` (the answer and the event are
+ * committed together, so the relay path survives a crash between commit and enqueue).
+ */
+export function unwrapScoreJob(data: InterviewScoreJobData | DomainEventEnvelope): InterviewScoreJobData {
+  if ('payload' in data && typeof data.type === 'string') {
+    if (data.type !== 'interview.turn.answered') throw new Error(`Unexpected event ${data.type} on the interview-score queue`);
+    return interviewTurnAnsweredV1Schema.parse(data.payload);
+  }
+  return data as InterviewScoreJobData;
+}
+
 /** One job per accepted answer; the job id makes re-enqueueing the same answer a no-op. */
 export async function enqueueInterviewScore(data: InterviewScoreJobData): Promise<void> {
   await getOrCreateQueue(QueueNames.INTERVIEW_SCORE).add('interview-score', data, {
@@ -359,9 +373,10 @@ export function startInterviewScoreWorker(port: InterviewSessionPort, deps: Inte
   _worker = createDlqWorker<InterviewScoreJobData>(
     QueueNames.INTERVIEW_SCORE,
     async (job: Job<InterviewScoreJobData>) => {
-      const result = await processInterviewScoreJob(job.data, deps);
+      const data = unwrapScoreJob(job.data);
+      const result = await processInterviewScoreJob(data, deps);
       logger.debug('[interview-score] Processed answer', {
-        event: 'interview_score_processed', jobId: job.id, sessionId: job.data.sessionId, outcome: result.outcome,
+        event: 'interview_score_processed', jobId: job.id, sessionId: data.sessionId, outcome: result.outcome,
       });
       return result;
     },
