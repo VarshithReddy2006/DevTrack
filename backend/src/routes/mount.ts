@@ -2,7 +2,7 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose the v2 revision, resume revision, portfolio, push, readiness score, and roadmap APIs through shared
+  // Expose the v2 revision, resume revision, portfolio, push, readiness score, roadmap, and search APIs through shared
   // middleware, including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
     const quests = ((req.method === 'GET' || req.method === 'HEAD') && /^\/quests\/?$/i.test(req.path)) || (req.method === 'POST' && /^\/quests\/[^/]+\/claim\/?$/i.test(req.path));
@@ -21,7 +21,8 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/readiness\/roadmap\/generate\/?$/i.test(req.path))
       || (req.method === 'PATCH' && /^\/readiness\/roadmap\/milestones\/[^/]+\/tasks\/[^/]+\/?$/i.test(req.path));
-    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap ? routes(req, res, next) : next();
+    const search = (req.method === 'GET' || req.method === 'HEAD') && /^\/search\/?$/i.test(req.path);
+    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap || search ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);
