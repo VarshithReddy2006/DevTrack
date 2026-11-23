@@ -324,6 +324,9 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
         case 'reap_stale_focus_sessions':
           await focusEngine.reapStaleSessions();
           break;
+        case 'submission_archive':
+          await (await import('../../modules/dsa/submissionArchive.worker.js')).handleSubmissionArchiveJob();
+          break;
         default:
           logger.warn('[maintenance] Unknown task type', { task });
       }
@@ -506,6 +509,20 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
       jobId: 'maintenance-reap-focus-sessions',
       removeOnComplete: { count: 3 },
       removeOnFail: { count: 5 },
+    }
+  );
+
+  // Archive DSA submissions older than 180 days: first Sunday of every month at 03:00 UTC.
+  await _queue.add(
+    'archive-dsa-submissions',
+    { task: 'submission_archive' },
+    {
+      repeat: { pattern: '0 3 1-7 * 0', tz: 'UTC' },
+      jobId: 'maintenance-submission-archive',
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
     }
   );
 

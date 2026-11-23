@@ -34,6 +34,7 @@ import '../../db/models/dsaContestParticipation.model.js';
 import '../../db/models/dsaProblem.model.js';
 import '../../db/models/dsaProfile.model.js';
 import '../../db/models/dsaSubmission.model.js';
+import '../../db/models/dsaSubmissionArchive.model.js';
 import '../../db/models/dsaTopicProgress.model.js';
 import '../../db/models/embedding.model.js';
 import '../../db/models/evidenceChainRecord.model.js';
