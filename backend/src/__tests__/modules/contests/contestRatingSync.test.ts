@@ -127,6 +127,24 @@ describe('contest participation persistence and targeted events', () => {
     expect(eventBus.publishEnvelope).toHaveBeenCalledTimes(2);
   });
 
+  it('isolates unranked or non-existent LeetCode profiles without failing the sync job', async () => {
+    const entry = await contest('leetcode');
+    const validUser = await user('Alpha', 'leetcode');
+    const invalidUser = await user('NonExistentUser', 'leetcode');
+
+    vi.mocked(sources.fetchLeetcodeResult).mockImplementation(async (handle) => {
+      if (handle === 'NonExistentUser') return null;
+      return result(25);
+    });
+
+    const res = await syncContestRatings(entry.id);
+    expect(res).toEqual({ changed: 1, failed: 0 });
+    expect(await DsaContestParticipation.countDocuments()).toBe(1);
+    expect(await DsaContestParticipation.findOne({ userId: validUser })).not.toBeNull();
+    expect(await DsaContestParticipation.findOne({ userId: invalidUser })).toBeNull();
+    expect(eventBus.publishEnvelope).toHaveBeenCalledTimes(1);
+  });
+
   it('does not fabricate participation or request results before the two-hour delay', async () => {
     const entry = await contest('leetcode', 1); await user('Alpha', 'leetcode');
     expect((await syncContestRatings(entry.id)).changed).toBe(0);
