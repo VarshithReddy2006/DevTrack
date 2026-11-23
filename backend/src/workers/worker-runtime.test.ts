@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createWorkerRuntime, parseWorkerType, WORKER_TYPES, workerDefinitions } from './worker-runtime.js';
 
 const mocks = vi.hoisted(() => {
-  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender', 'jdFetch', 'jdParse', 'jdScore', 'evidenceVerification', 'interviewEvaluate'];
+  const names = ['sync', 'xp', 'maintenance', 'generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'dataset', 'streak', 'notifications', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation', 'leagueScore', 'leagueRollover', 'domainReadiness', 'focusCompletion', 'ogRender', 'dossierRender', 'jdFetch', 'jdParse', 'jdScore', 'evidenceVerification', 'interviewEvaluate', 'interviewScore', 'interviewGuard'];
   return {
     workers: Object.fromEntries(names.map(name => [name, { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }])),
     schedule: vi.fn().mockResolvedValue(undefined),
@@ -39,6 +39,10 @@ vi.mock('../modules/profile/workers/ogRender.worker.js', () => ({ startOgRenderW
 vi.mock('../modules/job-targets/workers/jobTargetFetch.worker.js', () => ({ startJobTargetFetchWorker: mocks.workers.jdFetch.start, stopJobTargetFetchWorker: mocks.workers.jdFetch.stop }));
 vi.mock('../modules/job-targets/workers/jdParse.worker.js', () => ({ startJdParseWorker: mocks.workers.jdParse.start, stopJdParseWorker: mocks.workers.jdParse.stop }));
 vi.mock('../modules/interview/workers/interviewEvaluate.worker.js', () => ({ startInterviewEvaluateWorker: mocks.workers.interviewEvaluate.start, stopInterviewEvaluateWorker: mocks.workers.interviewEvaluate.stop }));
+vi.mock('../modules/interview/workers/interviewScore.worker.js', () => ({ startInterviewScoreWorker: mocks.workers.interviewScore.start, stopInterviewScoreWorker: mocks.workers.interviewScore.stop }));
+vi.mock('../modules/interview/interviewSession.port.js', () => ({ createMongoInterviewSessionPort: () => ({}) }));
+vi.mock('../modules/interview/workers/interviewGuard.worker.js', () => ({ createInterviewGuardWorker: () => mocks.workers.interviewGuard }));
+vi.mock('../modules/interview/interview.service.js', () => ({ getInterviewService: () => ({ sweep: vi.fn() }) }));
 vi.mock('../modules/job-targets/workers/jdScore.worker.js', () => ({ startJdScoreWorker: mocks.workers.jdScore.start, stopJdScoreWorker: mocks.workers.jdScore.stop }));
 vi.mock('../shared/jobs/notificationWorker.js', () => ({ startNotificationWorker: mocks.workers.notifications.start, stopNotificationWorker: mocks.workers.notifications.stop }));
 vi.mock('./worker-resume-ats.js', () => ({ startResumeATSWorker: mocks.workers.sessionAts.start, stopResumeATSWorker: mocks.workers.sessionAts.stop }));
@@ -66,9 +70,9 @@ beforeEach(() => { vi.clearAllMocks(); });
 describe('standalone worker selection and lifecycle', () => {
   const resume = ['generation', 'ats', 'export', 'credibility', 'variant', 'evidence', 'embedding', 'github', 'upload', 'profile', 'sessionAts', 'sessionEmbedding', 'sessionSemantic', 'recommendation'];
   const cases: [string | undefined, string[]][] = [
-    ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications', 'leagueScore', 'domainReadiness', 'focusCompletion']], ['maintenance', ['maintenance', 'leagueRollover']],
+    ['sync', ['sync']], ['xp', ['xp', 'streak', 'notifications', 'leagueScore', 'domainReadiness', 'focusCompletion']], ['maintenance', ['maintenance', 'leagueRollover', 'interviewGuard']],
     ['readiness', ['evidenceVerification', 'dsa', 'projects', 'skills', 'benchmarks', 'roadmap', 'aggregation']],
-    ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender', 'dossierRender']], ['ai', ['jdFetch', 'jdParse', 'jdScore', 'interviewEvaluate']],
+    ['resume-intelligence', resume], ['dataset', ['dataset']], ['render', ['ogRender', 'dossierRender']], ['ai', ['jdFetch', 'jdParse', 'jdScore', 'interviewScore', 'interviewEvaluate']],
     ['all', Object.keys(mocks.workers)], [undefined, Object.keys(mocks.workers)], ['', Object.keys(mocks.workers)],
   ];
   it.each(cases)('starts and drains only consumers for %s', async (selector, expected) => {
@@ -94,12 +98,14 @@ describe('standalone worker selection and lifecycle', () => {
 
   it('registers job-target and interview evaluation consumers under the ai role and nowhere else', () => {
     const queues = (role: string) => workerDefinitions.filter(definition => definition.role === role).map(definition => definition.queueName);
-    expect(queues('ai')).toEqual(['jd-fetch', 'jd-parse', 'jd-score', 'interview-evaluate']);
+    expect(queues('ai')).toEqual(['jd-fetch', 'jd-parse', 'jd-score', 'interview-score', 'interview-evaluate']);
+    expect(queues('maintenance')).toContain('interview-guard');
     for (const role of WORKER_TYPES.filter(value => value !== 'ai' && value !== 'all')) {
       expect(queues(role)).not.toContain('jd-fetch');
       expect(queues(role)).not.toContain('jd-parse');
       expect(queues(role)).not.toContain('jd-score');
       expect(queues(role)).not.toContain('interview-evaluate');
+      expect(queues(role)).not.toContain('interview-score');
     }
   });
 

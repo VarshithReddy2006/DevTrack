@@ -6,7 +6,7 @@ import { getRedisClient } from '../../../shared/redis/index.js';
 import { logger } from '../../../shared/logger.js';
 import type { InterviewGuardService } from '../interviewGuard.service.js';
 
-/** #347 must bind the real model and evaluation adapter, then load this lifecycle in maintenance/all. */
+/** Bound to the InterviewSession model by InterviewService.sweep() in worker-runtime.ts (maintenance role). */
 export function createInterviewGuardWorker(service: Pick<InterviewGuardService, 'sweep'>) {
   let worker: Worker | null = null;
   let starting: Promise<void> | null = null;

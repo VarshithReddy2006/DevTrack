@@ -362,6 +362,10 @@ Run `npm run migrate:leagues --prefix backend -- up` with `MONGODB_URI` explicit
 
 Live standings are Redis sorted sets named `league:{weekKey}:{division}:{cohortId}`, scored by the `league-score` queue. The `league-rollover` repeatable job (Sunday 00:00 UTC) is scheduled by the `maintenance` worker role and the score worker runs in the `xp` role. If Redis is flushed, the next standings read rebuilds the affected cohort from the `XpTransaction` ledger.
 
+### Interview sessions migration
+
+Run `npm run migrate:interview-sessions --prefix backend -- up` with `MONGODB_URI` explicitly set. It creates the `interviewsessions` indexes, including the partial unique index that allows one open interview per user and the 365 day TTL on `retainUntil`. `down` drops those indexes and keeps the sessions.
+
 ### Embedding per-user uniqueness migration
 
 Run `npm run migrate:embedding-user-hash --prefix backend -- up` with `MONGODB_URI` explicitly set. It builds `uq_embeddings_user_hash` (`{ userId: 1, contentHash: 1 }`, unique) and then drops the old global `contentHash_1` unique index, so two users can embed the same text. Existing rows cannot violate the new index. `down` restores `contentHash_1` and fails with a duplicate key error if two owners now share a hash; it never deletes embeddings to make that pass.
