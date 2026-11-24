@@ -1,9 +1,11 @@
 // src/shared/redis/client.ts — Centralized Redis singleton via ioredis
 // Manages connection lifecycle, reconnection, and health visibility.
+// Integrates with Redis Sentinel for high availability when configured.
 
 import Redis from 'ioredis';
 import { env } from '../../config/env.js';
 import { logger } from '../logger.js';
+import { isSentinelConfigured, getRedisMaster, getSentinelHealth } from './sentinelClient.js';
 
 let _client: Redis | null = null;
 let _mockClient: Redis | null = null;
@@ -58,6 +60,12 @@ export async function checkRedisEvictionPolicy(redis: Pick<Redis, 'config'>): Pr
 }
 
 export function getRedisClient(): Redis {
+  // If Redis Sentinel is configured, use the Sentinel master client
+  if (isSentinelConfigured()) {
+    logger.info('[redis] Using Redis Sentinel for high availability');
+    return getRedisMaster();
+  }
+
   // If Redis is not configured at all, return a mock client that doesn't connect
   if (!isRedisConfigured()) {
     if (_mockClient) return _mockClient;

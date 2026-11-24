@@ -37,13 +37,11 @@ A retry of that exact final job also attempts the handoff when the persisted ses
 is completed with the expected incremented version and final turn. Nonfinal, stale,
 abandoned and expired results do not create evaluation requests.
 
-The production `InterviewSession` model/routes/port adapter from #347 are still
-absent on main. The existing interview-score consumer is also not registered in
-the worker runtime until that adapter exists. This change registers the evaluator
-consumer but does not fabricate that separate session service. Consequently the
-deployed end-to-end session completion flow remains dependent on #347.
+The `InterviewSession` model, routes and the Mongoose `InterviewSessionPort` adapter
+(`interviewSession.port.ts`) from #347 now exist, and the interview-score worker is
+registered under the `ai` role. See "Session lifecycle" below.
 
-For atomic completion, the future adapter must call
+For atomic completion, the adapter (`commitFinalResult`) calls
 `stageInterviewEvaluation(completedEvaluationInput(snapshot), mongoSession)` in
 the same MongoDB transaction as its final session update. The snapshot must contain
 the final stored reply, final mode, all turns, any candidate `code`, and measured
@@ -56,6 +54,47 @@ source staging after all original job retries are exhausted. Atomic staging in t
 owning adapter is required to eliminate that gap. Requests staged inside an aborted
 transaction are rolled back. Source hashes are canonical SHA-256 integrity checks,
 not signatures or proof of interview quality.
+
+## Session lifecycle (`/api/v1/interviews`)
+
+One `InterviewSession` document holds a 5 question interview (`db/models/interviewSession.model.ts`).
+`stateMachine.ts` is the only place that decides which move is legal:
+
+    START -> QUESTION_PENDING -> SCORING -> NEXT_QUESTION -> QUESTION_PENDING ...
+                                        \-> FINAL_SCORECARD -> COMPLETED
+
+Every mutation is one compare-and-set update on `{ _id, userId, stateVersion }` that also writes
+the new state and bumps `stateVersion` by one. A request carrying an older `stateVersion` gets
+HTTP 409 (`STATE_VERSION_CONFLICT`); an illegal move gets HTTP 409 (`ILLEGAL_STATE_TRANSITION`)
+whose message lists the allowed events. A double click, or an answer sent while a hint is being
+processed, therefore has exactly one winner. `NEXT_QUESTION` and `FINAL_SCORECARD` are collapsed
+into the scoring commit (`SCORING -> NEXT_QUESTION -> QUESTION_PENDING` is one write, one version).
+
+| Route | What it does |
+| --- | --- |
+| `POST /` `{ role }` | Start. 201. A user with an open session gets 409 `INTERVIEW_SESSION_OPEN` with the open session in `data.session`. |
+| `GET /current` | The open session or `null`, for resuming after a reconnect. |
+| `GET /:sessionId` | One of the caller's sessions (404 for anyone else's). |
+| `POST /:sessionId/turns/:turnIndex/answer` `{ answer, code?, stateVersion }` | Accept the answer (202). Uses the lifecycle guard's turn reservation and writes the answer and the `interview.turn.answered` outbox event in one MongoDB transaction. |
+| `POST /:sessionId/turns/:turnIndex/hint` `{ stateVersion }` | Reveal the next hint of the current question. Counts as a mutation (version + 1). |
+| `POST /:sessionId/finish` `{ stateVersion }` | Leave early (`abandoned`). Not allowed while an answer is being scored. Idempotent once closed. |
+
+Clients only ever see the prompts up to the current question, the hints they asked for, the
+feedback and the scorecard; the checklist and unrevealed hints stay on the server.
+
+`isOpen` is true exactly while `status` is `in_progress`; the partial unique index
+`uq_interviewsessions_open_per_user` on `{ userId, isOpen }` allows one open session per user,
+including under simultaneous start requests. Model middleware clears `isOpen` (and refreshes
+`retainUntil`, the 365 day TTL) for any update that sets a non-`in_progress` status, so the
+lifecycle guard's updates release the slot too. Production runs with Mongoose autoIndex off:
+run `npm run migrate:interview-sessions --prefix backend -- up` first.
+
+The outbox relay delivers `interview.turn.answered` (`{ sessionId, turnIndex, stateVersion }`) to
+the `interview-score` queue, so a crash after the answer commit cannot lose the scoring job. The
+score worker accepts that event envelope as well as the bare job data. The `maintenance` role now
+runs the guard worker with `InterviewService.sweep()`: sessions idle for more than 24 hours are
+closed as `abandoned` first, then the guard applies its 40/45 minute and 2 hour inactivity rules
+(a session idle for 2 to 24 hours is therefore `expired`, not `abandoned`).
 
 ## Persistence and delivery
 
@@ -72,7 +111,7 @@ redelivery. Reports have owner/session ids, source hash, timestamp, rubric versi
 model/mode and complete rubric output. Administrative deletion remains available
 for erasure; raw driver/database access can bypass application immutability. Both
 requests and reports retain sensitive interview content and need the application's
-normal access controls, retention and account-erasure integration when #347 lands.
+normal access controls, retention and account-erasure integration.
 No public report-read endpoint or frontend report rendering is added here.
 
 A five-minute database lease serializes ordinary concurrent processing. Late model

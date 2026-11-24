@@ -151,7 +151,7 @@ describe('AudioStreamingService - Core Utility Functions', () => {
 
 describe('AudioStreamingService - Ingestion and Lifecycle', () => {
   let service: AudioStreamingService;
-  let mockEnqueueJob: ReturnType<typeof vi.fn>;
+  let mockEnqueueJob: any;
 
   beforeEach(() => {
     mockEnqueueJob = vi.fn().mockResolvedValue(undefined);
@@ -434,7 +434,7 @@ describe('Interview Audio HTTP Routes Integration', () => {
     form.append('chunkIndex', '0');
     form.append('isLast', 'false');
     form.append('durationMs', '1500');
-    form.append('chunk', new Blob([chunkData], { type: 'audio/webm' }), 'slice-0.webm');
+    form.append('chunk', new Blob([new Uint8Array(chunkData)], { type: 'audio/webm' }), 'slice-0.webm');
 
     const res = await fetch(`${baseUrl}/api/v2/interview/session-http-301/audio/chunk`, {
       method: 'POST',
@@ -488,7 +488,7 @@ describe('Interview Audio HTTP Routes Integration', () => {
     const form = new FormData();
     form.append('chunkIndex', 'not-a-number');
     form.append('isLast', 'false');
-    form.append('chunk', new Blob([chunkData], { type: 'audio/webm' }), 'slice.webm');
+    form.append('chunk', new Blob([new Uint8Array(chunkData)], { type: 'audio/webm' }), 'slice.webm');
 
     const res = await fetch(`${baseUrl}/api/v2/interview/session-http-301/audio/chunk`, {
       method: 'POST',

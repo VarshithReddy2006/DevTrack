@@ -4,7 +4,7 @@
 // They mirror what the studio UI already consumes in
 // frontend/src/services/interviewService.ts, so a session persisted by the service
 // can be handed to the worker and a scorecard written by the worker renders as is.
-// The Mongoose model and the HTTP routes are not part of this module yet.
+// The Mongoose model is db/models/interviewSession.model.ts; the routes are interview.routes.ts.
 
 export const INTERVIEW_STATUSES = ['in_progress', 'completed', 'abandoned', 'expired'] as const;
 export type InterviewStatus = (typeof INTERVIEW_STATUSES)[number];

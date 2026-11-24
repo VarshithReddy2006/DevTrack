@@ -6,6 +6,7 @@ import type { Worker, Job } from 'bullmq';
 import { createDlqWorker } from '../../../shared/jobs/dlq.service.js';
 import { getOrCreateQueue } from '../../../shared/jobs/queueFactory.js';
 import { QueueNames, JobRetryConfig, type InterviewTranscriptionJobData } from '../../../shared/jobs/types.js';
+import { getRedisClient } from '../../../shared/redis/client.js';
 import { eventBus } from '../../../shared/sse/eventBus.js';
 import { logger } from '../../../shared/logger.js';
 
@@ -83,7 +84,7 @@ export async function startInterviewTranscriptionWorker(): Promise<void> {
         async (job: Job<InterviewTranscriptionJobData>) => {
           await processInterviewTranscription(job.data);
         },
-        { concurrency: 4 }
+        { connection: getRedisClient(), concurrency: 4, ...JobRetryConfig.standard }
       );
 
       worker.on('failed', (job, err) => {

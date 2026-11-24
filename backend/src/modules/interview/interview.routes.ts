@@ -1,5 +1,5 @@
 // src/modules/interview/interview.routes.ts
-// Express routes for Milestone 7 AI Mock Interview Studio audio streaming and chunk ingestion.
+// Express routes for Mock Interview Studio API and audio streaming chunk ingestion.
 
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
@@ -12,6 +12,7 @@ import {
   type AudioStreamingService,
   type AudioChunkMetadata,
 } from './audioStreaming.service.js';
+import { createInterviewController } from './interview.controller.js';
 
 const chunkMetadataSchema = z.object({
   chunkIndex: z.coerce.number().int().min(0),
@@ -88,12 +89,18 @@ export interface InterviewRouteDeps {
 export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Router {
   const router = Router();
   const service = deps?.audioService ?? audioStreamingService;
+  const auth = deps?.auth ?? authMiddleware;
+  const controller = createInterviewController();
 
   // Middleware collecting raw binary buffer for multipart and raw audio streams
   const rawBodyParser = express.raw({
     type: ['multipart/form-data', 'audio/*', 'application/octet-stream'],
     limit: '5mb',
   });
+
+  // Mock interview API endpoints
+  // Static path first so "current" is never read as a session id.
+  router.get('/current', auth, controller.current);
 
   /**
    * POST /api/v2/interview/:sessionId/audio/chunk
@@ -219,7 +226,15 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
     })
   );
 
+  // General session routes
+  router.get('/:sessionId', auth, controller.get);
+  router.post('/', auth, rateLimiters.ai, controller.start);
+  router.post('/:sessionId/turns/:turnIndex/answer', auth, rateLimiters.ai, controller.answer);
+  router.post('/:sessionId/turns/:turnIndex/hint', auth, controller.hint);
+  router.post('/:sessionId/finish', auth, controller.finish);
+
   return router;
 }
 
 export const interviewRoutes = createInterviewRoutes();
+export default interviewRoutes;

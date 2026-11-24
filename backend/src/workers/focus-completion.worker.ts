@@ -3,6 +3,7 @@ import type { Worker } from 'bullmq';
 import { focusActivityConsumer } from '../modules/activity/consumers/focusSessionCompleted.consumer.js';
 import { focusMissionConsumer } from '../modules/missions/consumers/focusSessionCompleted.consumer.js';
 import { registerReadinessConsumers } from '../modules/readiness/consumers/index.js';
+import { registerInterviewTurnAnsweredConsumer } from '../modules/interview/interviewTurnAnswered.consumer.js';
 import { registerJobTargetSubmittedConsumer } from '../modules/job-targets/jobTargetSubmitted.consumer.js';
 import { focusStreakConsumer } from '../modules/streak/consumers/focusSessionCompleted.consumer.js';
 import { focusXpConsumer } from '../modules/xp/consumers/focusSessionCompleted.consumer.js';
@@ -38,6 +39,7 @@ export function createDomainOutboxRelay(enqueue: OutboxRelayOptions['enqueue']):
   registerFocusCompletionConsumers();
   registerReadinessConsumers();
   registerJobTargetSubmittedConsumer();
+  registerInterviewTurnAnsweredConsumer();
   registerQuestConsumers();
   return new OutboxRelay({
     resolveQueues: type => {

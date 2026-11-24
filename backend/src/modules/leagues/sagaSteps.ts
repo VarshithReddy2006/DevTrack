@@ -4,13 +4,16 @@
 // can trigger inverse compensation to cleanly revert mutations and maintain database consistency.
 
 import { Types } from 'mongoose';
-import { LeagueStanding } from '../../db/models/index.js';
+import { LeagueStanding, ProfileAuditLog, XpTransaction } from '../../db/models/index.js';
 import type { LeagueDivision, LeagueOutcome, LeagueStandingStatus } from '../../db/models/index.js';
 import type { ILeagueRolloverLog, SagaCohortStep } from '../../db/models/leagueRolloverLog.model.js';
+import { logger } from '../../shared/logger.js';
 import { FINISHED_WEEK_TTL_SECONDS, cohortKey } from './leagues.constants.js';
 import { readCohortBoard, type RankedMember } from './leagues.service.js';
 import { computeCohortOutcomes, type FinalStanding } from './rollover.js';
 import type { LeagueScoreStore } from './scoreStore.js';
+import { analyzeSolveEntropy, type XpEvent } from './solveEntropy.service.js';
+import { weekRange } from './weeks.js';
 
 export interface PreviousStandingState {
   userId: string;
@@ -78,7 +81,77 @@ export const sagaCohortSteps: ISagaStep[] = [
         .lean<Array<{ userId: Types.ObjectId }>>();
 
       const activeUserIds = new Set(activeUsers.map(u => u.userId.toString()));
-      const allOutcomes = computeCohortOutcomes(ctx.division, ctx.board);
+
+      // Evaluate solve entropy for all active cohort members to mitigate last-minute sniping
+      let finalBoard = ctx.board;
+      try {
+        const { start, end } = weekRange(ctx.weekKey);
+        const userObjIds = Array.from(activeUserIds).map(id => new Types.ObjectId(id));
+        const txs = await XpTransaction.find({
+          userId: { $in: userObjIds },
+          createdAt: { $gte: start, $lt: end },
+        })
+          .select('userId xpAwarded createdAt')
+          .lean<Array<{ userId: Types.ObjectId; xpAwarded: number; createdAt: Date }>>();
+
+        const eventsByUser = new Map<string, XpEvent[]>();
+        for (const tx of txs) {
+          const uid = tx.userId.toString();
+          if (!eventsByUser.has(uid)) eventsByUser.set(uid, []);
+          eventsByUser.get(uid)!.push({ at: tx.createdAt, xp: tx.xpAwarded });
+        }
+
+        const auditEntries: Array<{
+          userId: Types.ObjectId;
+          eventType: 'anti_gaming_check';
+          triggeredBy: 'system';
+          details: Record<string, unknown>;
+        }> = [];
+
+        const adjustedBoard: RankedMember[] = ctx.board.map(member => {
+          if (!activeUserIds.has(member.userId)) return member;
+          const userEvents = eventsByUser.get(member.userId) ?? [];
+          if (userEvents.length === 0) return member;
+
+          const res = analyzeSolveEntropy(userEvents, ctx.weekKey);
+          if (res.verdict === 'sniping') {
+            if (res.audit) {
+              auditEntries.push({
+                userId: new Types.ObjectId(member.userId),
+                eventType: 'anti_gaming_check',
+                triggeredBy: 'system',
+                details: {
+                  reason: res.audit.reason,
+                  cohortId: ctx.cohortId,
+                  division: ctx.division,
+                  weekKey: ctx.weekKey,
+                  ...res.audit.details,
+                },
+              });
+            }
+            return { userId: member.userId, points: Math.round(res.adjustedXp) };
+          }
+          if (res.verdict === 'consistent') {
+            return { userId: member.userId, points: Math.round(res.adjustedXp) };
+          }
+          return member;
+        });
+
+        // Re-sort the board according to adjusted points best-first
+        adjustedBoard.sort((a, b) => b.points - a.points);
+        finalBoard = adjustedBoard;
+
+        if (auditEntries.length > 0) {
+          await ProfileAuditLog.insertMany(auditEntries, { ordered: false }).catch(err => {
+            logger.warn('[saga-step] Failed to persist entropy audit entries', { error: err });
+          });
+        }
+      } catch (entropyErr) {
+        // Never crash rollover worker if entropy analysis fails
+        logger.warn('[saga-step] Entropy analysis bypassed due to error', { error: entropyErr });
+      }
+
+      const allOutcomes = computeCohortOutcomes(ctx.division, finalBoard);
       const outcomes = allOutcomes.filter(s => activeUserIds.has(s.userId));
 
       ctx.outcomes = outcomes;

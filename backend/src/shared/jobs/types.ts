@@ -17,7 +17,7 @@ export interface RealtimeEventJobData {
 }
 
 export interface SystemMaintenanceJobData {
-  task: 'generate_quests' | 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions' | 'check_contest_starting_soon' | 'platform_sync_sweep';
+  task: 'generate_quests' | 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions' | 'check_contest_starting_soon' | 'platform_sync_sweep' | 'submission_archive';
   requestId?: string;
 }
 
@@ -169,7 +169,23 @@ export interface InterviewTranscriptionJobData {
   requestId?: string;
 }
 
-export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData | InterviewTranscriptionJobData;
+export interface DsaEvaluationJobData {
+  submissionId: string;
+  problemId?: string;
+  userId?: string;
+  code: string;
+  language: 'javascript' | 'typescript' | 'python' | 'cpp' | 'wasm';
+  testCases?: Array<{
+    input: string;
+    expectedOutput: string;
+    isHidden?: boolean;
+  }>;
+  timeoutMs?: number;
+  memoryLimitMb?: number;
+  requestId?: string;
+}
+
+export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData | InterviewTranscriptionJobData | DsaEvaluationJobData;
 
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
@@ -197,6 +213,9 @@ export const QueueNames = {
   INTERVIEW_GUARD: 'interview-guard',
   INTERVIEW_EVALUATE: 'interview-evaluate',
   INTERVIEW_TRANSCRIPTION: 'interview-transcription',
+
+  // DSA Execution & Evaluation
+  DSA_EVAL: 'dsa-eval',
 
   // Domain event consumers (outbox relay delivers here)
   DOMAIN_READINESS: 'domain-readiness',

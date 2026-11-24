@@ -109,5 +109,6 @@ router.use('/quests', questRoutes);
 router.use('/ai', rateLimiters.ai, aiQuotaRoutes);
 router.use('/search', searchRoutes);
 router.use('/interview', interviewRoutes);
+router.use('/interviews', interviewRoutes);
 
 export default router;
