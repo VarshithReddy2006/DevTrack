@@ -18,12 +18,12 @@ class FakeEventSource {
   }
 }
 
-const envelope = (id: string, type: string) =>
+const envelope = (id: string, type: string, sequence?: number) =>
   ({
     data: JSON.stringify({
       id,
       type,
-      sequence: 1,
+      sequence: sequence ?? (id.includes('-') && !isNaN(parseInt(id, 10)) ? parseInt(id, 10) : 1),
       timestamp: new Date().toISOString(),
       userId: 'u1',
       payload: { n: id },

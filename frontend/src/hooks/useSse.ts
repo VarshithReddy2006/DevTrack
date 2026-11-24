@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { queryKeys } from '../lib/queryClient';
 import { useUIStore } from '../store/uiStore';
 import { useUserStore } from '../store/userStore';
+import { EventSequenceBuffer, type SseEventEnvelope } from '../features/realtime/eventBuffer';
 
 const SSE_PATH = '/events';
 const RECONNECT_DELAY_MS = 3_000;
@@ -60,6 +61,9 @@ const SseEventEnvelopeSchema = z.object({
   timestamp: z.string(),
   userId: z.string(),
   payload: z.record(z.string(), z.any()),
+  channel: z.string().optional(),
+  correlationId: z.string().optional(),
+  schemaVersion: z.number().optional(),
 });
 
 export interface SseEvent {
@@ -223,6 +227,81 @@ interface HookCallbackRegistry {
 
 const activeCallbacks = new Set<HookCallbackRegistry>();
 
+function dispatchSingleEvent(envelope: SseEventEnvelope, prebuiltEvent?: SseEvent): void {
+  const event: SseEvent = prebuiltEvent || {
+    type: envelope.type as SseEventType,
+    timestamp: envelope.timestamp,
+    userId: envelope.userId,
+    stats: (envelope.payload as any)?.stats ?? (envelope.payload as any),
+    payload: envelope.payload,
+  };
+
+  if (envelope.id) {
+    store.lastEventId = envelope.id;
+    rememberEnvelopeId(envelope.id);
+  }
+
+  const key = eventKey(event);
+  if (seenEventIds.has(key)) return;
+  seenEventIds.add(key);
+  if (seenEventIds.size > 200) {
+    const first = seenEventIds.values().next().value;
+    if (first) seenEventIds.delete(first);
+  }
+
+  store.eventHistory = [event, ...store.eventHistory].slice(0, MAX_HISTORY);
+  store.lastEvent = event;
+  store.lastEventAt = Date.now();
+  store.totalEventsReceived++;
+  store.consecutiveFailures = 0;
+  emitChange();
+
+  for (const cb of activeCallbacks) {
+    try {
+      cb.onEvent?.(event);
+      invalidateOnSyncEvent(cb.queryClient, event);
+      if (!cb.invalidateOn || cb.invalidateOn.includes(event.type)) {
+        for (const k of cb.extraInvalidateKeys) {
+          cb.queryClient.invalidateQueries({ queryKey: k });
+        }
+      }
+    } catch (e) {
+      console.error('[SSE] Broadcast dispatch failure: ', e);
+    }
+  }
+}
+
+function handleGapRecovery(
+  updateStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void = (status) =>
+    useUIStore.getState().setSseStatus(status),
+  updateDegraded: (degraded: boolean) => void = (deg) =>
+    useUIStore.getState().setInfrastructureDegraded(deg)
+): void {
+  if (globalEventSource !== null) {
+    globalEventSource.close();
+    globalEventSource = null;
+  }
+  clearStabilityTimer();
+  stopHeartbeatWatchdog();
+  sseEventBuffer.clearTimers();
+  scheduleReconnect(false, updateStatus, updateDegraded);
+}
+
+export const sseEventBuffer = new EventSequenceBuffer<any>({
+  maxSeenIds: 100,
+  maxBufferSize: 100,
+  gapTimeoutMs: 200,
+  onDispatch: (envelope: SseEventEnvelope, context?: any) => {
+    dispatchSingleEvent(envelope, context?.event);
+  },
+  onGapTimeout: (missingSequences, expectedSequence, channel) => {
+    console.warn(
+      `[SSE] Sequence gap detected (${missingSequences.join(', ')} missing, expected ${expectedSequence} on ${channel}), triggering gap recovery.`
+    );
+    handleGapRecovery();
+  },
+});
+
 let globalEventSource: EventSource | null = null;
 // Bumped by every disconnect. A connect attempt remembers the value it started with and gives
 // up after each await if it changed, so a disconnect always wins over a ticket request that is
@@ -365,8 +444,9 @@ async function openGlobalStream(
 
   const urlParams = new URLSearchParams({ ticket });
   
-  if (store.lastEventId) {
-    urlParams.set('lastEventId', store.lastEventId);
+  const checkpoint = store.lastEventId || sseEventBuffer.getLastDispatchedCheckpoint();
+  if (checkpoint) {
+    urlParams.set('lastEventId', checkpoint);
   }
 
   const envUrl = import.meta.env.VITE_API_BASE_URL || '';
@@ -451,17 +531,17 @@ async function openGlobalStream(
       const parsedRaw = JSON.parse(ev.data);
       envelopeId = ev.lastEventId || parsedRaw?.id || null;
 
-      // Deduplicate by envelope ID before parsing or dispatching mutations
-      if (envelopeId && seenEnvelopeIds.has(envelopeId)) {
+      // Deduplicate by envelope ID before parsing or buffering
+      if (envelopeId && (seenEnvelopeIds.has(envelopeId) || sseEventBuffer.hasSeenId(envelopeId))) {
         return;
       }
-      
+
       // Perform Zod validation on event envelope structure
       const parsedEnvelope = SseEventEnvelopeSchema.safeParse(parsedRaw);
       if (parsedEnvelope.success) {
         const data = parsedEnvelope.data;
         envelopeId = data.id;
-        if (seenEnvelopeIds.has(envelopeId)) {
+        if (seenEnvelopeIds.has(envelopeId) || sseEventBuffer.hasSeenId(envelopeId)) {
           return;
         }
         event = {
@@ -471,52 +551,40 @@ async function openGlobalStream(
           stats: data.payload as SseEvent['stats'],
           payload: data.payload,
         };
-        store.lastEventId = data.id;
+        const envelope: SseEventEnvelope = {
+          id: data.id,
+          type: data.type,
+          sequence: data.sequence,
+          timestamp: data.timestamp,
+          userId: data.userId,
+          payload: data.payload,
+          channel: data.channel,
+          correlationId: data.correlationId,
+          schemaVersion: data.schemaVersion,
+        };
+        sseEventBuffer.processEvent(envelope, { event });
       } else {
         event = parsedRaw as SseEvent;
+        const envelope: SseEventEnvelope = {
+          id: envelopeId || '',
+          type: (event.type as string) || 'unknown',
+          sequence: 0,
+          timestamp: event.timestamp || new Date().toISOString(),
+          userId: event.userId,
+          payload: event.payload || event.stats,
+        };
+        sseEventBuffer.processEvent(envelope, { event });
       }
     } catch (err) {
       console.error('[SSE] Structured payload corrupted, discarding parsing event', err);
       return;
-    }
-
-    if (envelopeId) {
-      rememberEnvelopeId(envelopeId);
-    }
-
-    const key = eventKey(event);
-    if (seenEventIds.has(key)) return;
-    seenEventIds.add(key);
-    if (seenEventIds.size > 200) {
-      const first = seenEventIds.values().next().value;
-      if (first) seenEventIds.delete(first);
-    }
-
-    store.eventHistory = [event, ...store.eventHistory].slice(0, MAX_HISTORY);
-    store.lastEvent = event;
-    store.lastEventAt = Date.now();
-    store.totalEventsReceived++;
-    store.consecutiveFailures = 0;
-    emitChange();
-
-    for (const cb of activeCallbacks) {
-      try {
-        cb.onEvent?.(event);
-        invalidateOnSyncEvent(cb.queryClient, event);
-        if (!cb.invalidateOn || cb.invalidateOn.includes(event.type)) {
-          for (const k of cb.extraInvalidateKeys) {
-            cb.queryClient.invalidateQueries({ queryKey: k });
-          }
-        }
-      } catch (e) {
-        console.error('[SSE] Broadcast dispatch failure: ', e);
-      }
     }
   };
 
   es.onerror = () => {
     clearStabilityTimer();
     stopHeartbeatWatchdog();
+    sseEventBuffer.clearTimers();
     globalConsecutiveFailures += 1;
     store.consecutiveFailures = globalConsecutiveFailures;
 
@@ -552,6 +620,7 @@ export function disconnectGlobalSse(
 
   clearStabilityTimer();
   stopHeartbeatWatchdog();
+  sseEventBuffer.clear();
   if (globalReconnectTimeout !== null) {
     clearTimeout(globalReconnectTimeout);
     globalReconnectTimeout = null;
@@ -703,6 +772,7 @@ export function getSseDiagnostics(): SseDiagnostics {
 
 export function __resetSseForTests(): void {
   disconnectGlobalSse();
+  sseEventBuffer.clear();
   seenEnvelopeIds.clear();
   seenEventIds.clear();
   userStoreSubscribed = false;
