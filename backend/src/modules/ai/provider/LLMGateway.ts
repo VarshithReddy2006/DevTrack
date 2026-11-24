@@ -8,6 +8,8 @@ import { AIResponseAuditLog } from '../../../db/models/aiResponseAuditLog.model.
 import { quotaService, AIQuotaExceededError } from '../quota.service.js';
 import { AIProviderAdapter, type AIRequest, type AIStreamOptions } from './AIProviderAdapter.js';
 import { AIStreamInterruptedError } from './AIStreamInterruptedError.js';
+import { semanticCacheService } from '../../../shared/ai/semanticCache.service.js';
+import env from '../../../config/env.js';
 
 export interface LLMCompletionRequest {
   userId: string;
@@ -33,6 +35,8 @@ export interface LLMCompletionResponse {
   cost: number;
   fallbackTriggered: boolean;
   promptHash: string;
+  cacheType?: 'EXACT' | 'SEMANTIC';
+  headers?: Record<string, string>;
 }
 
 /** What streamCompletion yields: text deltas as they arrive, then one `done` summary. */
@@ -133,10 +137,57 @@ export class LLMGateway {
             cost: 0,
             fallbackTriggered: false,
             promptHash,
+            cacheType: 'EXACT',
+            headers: { 'X-Cache': 'HIT-EXACT' },
           };
         }
       } catch (err) {
         logger.warn('[LLMGateway] Prompt cache lookup error', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // 2.5 Semantic Cache Check (Vector Cosine Similarity >= 0.95 within topicScope/feature)
+    if (!bypassCache && env.SEMANTIC_CACHE_ENABLED) {
+      try {
+        const semanticRes = await semanticCacheService.findSimilar(feature, prompt);
+        if (semanticRes.hit && semanticRes.entry) {
+          const latencyMs = Math.max(1, Date.now() - startTime);
+          const entry = semanticRes.entry;
+
+          await this.auditLog({
+            userId,
+            promptHash,
+            requestType: feature,
+            model: entry.model || targetModel,
+            provider: entry.provider || preferredProvider,
+            latencyMs,
+            tokensUsed: entry.tokensUsed || 0,
+            cost: 0,
+            cached: true,
+            cacheHit: true,
+            fallbackTriggered: false,
+            success: true,
+          });
+
+          return {
+            content: entry.completion,
+            model: entry.model || targetModel,
+            provider: entry.provider || preferredProvider,
+            tokensUsed: entry.tokensUsed || 0,
+            latencyMs,
+            cached: true,
+            cacheHit: true,
+            cost: 0,
+            fallbackTriggered: false,
+            promptHash,
+            cacheType: 'SEMANTIC',
+            headers: { 'X-Cache': 'HIT-SEMANTIC' },
+          };
+        }
+      } catch (semErr) {
+        logger.warn('[LLMGateway] Semantic cache lookup error', {
+          error: semErr instanceof Error ? semErr.message : String(semErr),
+        });
       }
     }
 
@@ -210,7 +261,7 @@ export class LLMGateway {
     const latencyMs = Math.max(1, Date.now() - startTime);
     const cost = this.estimateCost(selectedProvider, tokensUsed);
 
-    // 4. Cache Response in Redis
+    // 4. Cache Response in Redis (Exact Hash Cache and Semantic Vector Cache)
     if (isRedisConfigured() && content) {
       try {
         const redis = getRedisClient();
@@ -227,6 +278,24 @@ export class LLMGateway {
         );
       } catch (err) {
         logger.warn('[LLMGateway] Failed to save response to prompt cache', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (env.SEMANTIC_CACHE_ENABLED && content && selectedProvider !== 'heuristic') {
+      try {
+        await semanticCacheService.set({
+          topicScope: feature,
+          prompt,
+          completion: content,
+          model: selectedModel,
+          provider: selectedProvider,
+          tokensUsed,
+          ttlSeconds: env.SEMANTIC_CACHE_TTL_SECONDS,
+        });
+      } catch (semStoreErr) {
+        logger.warn('[LLMGateway] Failed to save response to semantic cache', {
+          error: semStoreErr instanceof Error ? semStoreErr.message : String(semStoreErr),
+        });
       }
     }
 
@@ -316,12 +385,44 @@ export class LLMGateway {
             response: {
               content: parsed.content, model, provider, tokensUsed: parsed.tokensUsed || 0, latencyMs,
               cached: true, cacheHit: true, cost: 0, fallbackTriggered: false, promptHash,
+              cacheType: 'EXACT', headers: { 'X-Cache': 'HIT-EXACT' },
             },
           };
           return;
         }
       } catch (err) {
         logger.warn('[LLMGateway] Prompt cache lookup error', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (!bypassCache && env.SEMANTIC_CACHE_ENABLED) {
+      try {
+        const semanticRes = await semanticCacheService.findSimilar(feature, prompt);
+        if (semanticRes.hit && semanticRes.entry) {
+          const entry = semanticRes.entry;
+          const latencyMs = Math.max(1, Date.now() - startTime);
+          const model = entry.model || targetModel;
+          const provider = entry.provider || preferredProvider;
+          await this.auditLog({
+            userId, promptHash, requestType: feature, model, provider, latencyMs,
+            tokensUsed: entry.tokensUsed || 0, cost: 0, cached: true, cacheHit: true,
+            fallbackTriggered: false, success: true,
+          });
+          if (entry.completion) yield { type: 'delta', delta: entry.completion };
+          yield {
+            type: 'done',
+            response: {
+              content: entry.completion, model, provider, tokensUsed: entry.tokensUsed || 0, latencyMs,
+              cached: true, cacheHit: true, cost: 0, fallbackTriggered: false, promptHash,
+              cacheType: 'SEMANTIC', headers: { 'X-Cache': 'HIT-SEMANTIC' },
+            },
+          };
+          return;
+        }
+      } catch (semErr) {
+        logger.warn('[LLMGateway] Semantic cache lookup error in streaming', {
+          error: semErr instanceof Error ? semErr.message : String(semErr),
+        });
       }
     }
 
@@ -388,6 +489,24 @@ export class LLMGateway {
         );
       } catch (err) {
         logger.warn('[LLMGateway] Failed to save response to prompt cache', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (env.SEMANTIC_CACHE_ENABLED && content && selectedProvider !== 'heuristic') {
+      try {
+        await semanticCacheService.set({
+          topicScope: feature,
+          prompt,
+          completion: content,
+          model: selectedModel,
+          provider: selectedProvider,
+          tokensUsed,
+          ttlSeconds: env.SEMANTIC_CACHE_TTL_SECONDS,
+        });
+      } catch (semStoreErr) {
+        logger.warn('[LLMGateway] Failed to save streaming response to semantic cache', {
+          error: semStoreErr instanceof Error ? semStoreErr.message : String(semStoreErr),
+        });
       }
     }
 

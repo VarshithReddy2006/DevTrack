@@ -11,16 +11,37 @@ import { User } from '../../../db/models/user.model.js';
 import { LLMGateway, llmGateway } from '../../../modules/ai/provider/LLMGateway.js';
 import { QuotaService, quotaService, AIQuotaExceededError } from '../../../modules/ai/quota.service.js';
 import { AIProviderAdapter } from '../../../modules/ai/provider/AIProviderAdapter.js';
+import { semanticCacheService } from '../../../shared/ai/semanticCache.service.js';
 import { aiQuotaRoutes } from '../../../modules/ai/quota.routes.js';
 import { errorHandler } from '../../../middleware/error.js';
 
 // In-memory Redis simulation for stateful quota and caching tests
 const redisStore = new Map<string, string>();
+const listStore = new Map<string, string[]>();
+
 const mockRedis = {
   status: 'ready',
   get: vi.fn(async (key: string) => redisStore.get(key) ?? null),
   set: vi.fn(async (key: string, val: string) => {
     redisStore.set(key, String(val));
+    return 'OK';
+  }),
+  mget: vi.fn(async (...keys: string[]) => keys.map((k) => redisStore.get(k) ?? null)),
+  lpush: vi.fn(async (key: string, ...values: string[]) => {
+    const list = listStore.get(key) || [];
+    list.unshift(...values);
+    listStore.set(key, list);
+    return list.length;
+  }),
+  lrange: vi.fn(async (key: string, start: number, stop: number) => {
+    const list = listStore.get(key) || [];
+    if (stop === -1) return list.slice(start);
+    return list.slice(start, stop + 1);
+  }),
+  ltrim: vi.fn(async (key: string, start: number, stop: number) => {
+    const list = listStore.get(key) || [];
+    const trimmed = stop === -1 ? list.slice(start) : list.slice(start, stop + 1);
+    listStore.set(key, trimmed);
     return 'OK';
   }),
   incr: vi.fn(async (key: string) => {
@@ -34,6 +55,7 @@ const mockRedis = {
     let count = 0;
     for (const k of keys) {
       if (redisStore.delete(k)) count++;
+      if (listStore.delete(k)) count++;
     }
     return count;
   }),
@@ -41,6 +63,8 @@ const mockRedis = {
     const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
     return Array.from(redisStore.keys()).filter((k) => regex.test(k));
   }),
+  call: vi.fn(async () => []),
+  send_command: vi.fn(async () => []),
 };
 
 vi.mock('../../../shared/redis/client.js', () => ({
@@ -89,6 +113,8 @@ describe('LLMGateway & QuotaService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     redisStore.clear();
+    listStore.clear();
+    semanticCacheService.clearMemoryCache();
     vi.stubEnv('CLERK_SECRET_KEY', 'sk_test_llm_gateway');
     fixture.verify.mockResolvedValue({ sub: 'clerk_llm_user' });
 
@@ -236,6 +262,53 @@ describe('LLMGateway & QuotaService', () => {
 
       expect(second.cached).toBe(false);
       expect(generateSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns semantic cache hit for paraphrased query with cosine similarity >= 0.95', async () => {
+      const generateSpy = vi.spyOn(AIProviderAdapter, 'generateResponse').mockResolvedValue({
+        content: 'Engineered serverless microservices with AWS Lambda, reducing latency by 45%.',
+        model: 'gemini-1.5-flash',
+        provider: 'gemini',
+        tokensUsed: 30,
+        latency: 120,
+        cached: false,
+        fallbackTriggered: false,
+      });
+
+      // Mock high similarity embedding for paraphrased prompts (>= 0.95)
+      const embedding1 = [0.98, 0.05, 0.02, 0.01];
+      const embedding2 = [0.97, 0.06, 0.02, 0.01];
+      let embeddingCallCount = 0;
+      vi.spyOn(semanticCacheService, 'generateEmbedding').mockImplementation(async () => {
+        embeddingCallCount++;
+        return embeddingCallCount === 1 ? embedding1 : embedding2;
+      });
+
+      // Query 1: Initial call
+      const first = await llmGateway.generateCompletion({
+        userId,
+        prompt: 'Optimize my bullet point for AWS Lambda',
+        feature: 'resume_rewrite',
+      });
+
+      expect(first.cached).toBe(false);
+      expect(first.cacheHit).toBe(false);
+      expect(generateSpy).toHaveBeenCalledTimes(1);
+
+      // Query 2: Paraphrased query that shares high semantic similarity (cosine similarity >= 0.95)
+      const second = await llmGateway.generateCompletion({
+        userId,
+        prompt: 'Optimize this bullet point for AWS Lambda serverless',
+        feature: 'resume_rewrite',
+      });
+
+      // Semantic similarity hit, provider shouldn't be called again
+      expect(second.cached).toBe(true);
+      expect(second.cacheHit).toBe(true);
+      expect(second.cacheType).toBe('SEMANTIC');
+      expect(second.headers?.['X-Cache']).toBe('HIT-SEMANTIC');
+      expect(second.content).toContain('Engineered serverless microservices');
+      expect(generateSpy).toHaveBeenCalledTimes(1);
     });
   });
 

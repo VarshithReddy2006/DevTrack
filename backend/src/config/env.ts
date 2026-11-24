@@ -162,6 +162,11 @@ export const env = {
   // AI/ML API Keys - REQUIRED for production intelligence
   // In development, warn but allow startup with degraded mode
   GEMINI_API_KEY: getEnvVar('GEMINI_API_KEY', ''),
+
+  // Semantic Cache Configuration
+  SEMANTIC_CACHE_ENABLED: getEnvVar('SEMANTIC_CACHE_ENABLED', 'true') === 'true',
+  SEMANTIC_CACHE_SIMILARITY_THRESHOLD: Number(process.env.SEMANTIC_CACHE_SIMILARITY_THRESHOLD ?? 0.95),
+  SEMANTIC_CACHE_TTL_SECONDS: getEnvVarNumber('SEMANTIC_CACHE_TTL_SECONDS', 7 * 24 * 60 * 60), // 7 days default
 };
 
 export default env;
