@@ -237,21 +237,58 @@ export class AudioStreamingService {
     if (redis) {
       const key = this.redisSessionKey(sessionId);
       const rawMeta = await redis.hget(key, 'meta');
+      let meta: SessionAudioMeta | null = null;
       if (rawMeta) {
         try {
-          return JSON.parse(rawMeta);
+          meta = JSON.parse(rawMeta);
         } catch {
           // corrupted json, reinitialize
         }
+      }
+
+      // Sync receivedIndices from actual stored chunk keys in Redis hash to prevent index loss from concurrent writes
+      if (typeof redis.hkeys === 'function') {
+        const allKeys = await redis.hkeys(key);
+        const storedIndices = allKeys
+          .filter((k) => k.startsWith('chunk:') && !k.startsWith('chunkMeta:'))
+          .map((k) => Number(k.replace('chunk:', '')))
+          .filter((n) => !isNaN(n));
+
+        if (meta) {
+          if (storedIndices.length > 0) {
+            const indexSet = new Set([...meta.receivedIndices, ...storedIndices]);
+            meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+            meta.highestIndex = Math.max(meta.highestIndex, ...meta.receivedIndices);
+          }
+          return meta;
+        } else if (storedIndices.length > 0) {
+          const initial = this.createInitialMeta(sessionId);
+          initial.receivedIndices = storedIndices.sort((a, b) => a - b);
+          initial.highestIndex = Math.max(...initial.receivedIndices);
+          return initial;
+        }
+      } else if (meta) {
+        return meta;
       }
     }
 
     const inMem = this.inMemorySessions.get(sessionId);
     if (inMem) {
+      // Sync receivedIndices from in-memory chunks map
+      const storedIndices = Array.from(inMem.chunks.keys()).sort((a, b) => a - b);
+      if (storedIndices.length > 0) {
+        const indexSet = new Set([...inMem.meta.receivedIndices, ...storedIndices]);
+        inMem.meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+        inMem.meta.highestIndex = Math.max(inMem.meta.highestIndex, ...inMem.meta.receivedIndices);
+      }
       return inMem.meta;
     }
 
-    const initial: SessionAudioMeta = {
+    return this.createInitialMeta(sessionId);
+  }
+
+  private createInitialMeta(sessionId: string): SessionAudioMeta {
+    return {
       sessionId,
       status: 'recording',
       receivedIndices: [],
@@ -264,8 +301,6 @@ export class AudioStreamingService {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-
-    return initial;
   }
 
   /**
@@ -385,6 +420,22 @@ export class AudioStreamingService {
           durationMs,
           receivedAt: storedChunk.receivedAt,
         }),
+      });
+
+      // Query actual stored chunk keys to guarantee complete index set despite any concurrent writes
+      if (typeof redis.hkeys === 'function') {
+        const allKeys = await redis.hkeys(redisKey);
+        const storedIndices = allKeys
+          .filter((k) => k.startsWith('chunk:') && !k.startsWith('chunkMeta:'))
+          .map((k) => Number(k.replace('chunk:', '')))
+          .filter((n) => !isNaN(n));
+
+        const indexSet = new Set([...meta.receivedIndices, ...storedIndices, chunkIndex]);
+        meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+        meta.highestIndex = Math.max(meta.highestIndex, ...meta.receivedIndices);
+      }
+
+      await redis.hset(redisKey, {
         meta: JSON.stringify(meta),
       });
       // Refresh session TTL for auto-clean of orphaned recordings
@@ -395,8 +446,12 @@ export class AudioStreamingService {
         session = { meta, chunks: new Map() };
         this.inMemorySessions.set(sessionId, session);
       }
-      session.meta = meta;
       session.chunks.set(chunkIndex, storedChunk);
+      const storedIndices = Array.from(session.chunks.keys()).sort((a, b) => a - b);
+      const indexSet = new Set([...meta.receivedIndices, ...storedIndices, chunkIndex]);
+      meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+      meta.highestIndex = Math.max(meta.highestIndex, ...meta.receivedIndices);
+      session.meta = meta;
     }
 
     // Evaluate speech completion triggers:
@@ -483,6 +538,38 @@ export class AudioStreamingService {
     const chunksMap = new Map<number, StoredAudioChunk>();
     const redis = this.getRedis();
     const redisKey = this.redisSessionKey(sessionId);
+
+    // Atomic locking: guarantee only one worker/chunk initiates assembly and transcription enqueue
+    if (redis) {
+      if (typeof redis.hsetnx === 'function') {
+        const lockAcquired = await redis.hsetnx(redisKey, 'status:assembling', '1');
+        if (lockAcquired !== 1) {
+          logger.info('[audio-streaming] Assembly already in progress or completed; skipping duplicate assembly', { sessionId });
+          return {
+            assembledBuffer: Buffer.alloc(0),
+            totalDurationMs: 0,
+            leadingTrimmedCount: 0,
+            trailingTrimmedCount: 0,
+            transcriptionEnqueued: false,
+          };
+        }
+      }
+    } else {
+      const session = this.inMemorySessions.get(sessionId);
+      if (session) {
+        if ((session as any).isAssembling || session.meta.status === 'assembled' || session.meta.status === 'transcribing') {
+          logger.info('[audio-streaming] Assembly already in progress (in-memory); skipping duplicate assembly', { sessionId });
+          return {
+            assembledBuffer: Buffer.alloc(0),
+            totalDurationMs: 0,
+            leadingTrimmedCount: 0,
+            trailingTrimmedCount: 0,
+            transcriptionEnqueued: false,
+          };
+        }
+        (session as any).isAssembling = true;
+      }
+    }
 
     if (redis) {
       const allFields = await redis.hgetall(redisKey);
