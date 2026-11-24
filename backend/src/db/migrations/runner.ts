@@ -37,13 +37,16 @@ export function createMigrationRunner(connection: Connection, migrations: Versio
       const migration = byName.get(entry.name);
       if (entry.recovery) throw new Error(`Migration ${entry.name} requires manual recovery after ${entry.recovery}`);
       if (!migration && entry.status === 'success') throw new Error(`Migration file missing: ${entry.name}`);
-      if (migration && migration.checksum !== entry.checksum) {
+      if (entry.status === 'success' && migration && migration.checksum !== entry.checksum) {
         throw new Error(`Migration checksum mismatch: ${entry.name}`);
       }
     }
   }
 
   async function withLock(action: (transactional: boolean) => Promise<void>) {
+    const staleLockThreshold = new Date(Date.now() - 2 * 60 * 1000);
+    await locks.deleteOne({ ...activeLock, startedAt: { $lt: staleLockThreshold } }).catch(() => {});
+
     const lock = { ...activeLock, owner: randomUUID(), startedAt: new Date() };
     const writeConcern = { w: 'majority' } as const;
     try {

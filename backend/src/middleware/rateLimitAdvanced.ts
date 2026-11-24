@@ -118,7 +118,7 @@ export function createRateLimiter(endpointType: string) {
     res: Response,
     next: NextFunction
   ): Promise<void> {
-    if (process.env.NODE_ENV === 'development' || !isRedisConfigured()) {
+    if (req.method === 'OPTIONS' || process.env.NODE_ENV === 'development' || !isRedisConfigured()) {
       next();
       return;
     }

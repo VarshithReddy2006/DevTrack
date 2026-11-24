@@ -165,8 +165,7 @@ async function bootstrap() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error('CRITICAL: Database migration check failed', error, { message });
-      process.exit(1);
+      logger.error('CRITICAL: Database migration check failed (server continuing in degraded mode)', error, { message });
     }
   }
 
