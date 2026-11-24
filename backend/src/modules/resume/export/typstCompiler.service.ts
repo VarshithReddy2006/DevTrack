@@ -2,7 +2,6 @@
 // Automated compilation service for ATS-optimized vector PDFs using WebAssembly Typst
 // Guarantees strict 1-page / 2-page pagination with dynamic line-spacing and margin scaling.
 
-import { NodeCompiler } from '@myriaddreamin/typst-ts-node-compiler';
 import { PDFParse } from 'pdf-parse';
 import { logger } from '../../../shared/logger.js';
 import {
@@ -48,8 +47,9 @@ export class TypstCompilerService {
   /**
    * Get or create lazy singleton NodeCompiler instance
    */
-  private static getCompiler(): any {
+  private static async getCompiler(): Promise<any> {
     if (!this.compilerInstance) {
+      const { NodeCompiler } = await import('@myriaddreamin/typst-ts-node-compiler');
       this.compilerInstance = (NodeCompiler as any).create
         ? (NodeCompiler as any).create()
         : new NodeCompiler();
@@ -103,7 +103,7 @@ export class TypstCompilerService {
       },
     ];
 
-    const compiler = TypstCompilerService.getCompiler();
+    const compiler = await TypstCompilerService.getCompiler();
     let bestPdf: Buffer | null = null;
     let finalPageCount = 1;
     let finalExtractedLength = 0;

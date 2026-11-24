@@ -127,12 +127,15 @@ export class ResumeExportService {
     const skillList = skills.join(', ') || 'None';
     switch (options.exportType) {
       case 'pdf': {
-        const structuredResume = typstCompilerService.mapProfileToStructuredResume(profile);
-        const result = await typstCompilerService.compileToPdf(structuredResume, {
-          template: options.template ?? 'modern-tech',
-          targetPages: options.targetPages ?? 1,
-        });
-        return result.pdf;
+        if (options.template) {
+          const structuredResume = typstCompilerService.mapProfileToStructuredResume(profile);
+          const result = await typstCompilerService.compileToPdf(structuredResume, {
+            template: options.template,
+            targetPages: options.targetPages ?? 1,
+          });
+          return result.pdf;
+        }
+        return this.generateProfilePDF(summary, skillList);
       }
       case 'typst': {
         const structuredResume = typstCompilerService.mapProfileToStructuredResume(profile);
