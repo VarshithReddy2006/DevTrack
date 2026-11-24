@@ -222,6 +222,9 @@ export function setupHealthEndpoints(
           mongodbReadyState: mongoState,
           ...(state.mongodb.error ? { mongodbError: sanitizeMongoError(state.mongodb.error) } : {}),
           api: state.api.status,
+          clerk: process.env.CLERK_SECRET_KEY
+            ? ((process.env.CLERK_SECRET_KEY || '').startsWith('sk_live_') ? 'live_configured' : (process.env.CLERK_SECRET_KEY || '').startsWith('sk_test_') ? 'test_configured' : 'configured')
+            : 'missing',
           ...(state.api.error ? { apiError: state.api.error } : {}),
         },
       });
@@ -261,6 +264,9 @@ export function setupHealthEndpoints(
           mongodbReadyState: mongoState,
           ...(state.mongodb.error ? { mongodbError: sanitizeMongoError(state.mongodb.error) } : {}),
           api: state.api.status,
+          clerk: process.env.CLERK_SECRET_KEY
+            ? ((process.env.CLERK_SECRET_KEY || '').startsWith('sk_live_') ? 'live_configured' : (process.env.CLERK_SECRET_KEY || '').startsWith('sk_test_') ? 'test_configured' : 'configured')
+            : 'missing',
           ...(state.api.error ? { apiError: state.api.error } : {}),
         },
       });
