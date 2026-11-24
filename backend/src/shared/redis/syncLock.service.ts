@@ -5,6 +5,7 @@
 import { getRedisClient } from './client.js';
 import { logger } from '../logger.js';
 import { trackSyncLockAcquisition, trackSyncLockFailure, trackSyncLockRelease, trackStaleLocksCleaned } from '../monitoring.js';
+import { acquireDistributedLock, type DistributedLockHandle } from './distributedLock.js';
 
 const LOCK_TIMEOUT_MS = 30_000; // 30 second lock timeout
 const LOCK_RETRY_DELAY_MS = 500; // 500ms between retry attempts
@@ -13,18 +14,24 @@ const MAX_LOCK_RETRIES = 10; // Max 5 seconds total wait
 const SCHEDULER_LOCK_KEY = 'sse:sync:scheduler:leader';
 const SCHEDULER_LOCK_TIMEOUT_MS = 60_000; // 60s TTL for scheduler sweep
 
+let activeSchedulerLockHandle: DistributedLockHandle | null = null;
+
 /**
  * Attempts to acquire the distributed scheduler leader lock.
- * Ensures only one replica executes the scheduled sync sweep.
+ * Ensures only one replica executes the scheduled sync sweep with atomic owner fencing.
  */
 export async function acquireSchedulerLock(ttlMs: number = SCHEDULER_LOCK_TIMEOUT_MS): Promise<boolean> {
-  const redis = getRedisClient();
-  if (redis.status !== 'ready') {
-    return true; // Graceful degradation in non-redis test envs
-  }
   try {
-    const result = await redis.set(SCHEDULER_LOCK_KEY, '1', 'PX', ttlMs, 'NX');
-    return result === 'OK';
+    const handle = await acquireDistributedLock('platform_sync_scheduler', {
+      lockKey: SCHEDULER_LOCK_KEY,
+      ttlMs,
+      fallbackOnRedisUnavailable: true,
+    });
+    if (handle) {
+      activeSchedulerLockHandle = handle;
+      return true;
+    }
+    return false;
   } catch (err) {
     logger.warn('[syncLock] Error acquiring scheduler lock', {
       error: err instanceof Error ? err.message : String(err),
@@ -34,11 +41,25 @@ export async function acquireSchedulerLock(ttlMs: number = SCHEDULER_LOCK_TIMEOU
 }
 
 /**
- * Releases the distributed scheduler leader lock.
+ * Releases the distributed scheduler leader lock using safe ownership verification.
  */
 export async function releaseSchedulerLock(): Promise<boolean> {
+  if (activeSchedulerLockHandle) {
+    try {
+      const released = await activeSchedulerLockHandle.release();
+      activeSchedulerLockHandle = null;
+      return released;
+    } catch (err) {
+      logger.warn('[syncLock] Error releasing scheduler lock handle', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      activeSchedulerLockHandle = null;
+      return false;
+    }
+  }
+
   const redis = getRedisClient();
-  if (redis.status !== 'ready') return true;
+  if (!redis || redis.status !== 'ready' || typeof redis.del !== 'function') return true;
   try {
     const deleted = await redis.del(SCHEDULER_LOCK_KEY);
     return deleted > 0;
