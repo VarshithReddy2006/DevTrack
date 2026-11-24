@@ -22,8 +22,9 @@ export function mountApiRoutes(app: Express, routes: Router): void {
       || (req.method === 'POST' && /^\/readiness\/roadmap\/generate\/?$/i.test(req.path))
       || (req.method === 'PATCH' && /^\/readiness\/roadmap\/milestones\/[^/]+\/tasks\/[^/]+\/?$/i.test(req.path));
     const search = (req.method === 'GET' || req.method === 'HEAD') && /^\/search\/?$/i.test(req.path);
+    const interview = /^\/interview\/[^/]+\/audio(\/(chunk|status))?\/?$/i.test(req.path);
     const privacy = /^\/privacy(\/.*)?$/i.test(req.path);
-    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap || search || privacy ? routes(req, res, next) : next();
+    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap || search || interview || privacy ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

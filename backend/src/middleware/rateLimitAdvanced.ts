@@ -87,6 +87,13 @@ const ENDPOINT_CONFIGS: Record<string, RateLimitConfig> = {
     blockDurationMs: 30_000,
     enableBurstHandling: true,
   },
+  interviewAudio: {
+    windowMs: 60_000,
+    maxRequests: 180, // frequent 1-2s audio slices during real-time speech
+    keyPrefix: 'rl:interview-audio',
+    blockDurationMs: 30_000,
+    enableBurstHandling: true,
+  },
   default: {
     windowMs: 60_000,
     maxRequests: 100,
@@ -117,86 +124,107 @@ export function createRateLimiter(endpointType: string) {
     }
 
     const redis = getRedisClient();
-    const identifier = getIdentifier(req);
-    const now = Date.now();
-
-    // Build rate limit key
-    const key = `${config.keyPrefix}:${identifier}`;
-    const blockKey = `${key}:blocked`;
-
-    // Check if currently blocked
-    const isBlocked = await redis.get(blockKey);
-    if (isBlocked) {
-      const ttl = await redis.ttl(blockKey);
-      logger.warn('[rate-limit] Request blocked', {
-        endpointType,
-        identifier,
-        blockTtlSeconds: ttl,
-      });
-
-      res.set('Retry-After', String(Math.ceil(ttl)));
-      res.status(429).json({
-        success: false,
-        message: 'Too many requests. You have been temporarily blocked.',
-        code: 'RATE_LIMIT_BLOCKED',
-        retryAfter: Math.ceil(ttl),
-      });
+    if (
+      !redis ||
+      typeof redis.get !== 'function' ||
+      typeof redis.incr !== 'function' ||
+      typeof redis.ttl !== 'function'
+    ) {
+      next();
       return;
     }
 
-    // Increment request count
-    const currentCount = await redis.incr(key);
+    try {
+      const identifier = getIdentifier(req);
+      const now = Date.now();
 
-    // Set expiry on first request
-    if (currentCount === 1) {
-      await redis.pexpire(key, config.windowMs);
+      // Build rate limit key
+      const key = `${config.keyPrefix}:${identifier}`;
+      const blockKey = `${key}:blocked`;
+
+      // Check if currently blocked
+      const isBlocked = await redis.get(blockKey);
+      if (isBlocked) {
+        const ttl = await redis.ttl(blockKey);
+        logger.warn('[rate-limit] Request blocked', {
+          endpointType,
+          identifier,
+          blockTtlSeconds: ttl,
+        });
+
+        res.set('Retry-After', String(Math.ceil(ttl)));
+        res.status(429).json({
+          success: false,
+          message: 'Too many requests. You have been temporarily blocked.',
+          code: 'RATE_LIMIT_BLOCKED',
+          retryAfter: Math.ceil(ttl),
+        });
+        return;
+      }
+
+      // Increment request count
+      const currentCount = await redis.incr(key);
+
+      // Set expiry on first request
+      if (currentCount === 1) {
+        if (typeof redis.pexpire === 'function') {
+          await redis.pexpire(key, config.windowMs);
+        } else if (typeof redis.expire === 'function') {
+          await redis.expire(key, Math.ceil(config.windowMs / 1000));
+        }
+      }
+
+      // Calculate reset time
+      const ttl = await redis.ttl(key);
+      const resetAt = now + (ttl >= 0 ? ttl * 1000 : config.windowMs);
+
+      // Check if over limit
+      if (currentCount > config.maxRequests) {
+        // Block the user
+        if (typeof redis.set === 'function') {
+          await redis.set(blockKey, '1', 'PX', config.blockDurationMs);
+        }
+
+        logger.warn('[rate-limit] Rate limit exceeded, blocking', {
+          endpointType,
+          identifier,
+          currentCount,
+          maxRequests: config.maxRequests,
+          windowMs: config.windowMs,
+        });
+
+        res.set('Retry-After', String(Math.ceil(config.blockDurationMs / 1000)));
+        res.status(429).json({
+          success: false,
+          message: 'Rate limit exceeded',
+          code: 'RATE_LIMIT_EXCEEDED',
+          retryAfter: Math.ceil(config.blockDurationMs / 1000),
+        });
+        return;
+      }
+
+      // Add rate limit headers
+      const remaining = Math.max(0, config.maxRequests - currentCount);
+      res.set('X-RateLimit-Limit', String(config.maxRequests));
+      res.set('X-RateLimit-Remaining', String(remaining));
+      res.set('X-RateLimit-Reset', String(Math.ceil(resetAt / 1000)));
+
+      // Log burst detection if enabled
+      if (config.enableBurstHandling && currentCount > config.maxRequests * 0.8) {
+        logger.info('[rate-limit] High request rate detected', {
+          endpointType,
+          identifier,
+          currentCount,
+          maxRequests: config.maxRequests,
+          percentUsed: Math.round((currentCount / config.maxRequests) * 100),
+        });
+      }
+
+      next();
+    } catch (err) {
+      logger.warn('[rate-limit] Redis error, bypassing rate limit', { error: err });
+      next();
     }
-
-    // Calculate reset time
-    const ttl = await redis.ttl(key);
-    const resetAt = now + (ttl >= 0 ? ttl * 1000 : config.windowMs);
-
-    // Check if over limit
-    if (currentCount > config.maxRequests) {
-      // Block the user
-      await redis.set(blockKey, '1', 'PX', config.blockDurationMs);
-
-      logger.warn('[rate-limit] Rate limit exceeded, blocking', {
-        endpointType,
-        identifier,
-        currentCount,
-        maxRequests: config.maxRequests,
-        windowMs: config.windowMs,
-      });
-
-      res.set('Retry-After', String(Math.ceil(config.blockDurationMs / 1000)));
-      res.status(429).json({
-        success: false,
-        message: 'Rate limit exceeded',
-        code: 'RATE_LIMIT_EXCEEDED',
-        retryAfter: Math.ceil(config.blockDurationMs / 1000),
-      });
-      return;
-    }
-
-    // Add rate limit headers
-    const remaining = Math.max(0, config.maxRequests - currentCount);
-    res.set('X-RateLimit-Limit', String(config.maxRequests));
-    res.set('X-RateLimit-Remaining', String(remaining));
-    res.set('X-RateLimit-Reset', String(Math.ceil(resetAt / 1000)));
-
-    // Log burst detection if enabled
-    if (config.enableBurstHandling && currentCount > config.maxRequests * 0.8) {
-      logger.info('[rate-limit] High request rate detected', {
-        endpointType,
-        identifier,
-        currentCount,
-        maxRequests: config.maxRequests,
-        percentUsed: Math.round((currentCount / config.maxRequests) * 100),
-      });
-    }
-
-    next();
   };
 }
 
@@ -276,6 +304,7 @@ export const rateLimiters = {
   resume: createRateLimiter('resume'),
   resumeRead: createRateLimiter('resumeRead'),
   resumeReadIngress: createRateLimiter('resumeReadIngress'),
+  interviewAudio: createRateLimiter('interviewAudio'),
   analytics: createRateLimiter('analytics'),
   expensiveAction: createSlidingWindowRateLimiter(3_600_000, 5),
   default: createRateLimiter('default'),

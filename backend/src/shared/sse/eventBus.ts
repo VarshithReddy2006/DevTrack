@@ -273,6 +273,7 @@ export type SseEventType =
   | 'interview.session.completed'
   | 'interview.time_warning'
   | 'interview.report_ready'
+  | 'interview.audio_transcribed'
   | 'jobtarget.updated'
   | 'evidence.verified'
   // Privacy & Compliance
