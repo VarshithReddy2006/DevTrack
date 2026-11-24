@@ -17,8 +17,15 @@ import { calculateStreaks, formatISODate, getStartOfDay, getStartOfYear, subtrac
 import { getAchievements } from '../dashboard/dashboard.service.js';
 import { ogImagePath, ogImageVersion } from './og/ogCard.js';
 import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
+import { isRedisConfigured } from '../../shared/redis/client.js';
+import { withDistributedLock } from '../../shared/redis/distributedLock.js';
 
 const SNAPSHOT_VERSION = 2;
+const snapshotFlights = new Map<string, Promise<void>>();
+
+export function isCurrentProfileSnapshot(snapshot?: Pick<IPublicProfile['snapshot'], 'version'> | null): boolean {
+  return !!snapshot && Number.isInteger(snapshot.version) && snapshot.version >= SNAPSHOT_VERSION;
+}
 
 function numericStat(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
@@ -34,6 +41,37 @@ export function canViewPublicProfile(
 }
 
 export class PublicProfileService {
+  /** Coalesce expensive public-read rebuilds; never cache a viewer's response or publication permission. */
+  static ensureCurrentSnapshot(userId: mongoose.Types.ObjectId | string): Promise<void> {
+    const key = String(userId);
+    const existing = snapshotFlights.get(key);
+    if (existing) return existing;
+    const readPublished = async () => {
+      const profile = await PublicProfile.findOne({ userId, published: true }).select('snapshot.version').lean();
+      if (!profile) throw new Error('Profile not found');
+      return profile;
+    };
+    const flight = (async () => {
+      if (isCurrentProfileSnapshot((await readPublished()).snapshot)) return;
+      const locked = await withDistributedLock(`devtrack:profile:compute:${key}`, async () => {
+        // Another replica may have completed the rebuild between our first read and acquiring its lock.
+        if (!isCurrentProfileSnapshot((await readPublished()).snapshot)) await this.computeProfile(userId);
+      }, { autoRenew: true, fallbackOnRedisUnavailable: !isRedisConfigured() });
+      if (locked.executed) return;
+      // One bounded, indexed poll per process, rather than one rebuild per waiting HTTP request.
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (isCurrentProfileSnapshot((await readPublished()).snapshot)) return;
+      }
+      throw Object.assign(new Error('Public profile snapshot is refreshing; retry shortly'), { statusCode: 503 });
+    })().finally(() => {
+      if (snapshotFlights.get(key) === flight) snapshotFlights.delete(key);
+    });
+    snapshotFlights.set(key, flight);
+    return flight;
+  }
+
   /** Read only explicitly public snapshot metadata. Crawlers do not count as profile views. */
   static async getPublishedPreview(slug: string) {
     const profile = await PublicProfile.findOne({ slug, published: true, visibility: 'public' })
@@ -250,8 +288,8 @@ export class PublicProfileService {
     let profile = await PublicProfile.findOne({ slug: username.toLowerCase(), published: true });
     if (!profile) throw new Error('Profile not found');
 
-    if (profile.snapshot.version < SNAPSHOT_VERSION) {
-      await this.computeProfile(profile.userId);
+    if (!isCurrentProfileSnapshot(profile.snapshot)) {
+      await this.ensureCurrentSnapshot(profile.userId);
       // The owner may have unpublished while the snapshot was rebuilding.
       profile = await PublicProfile.findOne({ userId: profile.userId, published: true });
       if (!profile) throw new Error('Profile not found');
