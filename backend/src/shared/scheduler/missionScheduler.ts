@@ -25,14 +25,18 @@ export async function runScheduledMissionSweep(type: MissionPeriodType, now = ne
   const acquired = await redis.set(key, token, 'PX', SWEEP_LOCK_TTL_MS, 'NX');
   if (acquired !== 'OK') return;
 
+  let completed = false;
   try {
     const generate = type === 'daily' ? generateDailyMissions : generateWeeklyMissions;
     await generate(now);
+    completed = true;
   } finally {
-    try {
-      await redis.eval(RELEASE_OWNED_LOCK, 1, key, token);
-    } catch (error) {
-      logger.warn('[scheduler] Failed to release mission sweep lock', { type, error });
+    if (!completed) {
+      try {
+        await redis.eval(RELEASE_OWNED_LOCK, 1, key, token);
+      } catch (error) {
+        logger.warn('[scheduler] Failed to release mission sweep lock', { type, error });
+      }
     }
   }
 }
