@@ -1,15 +1,13 @@
-import type { mongo } from 'mongoose';
-
 const ARCHIVE_COLLECTION = 'dsa_submissions_archive';
 const COMPOUND_INDEX_KEY = { userId: 1, createdAt: -1 };
 const COMPOUND_INDEX_NAME = 'idx_dsa_submissions_archive_userId_createdAt';
 
 export const name = '20261123000000-partitionSubmissions';
 
-export async function up({ db, session }: { db: mongo.Db; session?: unknown }): Promise<void> {
+export async function up({ db, session }) {
   // Create the cold archive collection with WiredTiger collection-level compression so
   // historical records occupy less RAM and disk than the hot collection.
-  const collections = await db.listCollections({ name: ARCHIVE_COLLECTION }).toArray();
+  const collections = await db.listCollections({ name: ARCHIVE_COLLECTION }, { session }).toArray();
   if (collections.length === 0) {
     try {
       await db.createCollection(ARCHIVE_COLLECTION, {
@@ -24,7 +22,7 @@ export async function up({ db, session }: { db: mongo.Db; session?: unknown }): 
   }
 
   const archive = db.collection(ARCHIVE_COLLECTION);
-  const existing = await archive.indexes();
+  const existing = await archive.indexes({ session });
   const hasCompound = existing.some(
     (index) =>
       Object.entries(index.key ?? {}).length === 2 &&
@@ -41,23 +39,30 @@ export async function up({ db, session }: { db: mongo.Db; session?: unknown }): 
     await archive.createIndex(COMPOUND_INDEX_KEY, {
       name: COMPOUND_INDEX_NAME,
       background: true,
+      session,
     });
   }
 }
 
-export async function down({ db }: { db: mongo.Db; session?: unknown }): Promise<void> {
+export async function down({ db, session }) {
   const archive = db.collection(ARCHIVE_COLLECTION);
   try {
-    await archive.dropIndex(COMPOUND_INDEX_NAME);
+    await archive.dropIndex(COMPOUND_INDEX_NAME, { session });
   } catch (error) {
-    const code = (error as { code?: number }).code;
+    const code = error?.code;
     // 26 = namespace not found, 27 = index not found: already rolled back.
     if (code !== 26 && code !== 27) throw error;
   }
   try {
-    await db.dropCollection(ARCHIVE_COLLECTION);
+    await db.dropCollection(ARCHIVE_COLLECTION, { session });
   } catch (error) {
-    const code = (error as { code?: number }).code;
+    const code = error?.code;
     if (code !== 26) throw error;
   }
 }
+
+export default {
+  name,
+  up,
+  down,
+};
