@@ -23,12 +23,14 @@ class FakeEventSource {
   }
 }
 
+let seqCounter = 1;
+
 const envelope = (id: string, type: string) =>
   ({
     data: JSON.stringify({
       id,
       type,
-      sequence: 1,
+      sequence: seqCounter++,
       timestamp: new Date().toISOString(),
       userId: 'u1',
       payload: { n: id },
@@ -61,6 +63,7 @@ const cases: Case[] = [
 
 describe('hooks that pass extraInvalidateKeys to useSse', () => {
   beforeEach(() => {
+    seqCounter = 1;
     post.mockReset();
     post.mockResolvedValue({ data: { data: { ticket: 't' } } });
     get.mockReset();
