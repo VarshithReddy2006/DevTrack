@@ -9,7 +9,8 @@ import {
   getSentinelHealth, 
   disconnectSentinel,
   resetSentinelClients,
-  parseSentinelHosts 
+  parseSentinelHosts,
+  isClientAlive,
 } from '../../../shared/redis/sentinelClient.js';
 
 // Mock environment variables
@@ -167,6 +168,50 @@ describe('sentinelClient', () => {
       // New instances should be different from old ones
       expect(newMaster).not.toBe(client1);
       expect(newReplica).not.toBe(client2);
+    });
+  });
+
+  describe('isClientAlive and reconnection lifecycle', () => {
+    it('should identify valid transitional states as alive', () => {
+      expect(isClientAlive(null)).toBe(false);
+      expect(isClientAlive({ status: 'close' } as any)).toBe(false);
+      expect(isClientAlive({ status: 'end' } as any)).toBe(false);
+
+      expect(isClientAlive({ status: 'ready' } as any)).toBe(true);
+      expect(isClientAlive({ status: 'connecting' } as any)).toBe(true);
+      expect(isClientAlive({ status: 'connect' } as any)).toBe(true);
+      expect(isClientAlive({ status: 'wait' } as any)).toBe(true);
+      expect(isClientAlive({ status: 'reconnecting' } as any)).toBe(true);
+    });
+
+    it('should reuse master and replica clients while in reconnecting state', () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'localhost:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      const master = getRedisMaster();
+      const replica = getRedisReplica();
+
+      // Simulate network blip / failover where ioredis enters reconnecting status
+      Object.defineProperty(master, 'status', { value: 'reconnecting', configurable: true });
+      Object.defineProperty(replica, 'status', { value: 'reconnecting', configurable: true });
+
+      const secondMaster = getRedisMaster();
+      const secondReplica = getRedisReplica();
+
+      // Must not instantiate new clients during reconnecting status
+      expect(secondMaster).toBe(master);
+      expect(secondReplica).toBe(replica);
+    });
+
+    it('should map reconnecting and connecting states to connecting in getSentinelHealth', () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'localhost:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      const master = getRedisMaster();
+      Object.defineProperty(master, 'status', { value: 'reconnecting', configurable: true });
+
+      const health = getSentinelHealth();
+      expect(health.status).toBe('connecting');
     });
   });
 });
