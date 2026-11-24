@@ -143,7 +143,8 @@ export function createMigrationRunner(connection: Connection, migrations: Versio
         }
         for (const migration of pending) {
           const previous = entriesByName.get(migration.name);
-          if (!transactional) {
+          const useTransaction = transactional && migration.transactional !== false;
+          if (!useTransaction) {
             await execute(migration, 'up', batch, previous);
             continue;
           }
@@ -168,12 +169,14 @@ export function createMigrationRunner(connection: Connection, migrations: Versio
         const applied = entries.filter(entry => entry.status === 'success').reverse();
         const batches = [...new Set(applied.map(entry => entry.batch))].sort((a, b) => b - a).slice(0, steps);
         for (const batch of batches) {
+          const batchMigrations = applied.filter(candidate => candidate.batch === batch);
+          const hasStandalone = batchMigrations.some(entry => byName.get(entry.name)?.transactional === false);
           const rollback = async (session?: ClientSession) => {
-            for (const entry of applied.filter(candidate => candidate.batch === batch)) {
+            for (const entry of batchMigrations) {
               await execute(byName.get(entry.name)!, 'down', batch, entry, session);
             }
           };
-          if (transactional) await inTransaction(rollback);
+          if (transactional && !hasStandalone) await inTransaction(rollback);
           else await rollback();
         }
       });
