@@ -93,6 +93,7 @@ const dsaSubmissionSchema = new Schema<IDsaSubmission>(
 );
 
 // Indexes
+dsaSubmissionSchema.index({ submittedAt: 1, _id: 1 });
 dsaSubmissionSchema.index({ userId: 1, submittedAt: -1 });
 dsaSubmissionSchema.index({ userId: 1, problemId: 1, submittedAt: -1 });
 dsaSubmissionSchema.index({ userId: 1, status: 1 });
