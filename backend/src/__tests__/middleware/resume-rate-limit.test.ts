@@ -66,7 +66,7 @@ vi.mock('../../modules/resume/controllers/ResumeIntelligenceController.js', () =
   return Object.fromEntries(['getProfile', 'updateProfile', 'generateResume', 'generateVariant', 'getVariants',
     'getVariant', 'analyzeATS', 'getATSAnalyses', 'createEvidenceClaim', 'getEvidenceClaims', 'exportResume', 'exportDossier',
     'getExportHistory', 'getVersionHistory', 'getCredibilityAnalysis', 'generateReport', 'getReport',
-    'getProjects', 'getSkills'].map(name => [name, respond]));
+    'getProjects', 'getSkills', 'compileResumeTypst'].map(name => [name, respond]));
 });
 vi.mock('../../modules/resume/index.js', async () => ({
   resumeIntelligenceRoutes: (await import('../../modules/resume/routes/resume-intelligence.routes.js')).default,

@@ -276,6 +276,8 @@ export type SseEventType =
   | 'interview.audio_transcribed'
   | 'jobtarget.updated'
   | 'evidence.verified'
+  // Privacy & Compliance
+  | 'privacy.export_ready'
   // System
   | 'heartbeat';
 

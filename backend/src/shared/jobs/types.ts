@@ -17,8 +17,10 @@ export interface RealtimeEventJobData {
 }
 
 export interface SystemMaintenanceJobData {
-  task: 'generate_quests' | 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions' | 'check_contest_starting_soon' | 'platform_sync_sweep' | 'submission_archive';
+  task: 'generate_quests' | 'cleanup_failed_jobs' | 'prune_old_events' | 'health_check' | 'generate_daily_missions' | 'generate_weekly_missions' | 'cleanup_stale_sync_locks' | 'streak_at_risk_check' | 'generate_daily_challenge' | 'audit_public_profiles' | 'reap_stale_focus_sessions' | 'check_contest_starting_soon' | 'platform_sync_sweep' | 'submission_archive' | 'data_export' | 'account_erasure';
+  userId?: string;
   requestId?: string;
+  options?: Record<string, unknown>;
 }
 
 export interface XpProcessingJobData {
@@ -187,6 +189,21 @@ export interface DsaEvaluationJobData {
 
 export type JobData = PlatformSyncJobData | RealtimeEventJobData | SystemMaintenanceJobData | XpProcessingJobData | StreakRecalcJobData | NotificationJobData | ResumeUploadJobData | ResumeCheckpointJobData | ResumeATSJobData | ResumeEmbeddingJobData | ResumeSemanticJobData | ResumeRecommendationJobData | ResumeReplayJobData | DatasetIngestionJobData | DatasetValidationJobData | LeagueScoreJobData | LeagueRolloverJobData | OgRenderJobData | DossierRenderJobData | InterviewScoreJobData | JdParseJobData | JdScoreJobData | InterviewTranscriptionJobData | DsaEvaluationJobData;
 
+export interface ResumeRenderJobData {
+  userId: string;
+  resumeId?: string;
+  resumeData: Record<string, unknown>;
+  options?: {
+    template?: 'classic-academic' | 'modern-tech' | 'minimal-single-column';
+    targetPages?: number;
+    paperSize?: 'a4' | 'us-letter';
+    strictPagination?: boolean;
+    fontSizePt?: number;
+  };
+  exportPath?: string;
+  requestId?: string;
+}
+
 export const QueueNames = {
   PLATFORM_SYNC: 'platform-sync',
   CONTEST_REFRESH: 'contest-refresh',
@@ -204,6 +221,7 @@ export const QueueNames = {
   // Render pool (WORKER_TYPE=render)
   OG_RENDER: 'domain-og-render',
   DOSSIER_RENDER: 'dossier-render',
+  RESUME_RENDER: 'resume-render',
 
   // AI pool (WORKER_TYPE=ai): job description parsing, match scoring, interview scoring
   JD_PARSE: 'jd-parse',

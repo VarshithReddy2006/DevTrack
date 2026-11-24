@@ -12,6 +12,7 @@ import {
   GenerateVariantSchema,
   GenerateVariantRequestV2Schema,
   ExportResumeSchema,
+  CompileTypstSchema,
   AnalyzeATSSchema,
   CreateEvidenceClaimSchema,
   GenerateReportSchema,
@@ -67,6 +68,7 @@ export function createResumeIntelligenceRoutes(auth = authMiddleware): Router {
   // Export routes
   router.post('/dossier-pdf', validateRequest({ body: DossierExportSchema }), controller.exportDossier);
   router.post('/export', validateRequest({ body: ExportResumeSchema }), controller.exportResume);
+  router.post('/compile', validateRequest({ body: CompileTypstSchema }), controller.compileResumeTypst);
   router.get('/export-history', controller.getExportHistory);
 
   // Version History

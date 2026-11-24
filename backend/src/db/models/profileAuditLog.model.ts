@@ -1,7 +1,7 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
 export interface IProfileAuditLog extends Document {
-  userId: Types.ObjectId;
+  userId?: Types.ObjectId | null;
   eventType:
     | 'profile_computed'
     | 'anti_gaming_check'
@@ -20,7 +20,7 @@ export interface IProfileAuditLog extends Document {
 
 const ProfileAuditLogSchema = new Schema<IProfileAuditLog>(
   {
-    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: false, default: null },
     eventType: {
       type: String,
       enum: [
