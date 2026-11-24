@@ -237,6 +237,8 @@ export class ResumeIntelligenceService {
       resumeProfileId: profile._id as Types.ObjectId,
       variantId: data.variantId,
       exportType: data.exportType,
+      template: data.template,
+      targetPages: data.targetPages,
       includeATSAnalysis: data.includeATSAnalysis,
     });
 
