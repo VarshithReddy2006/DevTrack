@@ -1,5 +1,6 @@
 // src/modules/interview/interview.routes.ts
 // Express routes for Mock Interview Studio API and audio streaming chunk ingestion.
+// Includes WebRTC signaling route (Milestone 7) for zero-latency audio signaling.
 
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
@@ -13,6 +14,7 @@ import {
   type AudioChunkMetadata,
 } from './audioStreaming.service.js';
 import { createInterviewController } from './interview.controller.js';
+import { webrtcSignalingGateway, type SignalResponse } from './webrtcSignaling.gateway.js';
 
 const chunkMetadataSchema = z.object({
   chunkIndex: z.coerce.number().int().min(0),
@@ -226,6 +228,47 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
       await service.cleanSessionAudio(sessionId);
       return successResponse(res, { message: 'Audio buffer cleaned successfully' });
     })
+  );
+
+  /**
+   * POST /api/v2/interview/:sessionId/webrtc/signal
+   *
+   * Exchanges WebRTC signaling messages for the interview audio session:
+   *   - Client sends offer SDP  -> server returns answer SDP + TURN credentials
+   *   - Client sends ICE candidate -> server echoes back a server candidate
+   *   - Client sends bye          -> tears down the signaling session
+   *
+   * ICE negotiation that stalls past 10s falls back to HTTP audio chunk ingestion.
+   */
+  router.post(
+    '/:sessionId/webrtc/signal',
+    authMiddleware,
+    asyncHandler(async (req: AuthenticatedRequest, res) => {
+      if (!req.user?.id) return res.status(401).json({ success: false, message: 'Unauthorized', code: 'UNAUTHORIZED', timestamp: new Date().toISOString() });
+
+      const { sessionId } = z.object({ sessionId: z.string().min(1) }).parse(req.params);
+      const response: SignalResponse = await webrtcSignalingGateway.handleSignal(
+        sessionId,
+        req.user.id,
+        req.body,
+      );
+
+      if (response.type === 'error') {
+        const status = response.code === 'NOT_FOUND' ? 404 : response.code === 'GONE' ? 410 : 400;
+        return res.status(status).json({
+          success: false,
+          message: response.message,
+          code: response.code,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      if (response.type === 'fallback') {
+        return successResponse(res, { fallbackUrl: response.fallbackUrl, type: 'fallback' }, 'ICE timed out; use HTTP chunk fallback', 200);
+      }
+
+      successResponse(res, response, 'Signaling message processed');
+    }),
   );
 
   // General session routes
