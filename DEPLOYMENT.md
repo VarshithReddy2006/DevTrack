@@ -400,6 +400,24 @@ curl https://your-api.render.com/health
 curl https://your-api.render.com/health/detailed  # requires admin auth
 ```
 
+Kubernetes can use `/healthz` for lightweight process liveness and `/readyz`
+for dependency and runtime readiness. Transient overload sheds traffic through
+readiness rather than requesting a restart; an unresponsive process is still
+subject to the orchestrator's liveness timeout.
+
+Readiness returns 503 when event-loop p99 exceeds 500 ms or
+`heapUsed / heapTotal` exceeds 0.90. Equality is healthy. Memory uses one
+`process.memoryUsage()` snapshot of the allocated V8 heap, not RSS or the
+configured maximum heap limit. The event-loop histogram uses 20 ms resolution
+and independent one-second windows. The larger p99 of the previous and current
+windows is used conservatively, so recovery can take up to two windows. Probe
+traffic never resets the histogram, and the sampler does not keep a process alive.
+
+The response keeps dependency statuses and adds `eventLoop` and `heap` checks
+plus `diagnostics` containing `eventLoopP99Ms`, `heapUsedBytes`, `heapTotalBytes`
+and `heapRatio`. Invalid or not-yet-available telemetry is null and makes the
+worker unready, including the short initial histogram warmup.
+
 
 ### Common issues
 
