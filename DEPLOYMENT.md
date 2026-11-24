@@ -410,7 +410,9 @@ Readiness returns 503 when event-loop p99 exceeds 500 ms or
 `process.memoryUsage()` snapshot of the allocated V8 heap, not RSS or the
 configured maximum heap limit. The event-loop histogram uses 20 ms resolution
 and independent one-second windows. The larger p99 of the previous and current
-windows is used conservatively, so recovery can take up to two windows. Probe
+windows is used conservatively, so recovery can take up to two windows. The native
+monitor starts with the module; the reset timer starts lazily on the first runtime
+probe so import-only workers and tools do not inherit a new timer. Later probe
 traffic never resets the histogram, and the sampler does not keep a process alive.
 
 The response keeps dependency statuses and adds `eventLoop` and `heap` checks

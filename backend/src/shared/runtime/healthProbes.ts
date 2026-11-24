@@ -10,15 +10,18 @@ const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
 let previousLagMs = Number.NaN;
 const currentLagMs = () => loopDelay.count > 0 ? loopDelay.percentile(99) / 1e6 : Number.NaN;
-// Probe traffic must not reset the histogram or hide pressure from other probes.
-const samplingTimer = setInterval(() => {
-  previousLagMs = currentLagMs();
-  loopDelay.reset();
-}, 1000);
-samplingTimer.unref();
+let samplingTimer: NodeJS.Timeout | undefined;
 
 /** Conservative p99 across the previous and current one-second windows, in ms. */
 export function readEventLoopLagMs(): number {
+  // Importing the module must not create timers in unrelated workers or tools.
+  if (!samplingTimer) {
+    samplingTimer = setInterval(() => {
+      previousLagMs = currentLagMs();
+      loopDelay.reset();
+    }, 1000);
+    samplingTimer.unref();
+  }
   const samples = [previousLagMs, currentLagMs()].filter(Number.isFinite);
   return samples.length ? Math.max(...samples) : Number.NaN;
 }

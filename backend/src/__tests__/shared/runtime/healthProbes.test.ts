@@ -7,6 +7,17 @@ const healthy = { eventLoopP99Ms: 10, heapUsedBytes: 50, heapTotalBytes: 100 };
 const deps = (runtime = healthy) => ({ pingMongo: async () => true, readRuntime: () => runtime });
 beforeEach(() => { histogram.count = 10; histogram.percentile.mockReturnValue(20e6); histogram.reset.mockClear(); });
 describe('runtime pressure readiness', () => {
+  it('does not start a sampling timer on import and starts only one on first read', async () => {
+    const unref = vi.fn(), interval = vi.fn(() => ({ unref }));
+    vi.stubGlobal('setInterval', interval);
+    try {
+      vi.resetModules();
+      const isolated = await import('../../../shared/runtime/healthProbes.js');
+      expect(interval).not.toHaveBeenCalled();
+      isolated.readEventLoopLagMs(); isolated.readEventLoopLagMs();
+      expect(interval).toHaveBeenCalledTimes(1); expect(unref).toHaveBeenCalledTimes(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('reads p99 in milliseconds without resetting on repeated probes', () => {
     histogram.percentile.mockReturnValue(900e6);
     expect(readEventLoopLagMs()).toBe(900); expect(readEventLoopLagMs()).toBe(900);
