@@ -7,7 +7,9 @@ import { Types } from 'mongoose';
 import {
   LeagueStanding,
   LeagueRolloverLog,
+  ProfileAuditLog,
   UserSettings,
+  XpTransaction,
   type LeagueDivision,
 } from '../../../db/models/index.js';
 import { cohortKey } from '../../../modules/leagues/leagues.constants.js';
@@ -38,6 +40,8 @@ beforeEach(async () => {
   await LeagueStanding.deleteMany({});
   await LeagueRolloverLog.deleteMany({});
   await UserSettings.deleteMany({});
+  await ProfileAuditLog.deleteMany({});
+  await XpTransaction.deleteMany({});
 });
 
 async function makeUsers(n: number, participate = true): Promise<string[]> {
@@ -407,5 +411,107 @@ describe('RolloverSagaOrchestrator — Adversarial Integration Tests', () => {
     expect(completedEvents[0].totalAssigned).toBe(20);
 
     eventBus.off('league.rollover_completed', eventListener);
+  });
+
+  it('detects last-minute sniping burst in pre-rollover ranking, damps XP, and writes ProfileAuditLog', async () => {
+    const userIds = await makeUsers(10);
+    await LeagueStanding.insertMany(
+      userIds.map(id => ({
+        weekKey: WEEK,
+        userId: new Types.ObjectId(id),
+        division: 'gold' as const,
+        cohortId: 'c-sniper',
+        status: 'active' as const,
+        joinedAt: new Date('2026-11-15T01:00:00Z'),
+        points: 0,
+        rank: null,
+        cohortSize: null,
+        outcome: null,
+        nextDivision: null,
+        finalizedAt: null,
+      })),
+    );
+
+    // Regular users earn points mid-week
+    for (let i = 1; i < 10; i++) {
+      const uid = userIds[i];
+      const pts = (i + 1) * 20;
+      await recordXpAward(
+        { userId: uid, sourceType: 'dsa_accepted', sourceId: `src-${++counter}`, xpAwarded: pts, occurredAt: MID_WEEK },
+        store,
+        MID_WEEK,
+      );
+      await XpTransaction.create({
+        userId: new Types.ObjectId(uid),
+        sourceType: 'dsa_accepted',
+        sourceId: `tx-${counter}`,
+        xpAwarded: pts,
+        previousTotalXp: 0,
+        newTotalXp: pts,
+        levelBefore: 1,
+        levelAfter: 1,
+        metadata: {},
+        createdAt: MID_WEEK,
+      });
+    }
+
+    // Sniper user (userIds[0]) earns 20 XP mid-week and dumps 1000 XP in last 30 minutes before rollover
+    const sniperId = userIds[0];
+    const sniperStart = new Date('2026-11-21T23:35:00.000Z');
+    await recordXpAward(
+      { userId: sniperId, sourceType: 'dsa_accepted', sourceId: `src-${++counter}`, xpAwarded: 20, occurredAt: MID_WEEK },
+      store,
+      MID_WEEK,
+    );
+    await XpTransaction.create({
+      userId: new Types.ObjectId(sniperId),
+      sourceType: 'dsa_accepted',
+      sourceId: `tx-${counter}`,
+      xpAwarded: 20,
+      previousTotalXp: 0,
+      newTotalXp: 20,
+      levelBefore: 1,
+      levelAfter: 1,
+      metadata: {},
+      createdAt: MID_WEEK,
+    });
+
+    for (let j = 0; j < 40; j++) {
+      const burstTime = new Date(sniperStart.getTime() + j * 1000);
+      await recordXpAward(
+        { userId: sniperId, sourceType: 'dsa_accepted', sourceId: `src-${++counter}`, xpAwarded: 25, occurredAt: burstTime },
+        store,
+        burstTime,
+      );
+      await XpTransaction.create({
+        userId: new Types.ObjectId(sniperId),
+        sourceType: 'dsa_accepted',
+        sourceId: `tx-${counter}`,
+        xpAwarded: 25,
+        previousTotalXp: 20 + j * 25,
+        newTotalXp: 20 + (j + 1) * 25,
+        levelBefore: 1,
+        levelAfter: 1,
+        metadata: {},
+        createdAt: burstTime,
+      });
+    }
+
+    const result = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT });
+    expect(result.finalized).toBe(10);
+
+    // Sniper should have their XP damped down from 1020
+    const sniperStanding = await row(sniperId, WEEK);
+    expect(sniperStanding).not.toBeNull();
+    expect(sniperStanding!.points).toBeLessThan(1020);
+    expect(sniperStanding!.outcome).not.toBe('promoted');
+
+    // ProfileAuditLog should have recorded the sniping detection
+    const auditLog = await ProfileAuditLog.findOne({
+      userId: new Types.ObjectId(sniperId),
+      eventType: 'anti_gaming_check',
+    }).lean();
+    expect(auditLog).not.toBeNull();
+    expect(auditLog!.details.reason).toBe('leaderboard_sniping_detected');
   });
 });

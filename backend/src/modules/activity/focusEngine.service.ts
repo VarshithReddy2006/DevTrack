@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { Types, type ClientSession, type HydratedDocument } from 'mongoose';
-import { FocusSession, UnifiedRuntimeState, User, UserXp, type IFocusSession } from '../../db/models/index.js';
+import { FocusSession, ProfileAuditLog, UnifiedRuntimeState, User, UserXp, type IFocusSession } from '../../db/models/index.js';
 import { runInTransaction } from '../../db/transaction.js';
 import { logger } from '../../shared/logger.js';
 import { writeOutboxEvent } from '../../shared/events/outbox.js';
@@ -14,6 +14,7 @@ import { getTraceMetadata } from '../../shared/tracing/tracing.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { ensureUserXp, readFocusXpForDay } from '../xp/focusXpLedger.js';
 import { computeActiveSec, decideFocusXp, FOCUS_HEARTBEAT_SECONDS } from './focusXpDecision.js';
+import { analyzeKeystrokeEntropy, type KeystrokeAnalysis } from '../focus/keystrokeEntropy.service.js';
 
 export interface FocusSessionResult {
   sessionId: string;
@@ -407,8 +408,14 @@ export class FocusEngine {
 
   /**
    * Atomically records completion, reserves XP and writes the domain event.
+   * `interactionData` carries the client-submitted keystroke inter-event gaps and keys so the
+   * entropy validator can reject scripted/stuck-key activity before any XP is committed.
    */
-  async completeSession(sessionId: string, userId: string): Promise<FocusSessionResult | null> {
+  async completeSession(
+    sessionId: string,
+    userId: string,
+    interactionData?: { gaps?: number[]; keys?: string[] }
+  ): Promise<FocusSessionResult | null> {
     const ownerId = new Types.ObjectId(userId);
     const filter = { _id: sessionId, userId: ownerId };
     const initial = await FocusSession.findOne(filter);
@@ -421,7 +428,7 @@ export class FocusEngine {
       const session = await FocusSession.findOne(filter).session(dbSession);
       if (session?.status === 'completed') return { result: completionResult(session, true), runtime: null };
       if (!session || !['running', 'paused', 'active'].includes(session.status)) return { result: null, runtime: null };
-      return this.persistCompletion(session, dbSession, traceContext);
+      return this.persistCompletion(session, dbSession, traceContext, interactionData);
     });
     if (runtime) {
       try {
@@ -435,6 +442,7 @@ export class FocusEngine {
 
   private async persistCompletion(
     session: HydratedDocument<IFocusSession>, dbSession: ClientSession, traceContext: Record<string, string>,
+    interactionData?: { gaps?: number[]; keys?: string[] },
   ) {
     const completedAt = new Date();
     const pauses = Array.isArray(session.pauses) ? [...session.pauses] : [];
@@ -470,12 +478,38 @@ export class FocusEngine {
 
     // Serialize decisions with legacy XP workers that may still settle this day's prior sessions.
     await UserXp.updateOne({ userId: session.userId }, { $inc: { focusReservationVersion: 1 } }, { session: dbSession });
-    const prior = await readFocusXpForDay(session.userId, completedAt, dbSession);
-    const decision = decideFocusXp({
-      plannedSec: session.$isDefault('plannedSec') ? session.plannedDurationMinutes * 60 : session.plannedSec,
-      activeSec: computeActiveSec(activeDurationMs),
-      coveredHeartbeatIntervals: session.coveredHeartbeatIntervals ?? 0,
-    }, prior);
+
+    // Behavioural entropy validation: reject scripted/stuck-key activity before any XP is committed.
+    const analysis: KeystrokeAnalysis = analyzeKeystrokeEntropy(interactionData?.gaps ?? [], interactionData?.keys ?? []);
+    let decision: ReturnType<typeof decideFocusXp>;
+    if (analysis.verdict === 'synthetic_activity_detected') {
+      decision = { qualified: false, xpAmount: 0, reason: 'anti_gaming', capApplied: false };
+      await ProfileAuditLog.create([{
+        userId: session.userId,
+        eventType: 'anti_gaming_check',
+        triggeredBy: 'system',
+        details: {
+          reason: analysis.reason,
+          cv: analysis.cv,
+          spectralEntropy: analysis.spectralEntropy,
+          repeatRate: analysis.repeatRate,
+          samples: analysis.samples,
+          sessionId: String(session._id),
+        },
+        suspicionScoreBefore: null,
+        suspicionScoreAfter: null,
+      }], { session: dbSession });
+      logger.info('[focus] Synthetic activity detected, XP denied', {
+        userId: String(session.userId), sessionId: String(session._id), reason: analysis.reason,
+      });
+    } else {
+      const prior = await readFocusXpForDay(session.userId, completedAt, dbSession);
+      decision = decideFocusXp({
+        plannedSec: session.$isDefault('plannedSec') ? session.plannedDurationMinutes * 60 : session.plannedSec,
+        activeSec: computeActiveSec(activeDurationMs),
+        coveredHeartbeatIntervals: session.coveredHeartbeatIntervals ?? 0,
+      }, prior);
+    }
     const completed = await FocusSession.findOneAndUpdate(
       { _id: session._id, userId: session.userId, status: session.status },
       {

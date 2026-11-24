@@ -24,6 +24,7 @@ export { DailyActivity, type IDailyActivity } from './dailyActivity.model.js';
 export { DsaProblem, type IDsaProblem } from './dsaProblem.model.js';
 export { DsaTopicProgress, type IDsaTopicProgress } from './dsaTopicProgress.model.js';
 export { DsaSubmission, type IDsaSubmission } from './dsaSubmission.model.js';
+export { DsaSubmissionArchive, type IDsaSubmissionArchive } from './dsaSubmissionArchive.model.js';
 export { DsaContest, type IDsaContest } from './dsaContest.model.js';
 export { DsaContestParticipation } from './dsaContestParticipation.model.js';
 export { Project, type IProject, type IProjectContributor, type IProjectMilestone } from './project.model.js';

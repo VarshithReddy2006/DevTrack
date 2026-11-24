@@ -211,6 +211,17 @@ describe('durable event progress and completion', () => {
     await trackQuestEvent((await solve(new Date(+now + 86_400_000))).envelope, now);
     expect(await UserQuestProgress.countDocuments({ currentCount: { $gt: 0 } })).toBe(0);
   });
+  it('credits quests when event occurred within validity period even if consumer processes after period expires (#581)', async () => {
+    const quests = await generateUserQuests(userId, now);
+    const activeQuest = quests.find(q => q.slot === 'daily:dsa_solve');
+    expect(activeQuest).toBeDefined();
+    const eventTime = new Date(+activeQuest!.expiresAt - 1000);
+    const lateProcessingTime = new Date(+activeQuest!.expiresAt + 5000);
+    const source = await solve(eventTime);
+    await trackQuestEvent(source.envelope, lateProcessingTime);
+    const updated = await UserQuestProgress.findById(activeQuest!._id);
+    expect(updated!.currentCount).toBe(1);
+  });
   it('does not credit a previously solved problem again in a later period', async () => {
     const source = await solve(new Date(+now - 8 * 86_400_000));
     const second = await DsaSubmission.create({ userId, problemId: source.problem._id, platform: 'leetcode', externalId: 'new-accept', status: 'accepted', language: 'ts', submittedAt: now });

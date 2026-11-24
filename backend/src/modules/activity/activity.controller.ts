@@ -132,7 +132,10 @@ export async function cancelFocusSession(req: AuthenticatedRequest, res: Respons
 
 export async function stopFocusSession(req: AuthenticatedRequest, res: Response): Promise<void> {
   const { unifiedRuntimeStateService } = await import('../runtime-state/unifiedRuntimeState.service.js');
-  const { state, completed } = await unifiedRuntimeStateService.stopFocusSession(req.user!.id);
+  const { state, completed } = await unifiedRuntimeStateService.stopFocusSession(req.user!.id, {
+    gaps: req.body?.interactionGaps,
+    keys: req.body?.keys,
+  });
 
   // Nothing was running (never started, or this is a replay of an earlier stop).
   // Succeed so the client can reset its timer, but award nothing.

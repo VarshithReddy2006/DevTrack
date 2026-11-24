@@ -14,7 +14,8 @@ export type FocusXpReason =
   | 'below_completion_threshold'
   | 'below_heartbeat_coverage'
   | 'daily_cap_reached'
-  | 'qualified';
+  | 'qualified'
+  | 'anti_gaming';
 
 interface FocusXpDecision {
   qualified: boolean;

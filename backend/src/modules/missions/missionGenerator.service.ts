@@ -21,6 +21,7 @@ interface MissionTemplate {
 // ─── Mission generation logic ────────────────────────────────────────────────
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+export const USER_BATCH_SIZE = 100;
 
 export async function generateDailyMissions(now = new Date()): Promise<void> {
   await generateMissions('daily', now);
@@ -28,6 +29,41 @@ export async function generateDailyMissions(now = new Date()): Promise<void> {
 
 export async function generateWeeklyMissions(now = new Date()): Promise<void> {
   await generateMissions('weekly', now);
+}
+
+async function processUserMissions(
+  userId: Types.ObjectId,
+  type: MissionPeriodType,
+  period: ReturnType<typeof getMissionPeriod>,
+  now: Date,
+  templatesFor: (avg: number, level: number) => MissionTemplate[],
+): Promise<void> {
+  const expired = await Mission.updateMany(
+    { userId, type, status: { $in: ['pending', 'in_progress'] }, expiresAt: { $lte: now } },
+    { $set: { status: 'expired' } },
+  );
+  if (expired.modifiedCount) await cacheManager.invalidateDashboard(userId.toString());
+
+  // During rollout, keep a legacy batch already created for this period or still active.
+  const legacyBatch = await Mission.exists({
+    userId, type, periodKey: { $exists: false },
+    $or: [
+      { createdAt: { $gte: period.start, $lt: period.end } },
+      { status: { $in: ['pending', 'in_progress'] }, expiresAt: { $gt: now } },
+    ],
+  });
+  if (legacyBatch) return;
+
+  const xp = await UserXp.findOne({ userId }).lean();
+  const calibration = { averageProblemsPerDay: calculateAvgProblemsPerDay(xp), level: xp?.currentLevel ?? 1 };
+  const [primary] = templatesFor(calibration.averageProblemsPerDay, calibration.level);
+  // The primary mission freezes the calibration for the entire batch, including after partial failure.
+  const anchor = await upsertMission(userId, period, primary, calibration);
+  const saved = anchor.generationCalibration!;
+  const [, ...remaining] = templatesFor(saved.averageProblemsPerDay, saved.level);
+  for (const template of remaining) {
+    await upsertMission(userId, period, template);
+  }
 }
 
 async function generateMissions(type: MissionPeriodType, now: Date): Promise<void> {
@@ -40,34 +76,9 @@ async function generateMissions(type: MissionPeriodType, now: Date): Promise<voi
   }).select('_id');
   const templatesFor = type === 'daily' ? generateDailyMissionTemplates : generateWeeklyMissionTemplates;
 
-  for (const user of activeUsers) {
-    const userId = user._id;
-    const expired = await Mission.updateMany(
-      { userId, type, status: { $in: ['pending', 'in_progress'] }, expiresAt: { $lte: now } },
-      { $set: { status: 'expired' } },
-    );
-    if (expired.modifiedCount) await cacheManager.invalidateDashboard(userId.toString());
-
-    // During rollout, keep a legacy batch already created for this period or still active.
-    const legacyBatch = await Mission.exists({
-      userId, type, periodKey: { $exists: false },
-      $or: [
-        { createdAt: { $gte: period.start, $lt: period.end } },
-        { status: { $in: ['pending', 'in_progress'] }, expiresAt: { $gt: now } },
-      ],
-    });
-    if (legacyBatch) continue;
-
-    const xp = await UserXp.findOne({ userId }).lean();
-    const calibration = { averageProblemsPerDay: calculateAvgProblemsPerDay(xp), level: xp?.currentLevel ?? 1 };
-    const [primary] = templatesFor(calibration.averageProblemsPerDay, calibration.level);
-    // The primary mission freezes the calibration for the entire batch, including after partial failure.
-    const anchor = await upsertMission(userId, period, primary, calibration);
-    const saved = anchor.generationCalibration!;
-    const [, ...remaining] = templatesFor(saved.averageProblemsPerDay, saved.level);
-    for (const template of remaining) {
-      await upsertMission(userId, period, template);
-    }
+  for (let i = 0; i < activeUsers.length; i += USER_BATCH_SIZE) {
+    const chunk = activeUsers.slice(i, i + USER_BATCH_SIZE);
+    await Promise.all(chunk.map(user => processUserMissions(user._id, type, period, now, templatesFor)));
   }
 
   logger.info('[missions] Mission generation complete', { type, period: period.key, activeUsers: activeUsers.length });
