@@ -91,6 +91,8 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
   const service = deps?.audioService ?? audioStreamingService;
   const auth = deps?.auth ?? authMiddleware;
   const controller = createInterviewController();
+  const audioLimiter = rateLimiters?.interviewAudio ?? ((_req: Request, _res: Response, next: NextFunction) => next());
+  const aiLimiter = rateLimiters?.ai ?? ((_req: Request, _res: Response, next: NextFunction) => next());
 
   // Middleware collecting raw binary buffer for multipart and raw audio streams
   const rawBodyParser = express.raw({
@@ -108,7 +110,7 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
    */
   router.post(
     '/:sessionId/audio/chunk',
-    rateLimiters.interviewAudio,
+    audioLimiter,
     rawBodyParser,
     asyncHandler(async (req: Request, res: Response) => {
       const sessionId = Array.isArray(req.params.sessionId) ? req.params.sessionId[0] : req.params.sessionId;
@@ -228,8 +230,8 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
 
   // General session routes
   router.get('/:sessionId', auth, controller.get);
-  router.post('/', auth, rateLimiters.ai, controller.start);
-  router.post('/:sessionId/turns/:turnIndex/answer', auth, rateLimiters.ai, controller.answer);
+  router.post('/', auth, aiLimiter, controller.start);
+  router.post('/:sessionId/turns/:turnIndex/answer', auth, aiLimiter, controller.answer);
   router.post('/:sessionId/turns/:turnIndex/hint', auth, controller.hint);
   router.post('/:sessionId/finish', auth, controller.finish);
 
