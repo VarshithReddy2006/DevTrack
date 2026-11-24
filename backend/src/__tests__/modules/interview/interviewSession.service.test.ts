@@ -285,6 +285,28 @@ describe('requestHint', () => {
     const scoring = await answer(created);
     await expect(service.requestHint('u1', created.id, { turnIndex: 0, stateVersion: scoring.stateVersion })).rejects.toMatchObject({ code: 'illegal_state_transition' });
   });
+
+  it('rejects concurrent hint request with state_version_conflict when answer submission won the race', async () => {
+    const created = await service.createSession('u1', 'backend');
+    // Simulate user reading stateVersion 1, then answering
+    const preAnswerVersion = created.stateVersion;
+    await answer(created);
+    // User tries to request hint using the pre-answer stateVersion
+    await expect(
+      service.requestHint('u1', created.id, { turnIndex: 0, stateVersion: preAnswerVersion }),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'state_version_conflict' });
+  });
+
+  it('rejects hint request with turn_mismatch when turn has advanced', async () => {
+    const created = await service.createSession('u1', 'backend');
+    const answered = await answer(created);
+    await score(answered); // turn 0 scored, moves to turn 1
+    const stored = await InterviewSession.findById(created.id).lean();
+    expect(stored!.currentTurnIndex).toBe(1);
+    await expect(
+      service.requestHint('u1', created.id, { turnIndex: 0, stateVersion: stored!.stateVersion }),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'turn_mismatch' });
+  });
 });
 
 describe('scoring port (the interview-score worker side)', () => {
