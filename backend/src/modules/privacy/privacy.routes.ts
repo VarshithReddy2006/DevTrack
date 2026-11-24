@@ -61,7 +61,7 @@ privacyRoutes.post('/export', authMiddleware, async (req: AuthenticatedRequest, 
     });
   } catch (error) {
     logger.error('[privacy-routes] Failed to initiate data export', { userId, error });
-    return commonErrors.internal(res, error instanceof Error ? error.message : 'Export failed');
+    return commonErrors.internalError(res, error instanceof Error ? error.message : 'Export failed');
   }
 });
 
@@ -93,7 +93,7 @@ privacyRoutes.get('/export/download/:token', async (req, res) => {
     return res.status(200).send(archiveBuffer);
   } catch (error) {
     logger.error('[privacy-routes] Error serving export download', { token, error });
-    return commonErrors.internal(res, 'Failed to download export');
+    return commonErrors.internalError(res, 'Failed to download export');
   }
 });
 
@@ -130,6 +130,6 @@ privacyRoutes.post('/delete-account', authMiddleware, async (req: AuthenticatedR
     });
   } catch (error) {
     logger.error('[privacy-routes] Account deletion failed', { userId, error });
-    return commonErrors.internal(res, error instanceof Error ? error.message : 'Erasure failed');
+    return commonErrors.internalError(res, error instanceof Error ? error.message : 'Erasure failed');
   }
 });

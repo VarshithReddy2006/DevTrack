@@ -23,8 +23,8 @@ import {
   XpTransaction,
   DailyActivity,
   ConnectedPlatform,
-  PushSubscription,
-  Notification,
+  NotificationRecord,
+  NotificationPreference,
   CareerIntent,
   CareerRoadmap,
   ProfileAuditLog,
@@ -100,8 +100,8 @@ export async function executeAccountErasure(
       ['XpTransaction', XpTransaction, userFilter],
       ['DailyActivity', DailyActivity, userFilter],
       ['ConnectedPlatform', ConnectedPlatform, userFilter],
-      ['PushSubscription', PushSubscription, userFilter],
-      ['Notification', Notification, userFilter],
+      ['NotificationRecord', NotificationRecord, { userId: String(userId) }],
+      ['NotificationPreference', NotificationPreference, { userId: String(userId) }],
       ['CareerIntent', CareerIntent, userFilter],
       ['CareerRoadmap', CareerRoadmap, userFilter],
     ];
@@ -231,6 +231,6 @@ export async function executeAccountErasure(
     completedAt: new Date().toISOString(),
   };
 
-  logger.info('[privacy-erasure] Account erasure completed successfully', result);
+  logger.info('[privacy-erasure] Account erasure completed successfully', { ...result });
   return result;
 }

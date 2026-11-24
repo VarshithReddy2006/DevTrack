@@ -5,6 +5,8 @@ export * from './betaCohort.model.js';
 
 // Readiness & Intelligence Models
 export * from './careerIntent.model.js';
+export * from './careerRoadmap.model.js';
+export { NotificationRecord, NotificationPreference } from './notification.model.js';
 export * from './readinessCore.model.js';
 export * from './readinessDsa.model.js';
 export * from './readinessSkills.model.js';
@@ -25,6 +27,7 @@ export { DsaProblem, type IDsaProblem } from './dsaProblem.model.js';
 export { DSAProfile, DSAProfile as DsaProfile, type IDSAProfile } from './dsaProfile.model.js';
 export { DsaTopicProgress, type IDsaTopicProgress } from './dsaTopicProgress.model.js';
 export { DsaSubmission, type IDsaSubmission } from './dsaSubmission.model.js';
+export { DsaSubmissionArchive, type IDsaSubmissionArchive } from './dsaSubmissionArchive.model.js';
 export { DsaContest, type IDsaContest } from './dsaContest.model.js';
 export { DsaContestParticipation } from './dsaContestParticipation.model.js';
 export { Project, type IProject, type IProjectContributor, type IProjectMilestone } from './project.model.js';

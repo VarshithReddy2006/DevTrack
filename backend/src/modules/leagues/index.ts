@@ -5,4 +5,5 @@ export * from './cohorts.js';
 export * from './scoreStore.js';
 export * from './leagues.service.js';
 export * from './rollover.js';
+export * from './solveEntropy.service.js';
 export * from './leagues.routes.js';

@@ -1,5 +1,10 @@
 # Interview lifecycle guard integration
 
+Status: #347 has landed. `InterviewSession` (`db/models/interviewSession.model.ts`), the routes and
+`InterviewService` bind this guard (`interview.service.ts`), and the runtime registers the guard
+worker (`maintenance`) and the score worker (`ai`). The text below is the original integration
+guide and still describes the contract. See `../README.md`, "Session lifecycle".
+
 Issue #442 adds an executable guard service, session-schema extension, transactional
 turn handler and bound maintenance-worker factory. The production `InterviewSession`
 model and routes owned by #347 are absent from this base. No replacement session model,

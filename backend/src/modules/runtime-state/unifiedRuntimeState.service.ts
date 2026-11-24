@@ -353,7 +353,10 @@ export class UnifiedRuntimeStateService {
     });
   }
 
-  async stopFocusSession(userId: string): Promise<{ state: IUnifiedRuntimeState; completed: FocusSessionResult | null }> {
+  async stopFocusSession(
+    userId: string,
+    interactionData?: { gaps?: number[]; keys?: string[] }
+  ): Promise<{ state: IUnifiedRuntimeState; completed: FocusSessionResult | null }> {
     const state = await this.getRuntimeStateFresh(userId);
     const context = state?.sessionContext;
     if (!state || !context?.isActive || !context.sessionId) {
@@ -361,7 +364,7 @@ export class UnifiedRuntimeStateService {
     }
 
     const { focusEngine } = await import('../activity/focusEngine.service.js');
-    const completed = await focusEngine.completeSession(context.sessionId, userId);
+    const completed = await focusEngine.completeSession(context.sessionId, userId, interactionData);
     const currentState = await this.getRuntimeState(userId);
     return { state: currentState ?? state, completed: completed?.replayed ? null : completed };
   }

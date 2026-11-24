@@ -92,7 +92,17 @@ export async function fetchLeetcodeResult(handle: string, startTime: Date): Prom
       userContestRankingHistory(username: $username) { attended problemsSolved ranking rating contest { startTime } }
     }`, variables: { username: handle } }),
   }, 500));
-  if (body.errors?.length || !body.data || body.data.userContestRankingHistory === null) throw new Error('LeetCode contest history unavailable');
+  if (body.errors?.length) {
+    const isUserNotFound = body.errors.some(e => {
+      const msg = typeof e === 'object' && e !== null && 'message' in e && typeof (e as any).message === 'string'
+        ? (e as any).message
+        : String(e);
+      return /user|not found|does not exist|invalid/i.test(msg);
+    });
+    if (isUserNotFound) return null;
+    throw new Error('LeetCode contest history unavailable');
+  }
+  if (!body.data || body.data.userContestRankingHistory === null) return null;
   const history = body.data.userContestRankingHistory.filter(row => row.attended).sort((a, b) => a.contest.startTime - b.contest.startTime);
   const index = history.findIndex(row => row.contest.startTime * 1000 === startTime.getTime());
   if (index < 0) return null;

@@ -95,6 +95,13 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
     const m = await import('../modules/job-targets/workers/jdScore.worker.js');
     return { start: m.startJdScoreWorker, stop: m.stopJdScoreWorker };
   } },
+  { role: 'ai', queueName: 'interview-score', load: async () => {
+    const [worker, port] = await Promise.all([
+      import('../modules/interview/workers/interviewScore.worker.js'),
+      import('../modules/interview/interviewSession.port.js'),
+    ]);
+    return { start: () => worker.startInterviewScoreWorker(port.createMongoInterviewSessionPort()), stop: worker.stopInterviewScoreWorker };
+  } },
   { role: 'ai', queueName: 'interview-evaluate', load: async () => {
     const m = await import('../modules/interview/workers/interviewEvaluate.worker.js');
     return { start: m.startInterviewEvaluateWorker, stop: m.stopInterviewEvaluateWorker };
@@ -122,6 +129,14 @@ export const workerDefinitions: { role: Role; queueName?: string; load(): Promis
   { role: 'maintenance', queueName: 'league-rollover', load: async () => {
     const m = await import('../modules/leagues/workers/weeklyRollover.worker.js');
     return { start: async () => { m.startWeeklyRolloverWorker(); await m.scheduleWeeklyRollover(); }, stop: m.stopWeeklyRolloverWorker };
+  } },
+  { role: 'maintenance', queueName: 'interview-guard', load: async () => {
+    const [guard, service] = await Promise.all([
+      import('../modules/interview/workers/interviewGuard.worker.js'),
+      import('../modules/interview/interview.service.js'),
+    ]);
+    // sweep() = 24 hour abandonment, then the guard's 40/45 minute and inactivity rules.
+    return guard.createInterviewGuardWorker(service.getInterviewService());
   } },
   { role: 'resume-intelligence', queueName: 'resume-ats', load: async () => {
     const m = await import('./worker-resume-ats.js');

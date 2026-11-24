@@ -187,8 +187,8 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
         email: userDoc.email,
         username: userDoc.username,
         role: userDoc.role,
-        createdAt: userDoc.createdAt,
-        updatedAt: userDoc.updatedAt,
+        joinedAt: userDoc.joinedAt,
+        lastActiveAt: userDoc.lastActiveAt,
       }
     : null;
 

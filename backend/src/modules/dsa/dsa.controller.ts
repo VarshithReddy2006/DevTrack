@@ -91,6 +91,7 @@ export async function getSubmissions(req: AuthenticatedRequest, res: Response): 
     status: req.query.status as string | undefined,
     page: req.query.page ? parseInt(req.query.page as string) : undefined,
     pageSize: req.query.pageSize ? parseInt(req.query.pageSize as string) : undefined,
+    includeArchived: req.query.includeArchived === 'true',
   };
   const data = await service.getSubmissions(req.user!.id, filters);
   successResponse(res, data, 'Submissions retrieved successfully');

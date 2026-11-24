@@ -76,7 +76,7 @@ export async function trackQuestEvent(event: DomainEventEnvelope, now = new Date
   await questTransaction(async session => {
     const rows = await UserQuestProgress.find({
       userId: event.userId, kind: source.kind, completed: false,
-      startsAt: { $lte: source.at }, expiresAt: { $gt: now },
+      startsAt: { $lte: source.at }, expiresAt: { $gt: source.at },
     }).session(session);
     for (const row of rows) {
       const eventId = createHash('sha256').update(JSON.stringify([event.userId, row._id.toString(), source.kind, source.key])).digest('hex');
