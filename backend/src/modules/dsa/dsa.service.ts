@@ -640,34 +640,23 @@ function getStartOfWeek(date: Date): Date {
 
 export async function getSubmissions(
   userId: string,
-  filters: { platform?: string; status?: string; page?: number; pageSize?: number }
+  filters: { platform?: string; status?: string; page?: number; pageSize?: number; includeArchived?: boolean }
 ): Promise<ApiDsaSubmissionsListResponse> {
   const { page, pageSize } = parsePaginationParams({
     page: filters.page?.toString(),
     pageSize: filters.pageSize?.toString(),
   });
 
-  const query: Record<string, unknown> = { userId: new Types.ObjectId(userId) };
+  const userObjId = new Types.ObjectId(userId);
+  const query: Record<string, unknown> = { userId: userObjId };
   if (filters.platform) query.platform = filters.platform;
   if (filters.status) query.status = filters.status;
 
   const skip = getSkipCount({ page, pageSize });
 
-  const t0 = Date.now();
-  const [submissions, totalCount] = await Promise.all([
-    DsaSubmission.find(query)
-      .sort({ submittedAt: -1 })
-      .skip(skip)
-      .limit(pageSize)
-      .populate('problemId', 'title difficulty category')
-      .lean(),
-    DsaSubmission.countDocuments(query),
-  ]);
-  logger.perf('getSubmissions_query', Date.now() - t0, { userId, page, pageSize, totalCount });
-
   type PopulatedProblem = { title?: string; difficulty?: string; category?: string } | null;
 
-  const mapped: ApiDsaSubmissionEntry[] = submissions.map((s) => {
+  const mapEntry = (s: any): ApiDsaSubmissionEntry => {
     const problem = s.problemId as unknown as PopulatedProblem;
     return {
       id: (s._id as Types.ObjectId).toString(),
@@ -681,10 +670,84 @@ export async function getSubmissions(
       memoryUsed: s.memoryUsed,
       submittedAt: s.submittedAt.toISOString(),
     };
-  });
+  };
+
+  if (filters.includeArchived) {
+    // Fan out across the hot and cold collections with $unionWith so a single call returns
+    // unified, paginated results spanning both tiers.
+    const pipeline: any[] = [
+      { $match: query },
+      {
+        $unionWith: {
+          coll: 'dsa_submissions_archive',
+          pipeline: [
+            {
+              $match: {
+                userId: userObjId,
+                ...(filters.platform ? { platform: filters.platform } : {}),
+                ...(filters.status ? { status: filters.status } : {}),
+              },
+            },
+          ],
+        },
+      },
+      { $sort: { submittedAt: -1 } },
+      {
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          data: [
+            { $skip: skip },
+            { $limit: pageSize },
+            {
+              $lookup: {
+                from: 'dsaproblems',
+                localField: 'problemId',
+                foreignField: '_id',
+                as: 'problem',
+              },
+            },
+            {
+              $addFields: {
+                problem: { $arrayElemAt: ['$problem', 0] },
+              },
+            },
+            {
+              $project: {
+                _id: 1, platform: 1, problem: 1, status: 1, language: 1,
+                executionTime: 1, memoryUsed: 1, submittedAt: 1,
+              },
+            },
+          ],
+        },
+      },
+    ];
+
+    const t0 = Date.now();
+    const result = await DsaSubmission.aggregate(pipeline).allowDiskUse(true);
+    const facet = result[0] ?? { metadata: [], data: [] };
+    const totalCount = facet.metadata[0]?.total ?? 0;
+    const submissions = (facet.data as any[]).map(mapEntry);
+
+    const pagination: ApiPagination = createPagination(totalCount, { page, pageSize });
+    logger.perf('getSubmissions_union_query', Date.now() - t0, { userId, page, pageSize, totalCount });
+    return { submissions, pagination };
+  }
+
+  const t0 = Date.now();
+  const [submissions, totalCount] = await Promise.all([
+    DsaSubmission.find(query)
+      .sort({ submittedAt: -1 })
+      .skip(skip)
+      .limit(pageSize)
+      .populate('problemId', 'title difficulty category')
+      .lean(),
+    DsaSubmission.countDocuments(query),
+  ]);
+  logger.perf('getSubmissions_query', Date.now() - t0, { userId, page, pageSize, totalCount });
+
+  const mapped = submissions.map(mapEntry);
 
   const pagination: ApiPagination = createPagination(totalCount, { page, pageSize });
-
   return { submissions: mapped, pagination };
 }
 
