@@ -3,7 +3,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
-import { getRedisClient } from '../shared/redis/client.js';
+import { getRedisClient, isRedisConfigured } from '../shared/redis/client.js';
 import { logger } from '../shared/logger.js';
 
 interface RateLimitConfig {
@@ -118,7 +118,7 @@ export function createRateLimiter(endpointType: string) {
     res: Response,
     next: NextFunction
   ): Promise<void> {
-    if (process.env.NODE_ENV === 'development') {
+    if (process.env.NODE_ENV === 'development' || !isRedisConfigured()) {
       next();
       return;
     }
@@ -315,6 +315,9 @@ export async function checkRateLimit(
   endpointType: string,
   identifier: string
 ): Promise<RateLimitResult> {
+  if (!isRedisConfigured()) {
+    return { success: true, remaining: 100, resetAt: Date.now() + 60_000 };
+  }
   const config = ENDPOINT_CONFIGS[endpointType] || ENDPOINT_CONFIGS.default;
   const redis = getRedisClient();
 

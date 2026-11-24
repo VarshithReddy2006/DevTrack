@@ -78,6 +78,8 @@ export function getRedisClient(): Redis {
       maxRetriesPerRequest: 0,
       retryStrategy: () => null, // Disable retries
     });
+    // Swallow any connection error so it never causes unhandled 'error' events
+    mockClient.on('error', () => {});
     // Prevent it from ever connecting
     mockClient.connect = () => Promise.reject(new Error('Redis disabled - REDIS_URL / REDIS_HOST not set'));
     mockClient.ping = (() => Promise.reject(new Error('Redis disabled - REDIS_URL / REDIS_HOST not set'))) as unknown as typeof mockClient.ping;
