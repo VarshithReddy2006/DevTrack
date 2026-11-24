@@ -623,4 +623,23 @@ describe('Streak Service — getStreakHistory', () => {
     const inactiveDays = history.filter(h => !h.active);
     expect(inactiveDays.length).toBeGreaterThanOrEqual(29);
   });
+
+  it('resolves configured user timezone when timezone omitted in recordActivity payload (#582)', async () => {
+    await User.findByIdAndUpdate(userId, { timezone: 'Asia/Kolkata' });
+
+    await recordActivity({
+      userId,
+      streakType: 'dsa',
+      source: 'dsa_test_tz',
+      activityDate: new Date(),
+    });
+
+    const log = await UserStreakLog.findOne({ userId, sources: 'dsa_test_tz' });
+    expect(log).toBeDefined();
+    expect(log?.timezone).toBe('Asia/Kolkata');
+
+    const status = await recalculateStreak(userId, 'dsa');
+    expect(status.isActiveToday).toBe(true);
+    expect(status.currentStreak).toBe(1);
+  });
 });
