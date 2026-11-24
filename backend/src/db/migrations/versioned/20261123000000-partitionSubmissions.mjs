@@ -11,11 +11,16 @@ export async function up({ db, session }: { db: mongo.Db; session?: unknown }): 
   // historical records occupy less RAM and disk than the hot collection.
   const collections = await db.listCollections({ name: ARCHIVE_COLLECTION }).toArray();
   if (collections.length === 0) {
-    await db.createCollection(ARCHIVE_COLLECTION, {
-      storageEngine: {
-        wiredTiger: { configString: 'block_compressor=zstd' },
-      },
-    });
+    try {
+      await db.createCollection(ARCHIVE_COLLECTION, {
+        storageEngine: {
+          wiredTiger: { configString: 'block_compressor=zstd' },
+        },
+      });
+    } catch {
+      // MongoDB Atlas shared/serverless clusters disallow custom storageEngine parameter
+      await db.createCollection(ARCHIVE_COLLECTION);
+    }
   }
 
   const archive = db.collection(ARCHIVE_COLLECTION);

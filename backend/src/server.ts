@@ -154,12 +154,18 @@ async function bootstrap() {
       });
       try {
         await connection.asPromise();
-        await createMigrationRunner(connection, migrations).check();
+        const runner = createMigrationRunner(connection, migrations);
+        if (process.env.AUTO_MIGRATE !== 'false') {
+          logger.info('Running pending database migrations...');
+          await runner.up();
+        }
+        await runner.check();
       } finally {
         await connection.close();
       }
     } catch (error) {
-      logger.error('CRITICAL: Database migration check failed', error);
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error('CRITICAL: Database migration check failed', error, { message });
       process.exit(1);
     }
   }
