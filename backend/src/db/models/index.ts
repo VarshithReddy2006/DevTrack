@@ -81,6 +81,11 @@ export { RevisionCard, type IRevisionCard, type ProblemDifficulty } from './revi
 export { ResumeProfile, type IResumeProfile } from './resumeProfile.model.js';
 export { ResumeVersion, type IResumeVersion } from './resumeVersion.model.js';
 export { ResumeBulletRevision, type IResumeBulletRevision } from './resumeBulletRevision.model.js';
+export { ResumeExport, type IResumeExport } from './resumeExport.model.js';
+export { ResumeEvidenceClaim, type IResumeEvidenceClaim } from './resumeEvidenceClaim.model.js';
+export { ResumeSession, type IResumeSession } from './resumeSession.model.js';
+export { ResumeVariant, type IResumeVariant } from './resumeVariant.model.js';
+export { ResumeCredibility, type IResumeCredibility } from './resumeCredibility.model.js';
 export { JobTarget, type IJobTarget, type JobTargetStatus } from './jobTarget.model.js';
 export { InterviewReport } from './interviewReport.model.js';
 export { UserQuestProgress, type IUserQuestProgress } from './userQuestProgress.model.js';
