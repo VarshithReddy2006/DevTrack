@@ -51,6 +51,24 @@ export function calculateIntervalDays(
   }
 }
 
+/**
+ * Normalizes a due date to the UTC calendar-day boundary (00:00:00.000Z)
+ * `intervalDays` days after `now`'s UTC calendar date, preventing daily review
+ * time-of-day drift and daylight saving time shifts.
+ */
+export function normalizeDueAt(now: Date, intervalDays: number): Date {
+  if (!Number.isFinite(now.getTime())) {
+    throw new RangeError('normalizeDueAt requires a valid Date');
+  }
+  const days = Number.isFinite(intervalDays) ? Math.max(0, Math.trunc(intervalDays)) : 0;
+  const utcDayStartMs = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate()
+  );
+  return new Date(utcDayStartMs + days * DAY_IN_MS);
+}
+
 export function computeNextSm2State(
   current: { repetitions: number; easeFactor: number; intervalDays: number },
   rating: ReviewRating,
@@ -65,7 +83,7 @@ export function computeNextSm2State(
     nextEf
   );
   const nextRepetitions = quality < 3 ? 0 : current.repetitions + 1;
-  const dueAt = new Date(now.getTime() + nextIntervalDays * DAY_IN_MS);
+  const dueAt = normalizeDueAt(now, nextIntervalDays);
 
   return {
     repetitions: nextRepetitions,

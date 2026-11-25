@@ -61,7 +61,7 @@ describe('Revision SM-2 Engine Unit Tests', () => {
       expect(next.repetitions).toBe(2);
       expect(next.easeFactor).toBe(2.7);
       expect(next.intervalDays).toBe(3);
-      expect(next.dueAt).toEqual(new Date(now.getTime() + 3 * 86_400_000));
+      expect(next.dueAt).toEqual(new Date('2026-06-04T00:00:00.000Z'));
     });
 
     it('resets repetitions to 0 on failed rating', () => {
@@ -75,7 +75,7 @@ describe('Revision SM-2 Engine Unit Tests', () => {
       expect(next.repetitions).toBe(0);
       expect(next.intervalDays).toBe(1);
       expect(next.easeFactor).toBe(1.96);
-      expect(next.dueAt).toEqual(new Date(now.getTime() + 1 * 86_400_000));
+      expect(next.dueAt).toEqual(new Date('2026-06-02T00:00:00.000Z'));
     });
   });
 });
@@ -202,7 +202,41 @@ describe('Revision Radar Services & Transactions (Replica Set)', () => {
       expect(updated.repetitions).toBe(1);
       expect(updated.easeFactor).toBe(2.6);
       expect(updated.intervalDays).toBe(1);
-      expect(updated.dueAt).toEqual(new Date(now.getTime() + 1 * 86_400_000));
+      expect(updated.dueAt).toEqual(new Date('2026-06-02T00:00:00.000Z'));
+    });
+
+    it('makes late-night reviews due the next morning at start of day without drift', async () => {
+      const userId = new Types.ObjectId().toString();
+      const userObjId = new Types.ObjectId(userId);
+      const lateReviewTime = new Date('2026-06-01T23:30:00.000Z');
+
+      const card = await RevisionCard.create({
+        userId: userObjId,
+        problemKey: 'leetcode:late-night-review',
+        title: 'Late Night Problem',
+        difficulty: 'medium',
+        repetitions: 0,
+        easeFactor: 2.5,
+        intervalDays: 1,
+        dueAt: lateReviewTime,
+        reviewSeq: 0,
+      });
+
+      const updated = await RevisionService.submitReview({
+        userId,
+        cardId: card._id.toString(),
+        rating: 'easy',
+        reviewSeq: 0,
+        now: lateReviewTime,
+      });
+
+      expect(updated.dueAt).toEqual(new Date('2026-06-02T00:00:00.000Z'));
+
+      const nextMorning = await RevisionService.getDueCards({
+        userId,
+        now: new Date('2026-06-02T08:00:00.000Z'),
+      });
+      expect(nextMorning.map(c => c._id.toString())).toEqual([card._id.toString()]);
     });
 
     it('rejects stale review submission with RevisionCardStaleError', async () => {
