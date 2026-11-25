@@ -110,4 +110,49 @@ describe('profile persistence', () => {
     expect(useProfileStore.getState().profile.location).toBe('');
     expect(useProfileStore.getState()).toMatchObject({isDirty:false,isSaving:false});
   });
+
+  it('resets loading states to false and exposes failure details on sync failure', async () => {
+    const { connectPlatform, syncAllPlatforms } = await import('../services/profileService');
+    vi.mocked(connectPlatform).mockResolvedValue(undefined as any);
+    vi.mocked(syncAllPlatforms).mockRejectedValueOnce({
+      response: {
+        data: {
+          data: {
+            results: [
+              { platform: 'leetcode', success: true },
+              { platform: 'codechef', success: false, error: 'CodeChef user not found' }
+            ]
+          }
+        }
+      }
+    });
+
+    useProfileStore.getState().updateField('leetcodeUsername', 'Varshithreddy8044');
+    useProfileStore.getState().updateField('codechefUsername', 'VarshithReddy2006');
+    useProfileStore.getState().updateField('codeforcesUsername', '');
+
+    const result = await useProfileStore.getState().fetchAllPlatforms();
+    expect(result.success).toBe(true); // partial success
+    const state = useProfileStore.getState();
+    expect(state.leetcode.loading).toBe(false);
+    expect(state.codechef.loading).toBe(false);
+    expect(state.codeforces.loading).toBe(false);
+    expect(state.codechef.error).toBe('CodeChef user not found');
+    expect(state.syncMessage).toContain('CodeChef user not found');
+  });
+
+  it('gracefully handles complete failure and clears loading status', async () => {
+    const { connectPlatform, syncAllPlatforms } = await import('../services/profileService');
+    vi.mocked(connectPlatform).mockRejectedValueOnce(new Error('Connection rejected'));
+    vi.mocked(syncAllPlatforms).mockRejectedValueOnce(new Error('Network error'));
+
+    useProfileStore.getState().updateField('leetcodeUsername', 'Varshithreddy8044');
+
+    const result = await useProfileStore.getState().fetchAllPlatforms();
+    expect(result.success).toBe(false);
+    const state = useProfileStore.getState();
+    expect(state.leetcode.loading).toBe(false);
+    expect(state.syncState).toBe('error');
+    expect(state.syncMessage).toContain('Connection failed for: leetcode');
+  });
 });

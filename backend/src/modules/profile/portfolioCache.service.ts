@@ -7,7 +7,7 @@ import { SLUG_PATTERN } from '../../db/models/usernameReservation.model.js';
 import { discardTaggedCacheKey, portfolioTag, readTaggedCache, writeTaggedCache } from '../../shared/redis/cacheTags.js';
 import { logger } from '../../shared/logger.js';
 import { mapToPublicProfileDTO } from './profile.dto.js';
-import { canViewPublicProfile, PublicProfileService } from './publicProfile.service.js';
+import { canViewPublicProfile, isCurrentProfileSnapshot, PublicProfileService } from './publicProfile.service.js';
 
 export const PORTFOLIO_TTL_SECONDS = 3600;
 export const PORTFOLIO_REFRESH_MS = 300_000;
@@ -21,8 +21,8 @@ const digest = (value: string) => createHash('sha256').update(value).digest('bas
 function fingerprint(profile: Metadata, privacy?: Partial<IUserSettings['privacy']>): string {
   return digest(JSON.stringify([
     FORMAT_VERSION, String(profile.userId), profile.slug, profile.username, profile.published,
-    profile.visibility, profile.publicationVersion, profile.sections, profile.snapshot.version,
-    profile.snapshot.computedAt, profile.antiGaming?.isFlagged, profile.isIndexable, profile.seo,
+    profile.visibility, profile.publicationVersion, profile.sections, profile.snapshot?.version,
+    profile.snapshot?.computedAt, profile.antiGaming?.isFlagged, profile.isIndexable, profile.seo,
     privacy ?? null,
   ]));
 }
@@ -59,8 +59,8 @@ function fill(slug: string, source: Source, generation: string | null): Promise<
   const promise = (async () => {
     const profile = await PublicProfile.findOne({ _id: source.profile._id, slug, published: true, visibility: 'public' });
     if (!profile) return null;
-    if (profile.snapshot.version < 2) {
-      await PublicProfileService.computeProfile(profile.userId);
+    if (!isCurrentProfileSnapshot(profile.snapshot)) {
+      await PublicProfileService.ensureCurrentSnapshot(profile.userId);
       return null; // Re-read the new snapshot's metadata and generation before filling it.
     }
     const current = await publicSource(slug);
