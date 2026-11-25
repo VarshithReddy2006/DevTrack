@@ -444,3 +444,16 @@ existing user/challenge XP ledger key. New tier completion counts start at zero.
 
 Do not roll back to date-only uniqueness after multiple tiers exist without a
 separate data migration. This command does not perform that rollback.
+
+## Public snapshot rebuild coordination
+
+Public profile reads and portfolio-cache fills share one in-flight snapshot rebuild
+per owner in each process. When Redis is configured, rebuilds also use the existing
+renewing `devtrack:profile:compute:<userId>` distributed lock and recheck the stored
+version after acquiring it. A contending process polls for the new MongoDB snapshot
+with a three-second budget, then returns a retryable 503 rather than computing
+unlocked. Individual database reads still use the configured driver timeouts.
+Redis outages do not enable an unlocked fallback when Redis is configured. When
+Redis is disabled, coordination is local to a process. Publication/privacy checks
+and individual view accounting remain per request. This guards obsolete or missing
+snapshots; a DTO cache TTL miss alone does not require an expensive rebuild.
