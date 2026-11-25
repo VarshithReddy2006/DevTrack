@@ -400,6 +400,26 @@ curl https://your-api.render.com/health
 curl https://your-api.render.com/health/detailed  # requires admin auth
 ```
 
+Kubernetes can use `/healthz` for lightweight process liveness and `/readyz`
+for dependency and runtime readiness. Transient overload sheds traffic through
+readiness rather than requesting a restart; an unresponsive process is still
+subject to the orchestrator's liveness timeout.
+
+Readiness returns 503 when event-loop p99 exceeds 500 ms or
+`heapUsed / heapTotal` exceeds 0.90. Equality is healthy. Memory uses one
+`process.memoryUsage()` snapshot of the allocated V8 heap, not RSS or the
+configured maximum heap limit. The event-loop histogram uses 20 ms resolution
+and independent one-second windows. The larger p99 of the previous and current
+windows is used conservatively, so recovery can take up to two windows. The native
+monitor starts with the module; the reset timer starts lazily on the first runtime
+probe so import-only workers and tools do not inherit a new timer. Later probe
+traffic never resets the histogram, and the sampler does not keep a process alive.
+
+The response keeps dependency statuses and adds `eventLoop` and `heap` checks
+plus `diagnostics` containing `eventLoopP99Ms`, `heapUsedBytes`, `heapTotalBytes`
+and `heapRatio`. Invalid or not-yet-available telemetry is null and makes the
+worker unready, including the short initial histogram warmup.
+
 
 ### Common issues
 
@@ -444,3 +464,16 @@ existing user/challenge XP ledger key. New tier completion counts start at zero.
 
 Do not roll back to date-only uniqueness after multiple tiers exist without a
 separate data migration. This command does not perform that rollback.
+
+## Public snapshot rebuild coordination
+
+Public profile reads and portfolio-cache fills share one in-flight snapshot rebuild
+per owner in each process. When Redis is configured, rebuilds also use the existing
+renewing `devtrack:profile:compute:<userId>` distributed lock and recheck the stored
+version after acquiring it. A contending process polls for the new MongoDB snapshot
+with a three-second budget, then returns a retryable 503 rather than computing
+unlocked. Individual database reads still use the configured driver timeouts.
+Redis outages do not enable an unlocked fallback when Redis is configured. When
+Redis is disabled, coordination is local to a process. Publication/privacy checks
+and individual view accounting remain per request. This guards obsolete or missing
+snapshots; a DTO cache TTL miss alone does not require an expensive rebuild.

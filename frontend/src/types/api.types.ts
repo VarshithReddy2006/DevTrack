@@ -43,7 +43,8 @@ export interface ApiError {
   statusCode: number;
   retryAfter?: number | string; // Retry-After seconds or HTTP date
   timestamp: string;
-  details?: Record<string, string[]>;
+  details?: Record<string, string[]> | any;
+  rawData?: any;
 }
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ export async function discoverMigrations(
     .sort();
 
   return Promise.all(files.map(async file => {
-    if (!/^\d{14}-[a-z0-9-]+\.mjs$/.test(file)) {
+    if (!/^\d{14}-[a-zA-Z0-9-]+\.mjs$/.test(file)) {
       throw new Error(`Invalid migration filename: ${file}`);
     }
     const url = new URL(file, directory);
