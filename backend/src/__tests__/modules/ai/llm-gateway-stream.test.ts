@@ -6,6 +6,7 @@ import { llmGateway, type LLMStreamEvent } from '../../../modules/ai/provider/LL
 import { AIProviderAdapter, type AIStreamEvent } from '../../../modules/ai/provider/AIProviderAdapter.js';
 import { AIStreamInterruptedError } from '../../../modules/ai/provider/AIStreamInterruptedError.js';
 import { AIQuotaExceededError, QuotaService, quotaService } from '../../../modules/ai/quota.service.js';
+import { semanticCacheService } from '../../../shared/ai/semanticCache.service.js';
 
 const redisStore = new Map<string, string>();
 const mockRedis = {
@@ -65,6 +66,7 @@ describe('LLMGateway.streamCompletion', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     redisStore.clear();
+    semanticCacheService.clearMemoryCache();
     await AIResponseAuditLog.deleteMany({});
   });
 
