@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SystemDesignSignalExtractor } from '../SystemDesignSignalExtractor.js';
-import { parseDockerfile } from '../dockerfileParser.js';
+import { parseDockerfile, parseDockerfileDetails } from '../dockerfileParser.js';
 import { parseKubernetesManifest } from '../k8sManifestParser.js';
 import { ProjectIntelligenceEngine } from '../ProjectIntelligenceEngine.js';
 import {
@@ -38,6 +38,98 @@ describe('Dockerfile and Kubernetes manifest parsing', () => {
       hasNonRootUser: false,
       hasHealthcheck: false,
       usesMinimalBaseImage: true,
+    });
+  });
+
+  it('interpolates ARG/ENV variables in FROM, USER, and COPY --from and tracks multistage aliases', () => {
+    const content = [
+      'ARG NODE_VERSION=20',
+      'ARG BASE_VARIANT=alpine',
+      'ARG BUILDER_IMAGE=node:${NODE_VERSION}-${BASE_VARIANT}',
+      'FROM --platform=${TARGETPLATFORM:-linux/amd64} ${BUILDER_IMAGE} AS builder',
+      'WORKDIR /app',
+      'COPY package*.json ./',
+      'RUN npm ci && npm run build',
+      '',
+      'FROM --platform=${TARGETPLATFORM} node:${NODE_VERSION}-slim AS runner',
+      'ARG APP_USER=appuser',
+      'ENV RUNTIME_USER=${APP_USER}',
+      'COPY --from=builder /app/dist ./dist',
+      'USER ${RUNTIME_USER}',
+      'HEALTHCHECK CMD node dist/healthcheck.js',
+    ].join('\n');
+
+    expect(parseDockerfile(content)).toEqual({
+      hasMultiStageBuild: true,
+      hasNonRootUser: true,
+      hasHealthcheck: true,
+      usesMinimalBaseImage: true,
+    });
+
+    const details = parseDockerfileDetails(content);
+    expect(details.stageAliases).toEqual(['builder', 'runner']);
+    expect(details.referencedStageAliases).toEqual(['builder']);
+    expect(details.stages.map(stage => ({
+      alias: stage.alias,
+      baseImage: stage.baseImage,
+      usesMinimalBaseImage: stage.usesMinimalBaseImage,
+      copyFromRefs: stage.copyFromRefs,
+    }))).toEqual([
+      {
+        alias: 'builder',
+        baseImage: 'node:20-alpine',
+        usesMinimalBaseImage: true,
+        copyFromRefs: [],
+      },
+      {
+        alias: 'runner',
+        baseImage: 'node:20-slim',
+        usesMinimalBaseImage: true,
+        copyFromRefs: ['builder'],
+      },
+    ]);
+  });
+
+  it('recognizes slim, scratch, distroless, and inherited stage aliases across multiline FROM instructions', () => {
+    const inherited = [
+      'FROM \\',
+      '  --platform=linux/arm64 \\',
+      '  python:3.12-slim-bookworm \\',
+      '  as base',
+      'USER nonroot',
+      'FROM base AS api',
+      'COPY --from=0 /wheels /wheels',
+    ].join('\n');
+
+    expect(parseDockerfile(inherited)).toEqual({
+      hasMultiStageBuild: true,
+      hasNonRootUser: true,
+      hasHealthcheck: false,
+      usesMinimalBaseImage: true,
+    });
+
+    const details = parseDockerfileDetails(inherited);
+    expect(details.stages[1]).toMatchObject({
+      alias: 'api',
+      baseImage: 'python:3.12-slim-bookworm',
+      inheritedFromStage: 'base',
+      user: 'nonroot',
+      usesMinimalBaseImage: true,
+      copyFromRefs: ['0'],
+    });
+    expect(details.referencedStageAliases).toEqual(['base']);
+
+    expect(parseDockerfile('FROM scratch\nCOPY bin /bin')).toEqual({
+      hasMultiStageBuild: false,
+      hasNonRootUser: false,
+      hasHealthcheck: false,
+      usesMinimalBaseImage: true,
+    });
+    expect(parseDockerfile('FROM ubuntu:24.04\nARG MISSING_USER\nUSER ${MISSING_USER}')).toEqual({
+      hasMultiStageBuild: false,
+      hasNonRootUser: false,
+      hasHealthcheck: false,
+      usesMinimalBaseImage: false,
     });
   });
 
