@@ -1,4 +1,6 @@
 import { logger } from '../../../shared/logger.js';
+import { DockerfileSignals, parseDockerfile } from './dockerfileParser.js';
+import { KubernetesManifestSignals, parseKubernetesManifest } from './k8sManifestParser.js';
 import {
   ComposeTopology,
   MAX_MANIFEST_BYTES,
@@ -38,6 +40,16 @@ export interface SystemDesignSignals {
   hasKubernetes: boolean;
   hasDeploymentPipelines: boolean;
   hasInfraOrchestration: boolean;
+  hasMultiStageDockerBuild: boolean;
+  hasNonRootDockerUser: boolean;
+  hasDockerHealthcheck: boolean;
+  usesMinimalDockerBaseImage: boolean;
+  hasKubernetesResourceLimits: boolean;
+  hasKubernetesResourceRequests: boolean;
+  hasKubernetesHighAvailability: boolean;
+  hasKubernetesHealthProbes: boolean;
+  hasKubernetesAutoscaling: boolean;
+  hasIngressTLS: boolean;
   /** Distinct services declared across the repositories' docker-compose files (largest repo). */
   composeServiceCount: number;
   /** True when a docker-compose file declares two or more services. */
@@ -148,6 +160,16 @@ export const SystemDesignSignalExtractor = {
       hasKubernetes: false,
       hasDeploymentPipelines: false,
       hasInfraOrchestration: false,
+      hasMultiStageDockerBuild: false,
+      hasNonRootDockerUser: false,
+      hasDockerHealthcheck: false,
+      usesMinimalDockerBaseImage: false,
+      hasKubernetesResourceLimits: false,
+      hasKubernetesResourceRequests: false,
+      hasKubernetesHighAvailability: false,
+      hasKubernetesHealthProbes: false,
+      hasKubernetesAutoscaling: false,
+      hasIngressTLS: false,
       composeServiceCount: 0,
       hasMultiServiceTopology: false,
       
@@ -196,6 +218,7 @@ export const SystemDesignSignalExtractor = {
       
       // Detect Containerization & Deployment
       this.detectDeploymentSignals(files, deps, scripts, signals);
+      this.detectContainerSignals(manifests.dockerfile, manifests.kubernetes, signals);
       
       // Detect Monitoring & Observability
       this.detectMonitoringSignals(deps, devDeps, files, signals);
@@ -235,6 +258,8 @@ export const SystemDesignSignalExtractor = {
   readManifests(repo: any): {
     files: string[];
     compose: ComposeTopology;
+    dockerfile: DockerfileSignals;
+    kubernetes: KubernetesManifestSignals;
     npmDependencies: string[];
     npmDevDependencies: string[];
     foreignDependencies: string[];
@@ -257,12 +282,44 @@ export const SystemDesignSignalExtractor = {
     ]));
 
     const serviceByName = new Map<string, ComposeTopology['services'][number]>();
+    const dockerfile: DockerfileSignals = {
+      hasMultiStageBuild: false,
+      hasNonRootUser: false,
+      hasHealthcheck: false,
+      usesMinimalBaseImage: false,
+    };
+    const kubernetes: KubernetesManifestSignals = {
+      isKubernetesManifest: false,
+      hasResourceLimits: false,
+      hasResourceRequests: false,
+      hasHighAvailability: false,
+      hasHealthProbes: false,
+      hasAutoscaling: false,
+      hasIngressTLS: false,
+    };
     const npmDependencies: string[] = [];
     const npmDevDependencies: string[] = [];
     const foreignDependencies: string[] = [];
 
     for (const [path, text] of contents) {
       const name = baseName(path);
+      if (isDockerfileName(name)) {
+        const parsed = parseDockerfile(text);
+        dockerfile.hasMultiStageBuild ||= parsed.hasMultiStageBuild;
+        dockerfile.hasNonRootUser ||= parsed.hasNonRootUser;
+        dockerfile.hasHealthcheck ||= parsed.hasHealthcheck;
+        dockerfile.usesMinimalBaseImage ||= parsed.usesMinimalBaseImage;
+      }
+      if (/\.ya?ml$/i.test(name)) {
+        const parsed = parseKubernetesManifest(text);
+        kubernetes.isKubernetesManifest ||= parsed.isKubernetesManifest;
+        kubernetes.hasResourceLimits ||= parsed.hasResourceLimits;
+        kubernetes.hasResourceRequests ||= parsed.hasResourceRequests;
+        kubernetes.hasHighAvailability ||= parsed.hasHighAvailability;
+        kubernetes.hasHealthProbes ||= parsed.hasHealthProbes;
+        kubernetes.hasAutoscaling ||= parsed.hasAutoscaling;
+        kubernetes.hasIngressTLS ||= parsed.hasIngressTLS;
+      }
       if (isComposeFileName(name)) {
         parseComposeTopology(text).services.forEach(service => {
           const known = serviceByName.get(service.name);
@@ -295,6 +352,8 @@ export const SystemDesignSignalExtractor = {
     return {
       files,
       compose: { services: Array.from(serviceByName.values()) },
+      dockerfile,
+      kubernetes,
       npmDependencies,
       npmDevDependencies,
       foreignDependencies,
@@ -342,6 +401,28 @@ export const SystemDesignSignalExtractor = {
         if (pattern.test(normalized)) flags.forEach(flag => { signals[flag] = true; });
       });
     });
+  },
+
+  detectContainerSignals(
+    dockerfile: DockerfileSignals,
+    kubernetes: KubernetesManifestSignals,
+    signals: SystemDesignSignals
+  ): void {
+    signals.hasMultiStageDockerBuild ||= dockerfile.hasMultiStageBuild;
+    signals.hasNonRootDockerUser ||= dockerfile.hasNonRootUser;
+    signals.hasDockerHealthcheck ||= dockerfile.hasHealthcheck;
+    signals.usesMinimalDockerBaseImage ||= dockerfile.usesMinimalBaseImage;
+
+    if (kubernetes.isKubernetesManifest) {
+      signals.hasKubernetes = true;
+      signals.hasInfraOrchestration = true;
+    }
+    signals.hasKubernetesResourceLimits ||= kubernetes.hasResourceLimits;
+    signals.hasKubernetesResourceRequests ||= kubernetes.hasResourceRequests;
+    signals.hasKubernetesHighAvailability ||= kubernetes.hasHighAvailability;
+    signals.hasKubernetesHealthProbes ||= kubernetes.hasHealthProbes;
+    signals.hasKubernetesAutoscaling ||= kubernetes.hasAutoscaling;
+    signals.hasIngressTLS ||= kubernetes.hasIngressTLS;
   },
 
   /**
