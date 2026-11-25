@@ -14,7 +14,9 @@ const fixture = vi.hoisted(() => ({
 
 // Redis reports a non-ready status, so the ticket store uses its in-memory path.
 // The rate limiter only needs get / incr / pexpire / ttl / set.
-vi.mock('../../../shared/redis/client.js', () => ({ getRedisClient: () => ({
+vi.mock('../../../shared/redis/client.js', () => ({
+  isRedisConfigured: () => true,
+  getRedisClient: () => ({
   status: 'end',
   async get(key: string) {
     const entry = fixture.values.get(key);

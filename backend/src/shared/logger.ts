@@ -87,11 +87,7 @@ export const logger = {
       requestId: (meta?.requestId ?? details?.requestId) as string | undefined,
       userId: (meta?.userId ?? details?.userId) as string | undefined,
       error: error == null ? undefined : errorName,
-      metadata: excludeMeta({
-        ...(errorCode !== undefined ? { errorCode } : {}),
-        ...(typeof details?.message === 'string' ? { message: details.message } : {}),
-        ...meta,
-      }),
+      metadata: excludeMeta(errorCode === undefined ? meta : { errorCode, ...meta }),
     });
   },
 
