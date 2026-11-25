@@ -106,7 +106,8 @@ axiosClient.interceptors.response.use(
       statusCode: error.response?.status || 500,
       retryAfter: typeof retryAfter === 'string' || typeof retryAfter === 'number' ? retryAfter : undefined,
       timestamp: new Date().toISOString(),
-      details: error.response?.data?.details,
+      details: error.response?.data?.details ?? error.response?.data,
+      rawData: error.response?.data,
     };
 
     return Promise.reject(normalized);

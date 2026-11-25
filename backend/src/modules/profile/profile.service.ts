@@ -143,10 +143,11 @@ export async function connectPlatform(
 
   const profileUrl = platformConfig.profileUrl(username);
 
+  const platformLower = platformName.toLowerCase();
   const platform = await ConnectedPlatform.findOneAndUpdate(
     {
       userId: new Types.ObjectId(userId),
-      platformName: platformName.toLowerCase() as any,
+      platformName: platformLower as any,
     },
     {
       $set: {
@@ -158,6 +159,13 @@ export async function connectPlatform(
       },
     },
     { upsert: true, new: true }
+  );
+
+  // Keep UserProfile socialLinks synchronized with connected platforms
+  await UserProfile.findOneAndUpdate(
+    { userId: new Types.ObjectId(userId) },
+    { $set: { [`socialLinks.${platformLower}`]: username } },
+    { upsert: true }
   );
 
   await cacheManager.invalidateDashboard(userId);
