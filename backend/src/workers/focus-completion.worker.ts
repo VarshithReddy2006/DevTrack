@@ -6,6 +6,7 @@ import { registerReadinessConsumers } from '../modules/readiness/consumers/index
 import { registerInterviewTurnAnsweredConsumer } from '../modules/interview/interviewTurnAnswered.consumer.js';
 import { registerJobTargetSubmittedConsumer } from '../modules/job-targets/jobTargetSubmitted.consumer.js';
 import { focusStreakConsumer } from '../modules/streak/consumers/focusSessionCompleted.consumer.js';
+import { registerStreakConsumers } from '../modules/streak/consumers/index.js';
 import { focusXpConsumer } from '../modules/xp/consumers/focusSessionCompleted.consumer.js';
 import { getConsumersForEvent, getQueuesForEvent, registerConsumer } from '../shared/events/consumerRegistry.js';
 import { focusSessionCompletedV1Schema, type DomainEventEnvelope } from '../shared/events/eventContract.js';
@@ -41,6 +42,7 @@ export function createDomainOutboxRelay(enqueue: OutboxRelayOptions['enqueue']):
   registerJobTargetSubmittedConsumer();
   registerInterviewTurnAnsweredConsumer();
   registerQuestConsumers();
+  registerStreakConsumers();
   return new OutboxRelay({
     resolveQueues: type => {
       const queues = getQueuesForEvent(type);
