@@ -279,6 +279,20 @@ export const ProjectIntelligenceEngine = {
     if (signals.hasInfraOrchestration) evidence += 20;
     if (signals.hasCDN) evidence += 15;
     
+    const cloudNativeSignals = [
+      signals.hasMultiStageDockerBuild,
+      signals.hasNonRootDockerUser,
+      signals.hasDockerHealthcheck,
+      signals.usesMinimalDockerBaseImage,
+      signals.hasKubernetesResourceLimits,
+      signals.hasKubernetesResourceRequests,
+      signals.hasKubernetesHighAvailability,
+      signals.hasKubernetesHealthProbes,
+      signals.hasKubernetesAutoscaling,
+      signals.hasIngressTLS,
+    ];
+    evidence += cloudNativeSignals.filter(Boolean).length * 5;
+
     return Math.min(100, evidence);
   },
 
@@ -343,12 +357,27 @@ export const ProjectIntelligenceEngine = {
     let sophistication = 0;
     
     if (signals.hasDocker) sophistication += 25;
+    if (signals.hasKubernetes) sophistication += 20;
     if (signals.hasRedis) sophistication += 20;
     if (signals.hasBullMQ) sophistication += 20;
     if (signals.hasQueueSystems) sophistication += 15;
     if (signals.hasMonitoring) sophistication += 10;
     if (signals.hasCDN) sophistication += 10;
     
+    const cloudNativeSignals = [
+      signals.hasMultiStageDockerBuild,
+      signals.hasNonRootDockerUser,
+      signals.hasDockerHealthcheck,
+      signals.usesMinimalDockerBaseImage,
+      signals.hasKubernetesResourceLimits,
+      signals.hasKubernetesResourceRequests,
+      signals.hasKubernetesHighAvailability,
+      signals.hasKubernetesHealthProbes,
+      signals.hasKubernetesAutoscaling,
+      signals.hasIngressTLS,
+    ];
+    sophistication += cloudNativeSignals.filter(Boolean).length * 5;
+
     return Math.min(100, sophistication);
   },
 
