@@ -137,6 +137,38 @@ const interviewReportReadyPayload = z.object({
   mode: z.enum(['ai', 'basic_mode']),
 });
 
+const webrtcSessionCreatedPayload = z.object({
+  sessionId: z.string().min(1), userId: z.string().min(1),
+  state: z.string().min(1), createdAt: z.string(),
+});
+
+const webrtcOfferAnsweredPayload = z.object({
+  sessionId: z.string().min(1), userId: z.string().min(1),
+  state: z.string().min(1), answeredAt: z.string(),
+});
+
+const webrtcConnectedPayload = z.object({
+  sessionId: z.string().min(1), userId: z.string().min(1),
+  state: z.string().min(1), connectedAt: z.string(),
+});
+
+const webrtcIceCandidatePayload = z.object({
+  sessionId: z.string().min(1), userId: z.string().min(1),
+  candidate: z.object({ candidate: z.string(), sdpMLineIndex: z.number(), sdpMid: z.string().optional(), usernameFragment: z.string().optional() }),
+  serverCandidate: z.object({ candidate: z.string(), sdpMLineIndex: z.number(), sdpMid: z.string().optional(), usernameFragment: z.string().optional() }),
+  state: z.string().min(1),
+});
+
+const webrtcIceTimeoutPayload = z.object({
+  sessionId: z.string().min(1), userId: z.string().min(1),
+  state: z.string().min(1), fallbackUrl: z.string().optional(), timedOutAt: z.string(),
+});
+
+const webrtcSessionClosedPayload = z.object({
+  sessionId: z.string().min(1), userId: z.string().min(1),
+  state: z.string().min(1), closedAt: z.string(),
+});
+
 function validateEventPayload(type: string, payload: unknown): Record<string, unknown> {
   let schema: z.ZodSchema<any>;
   switch (type) {
@@ -193,6 +225,24 @@ function validateEventPayload(type: string, payload: unknown): Record<string, un
       break;
     case 'interview.report_ready':
       schema = interviewReportReadyPayload;
+      break;
+    case 'interview.webrtc.session.created':
+      schema = webrtcSessionCreatedPayload;
+      break;
+    case 'interview.webrtc.offer.answered':
+      schema = webrtcOfferAnsweredPayload;
+      break;
+    case 'interview.webrtc.connected':
+      schema = webrtcConnectedPayload;
+      break;
+    case 'interview.webrtc.ice.candidate':
+      schema = webrtcIceCandidatePayload;
+      break;
+    case 'interview.webrtc.ice.timeout':
+      schema = webrtcIceTimeoutPayload;
+      break;
+    case 'interview.webrtc.session.closed':
+      schema = webrtcSessionClosedPayload;
       break;
     default:
       return payload as Record<string, unknown>;
@@ -274,6 +324,12 @@ export type SseEventType =
   | 'interview.time_warning'
   | 'interview.report_ready'
   | 'interview.audio_transcribed'
+  | 'interview.webrtc.session.created'
+  | 'interview.webrtc.offer.answered'
+  | 'interview.webrtc.connected'
+  | 'interview.webrtc.ice.candidate'
+  | 'interview.webrtc.ice.timeout'
+  | 'interview.webrtc.session.closed'
   | 'jobtarget.updated'
   | 'evidence.verified'
   // Privacy & Compliance
@@ -1076,6 +1132,50 @@ class EventBus extends EventEmitter {
     payload: { sessionId: string; mode?: 'ai' | 'basic_mode' },
   ): Promise<void> {
     await this.publishEnvelope(userId, 'interview.session.completed', payload);
+  }
+
+  // ─── AI mock interview WebRTC signaling events ───────────────────────────
+
+  async emitWebrtcSessionCreated(
+    userId: string,
+    payload: { sessionId: string; state: string; createdAt: string },
+  ): Promise<void> {
+    await this.publishEnvelope(userId, 'interview.webrtc.session.created', payload);
+  }
+
+  async emitWebrtcOfferAnswered(
+    userId: string,
+    payload: { sessionId: string; state: string; answeredAt: string },
+  ): Promise<void> {
+    await this.publishEnvelope(userId, 'interview.webrtc.offer.answered', payload);
+  }
+
+  async emitWebrtcConnected(
+    userId: string,
+    payload: { sessionId: string; state: string; connectedAt: string },
+  ): Promise<void> {
+    await this.publishEnvelope(userId, 'interview.webrtc.connected', payload);
+  }
+
+  async emitWebrtcIceCandidate(
+    userId: string,
+    payload: { sessionId: string; candidate: unknown; serverCandidate: unknown; state: string },
+  ): Promise<void> {
+    await this.publishEnvelope(userId, 'interview.webrtc.ice.candidate', payload);
+  }
+
+  async emitWebrtcIceTimeout(
+    userId: string,
+    payload: { sessionId: string; state: string; fallbackUrl?: string; timedOutAt: string },
+  ): Promise<void> {
+    await this.publishEnvelope(userId, 'interview.webrtc.ice.timeout', payload);
+  }
+
+  async emitWebrtcSessionClosed(
+    userId: string,
+    payload: { sessionId: string; state: string; closedAt: string },
+  ): Promise<void> {
+    await this.publishEnvelope(userId, 'interview.webrtc.session.closed', payload);
   }
 
   // ─── Helper to publish envelope with sequence number ─────────────────────
