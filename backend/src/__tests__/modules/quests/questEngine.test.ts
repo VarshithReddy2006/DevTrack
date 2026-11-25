@@ -335,6 +335,22 @@ describe('transactional XP and trophy claims', () => {
     expect(await XpTransaction.countDocuments()).toBe(0);
     expect(await UserAnalytics.countDocuments()).toBe(0);
     expect((await processQuestReward(userId, row._id.toString(), now)).duplicate).toBe(false);
+    expect((await UserXp.findOne({ userId }))!.totalXp).toBe(20);
+    expect(await XpTransaction.countDocuments({ sourceId: 'quest_' + row._id })).toBe(1);
+  });
+  it('guards XP increment with atomic claimed:false transition and never double-credits on partial state', async () => {
+    const row = await eligible();
+    const xpSpy = vi.spyOn(UserXp, 'updateOne');
+    // Simulate a race where claimed was already flipped to true before updateOne
+    vi.spyOn(UserQuestProgress, 'findOneAndUpdate').mockResolvedValueOnce(null as any);
+    const res = await processQuestReward(userId, row._id.toString(), now);
+    expect(res.duplicate).toBe(true);
+    expect(xpSpy).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ $inc: expect.anything() }),
+      expect.anything(),
+    );
+    expect((await UserXp.findOne({ userId }))!.totalXp).toBe(0);
   });
   it('retries post-commit league/SSE projections from durable reward identity without paying again', async () => {
     const row = await eligible();
