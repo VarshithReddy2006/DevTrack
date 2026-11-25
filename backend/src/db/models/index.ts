@@ -5,6 +5,8 @@ export * from './betaCohort.model.js';
 
 // Readiness & Intelligence Models
 export * from './careerIntent.model.js';
+export * from './careerRoadmap.model.js';
+export { NotificationRecord, NotificationPreference } from './notification.model.js';
 export * from './readinessCore.model.js';
 export * from './readinessDsa.model.js';
 export * from './readinessSkills.model.js';
@@ -22,8 +24,10 @@ export { PlatformStats, type IPlatformStats } from './platformStats.model.js';
 export { ActivityEvent, type IActivityEvent } from './activityEvent.model.js';
 export { DailyActivity, type IDailyActivity } from './dailyActivity.model.js';
 export { DsaProblem, type IDsaProblem } from './dsaProblem.model.js';
+export { DSAProfile, DSAProfile as DsaProfile, type IDSAProfile } from './dsaProfile.model.js';
 export { DsaTopicProgress, type IDsaTopicProgress } from './dsaTopicProgress.model.js';
 export { DsaSubmission, type IDsaSubmission } from './dsaSubmission.model.js';
+export { DsaSubmissionArchive, type IDsaSubmissionArchive } from './dsaSubmissionArchive.model.js';
 export { DsaContest, type IDsaContest } from './dsaContest.model.js';
 export { DsaContestParticipation } from './dsaContestParticipation.model.js';
 export { Project, type IProject, type IProjectContributor, type IProjectMilestone } from './project.model.js';
@@ -74,4 +78,10 @@ export { FeedbackReportModel, type IFeedbackReport } from './feedbackReport.mode
 export { FeatureFlag, type IFeatureFlag } from './featureFlag.model.js';
 export { FeatureFlagAudit, type IFeatureFlagAudit, type FeatureFlagChange } from './featureFlagAudit.model.js';
 export { RevisionCard, type IRevisionCard, type ProblemDifficulty } from './revisionCard.model.js';
+export { ResumeProfile, type IResumeProfile } from './resumeProfile.model.js';
+export { ResumeVersion, type IResumeVersion } from './resumeVersion.model.js';
+export { ResumeBulletRevision, type IResumeBulletRevision } from './resumeBulletRevision.model.js';
+export { JobTarget, type IJobTarget, type JobTargetStatus } from './jobTarget.model.js';
+export { InterviewReport } from './interviewReport.model.js';
+export { UserQuestProgress, type IUserQuestProgress } from './userQuestProgress.model.js';
 export { VerifiedClaimProof, type IVerifiedClaimProof, type IZkpProofPayload, type IZkpPublicSignals } from './verifiedClaimProof.model.js';

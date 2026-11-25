@@ -154,13 +154,18 @@ async function bootstrap() {
       });
       try {
         await connection.asPromise();
-        await createMigrationRunner(connection, migrations).check();
+        const runner = createMigrationRunner(connection, migrations);
+        if (process.env.AUTO_MIGRATE !== 'false') {
+          logger.info('Running pending database migrations...');
+          await runner.up();
+        }
+        await runner.check();
       } finally {
         await connection.close();
       }
     } catch (error) {
-      logger.error('CRITICAL: Database migration check failed', error);
-      process.exit(1);
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error('CRITICAL: Database migration check failed (server continuing in degraded mode)', error, { message });
     }
   }
 
@@ -217,6 +222,9 @@ export function setupHealthEndpoints(
           mongodbReadyState: mongoState,
           ...(state.mongodb.error ? { mongodbError: sanitizeMongoError(state.mongodb.error) } : {}),
           api: state.api.status,
+          clerk: process.env.CLERK_SECRET_KEY
+            ? ((process.env.CLERK_SECRET_KEY || '').startsWith('sk_live_') ? 'live_configured' : (process.env.CLERK_SECRET_KEY || '').startsWith('sk_test_') ? 'test_configured' : 'configured')
+            : 'missing',
           ...(state.api.error ? { apiError: state.api.error } : {}),
         },
       });
@@ -256,6 +264,9 @@ export function setupHealthEndpoints(
           mongodbReadyState: mongoState,
           ...(state.mongodb.error ? { mongodbError: sanitizeMongoError(state.mongodb.error) } : {}),
           api: state.api.status,
+          clerk: process.env.CLERK_SECRET_KEY
+            ? ((process.env.CLERK_SECRET_KEY || '').startsWith('sk_live_') ? 'live_configured' : (process.env.CLERK_SECRET_KEY || '').startsWith('sk_test_') ? 'test_configured' : 'configured')
+            : 'missing',
           ...(state.api.error ? { apiError: state.api.error } : {}),
         },
       });

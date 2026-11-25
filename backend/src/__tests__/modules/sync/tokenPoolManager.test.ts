@@ -151,7 +151,7 @@ describe('TokenPoolManager', () => {
       await expect(manager.leaseToken('github')).rejects.toThrow(QuotaExhaustedError);
 
       // Advance clock past reset time
-      vi.advanceTimersByTime(46000);
+      await vi.advanceTimersByTimeAsync(46000);
 
       // Queue should have resumed automatically
       expect(mockQueue.resume).toHaveBeenCalledTimes(1);
@@ -191,7 +191,7 @@ describe('TokenPoolManager', () => {
       expect(manager.isQueuePaused()).toBe(true);
 
       // Advance time by 61 seconds so LeetCode resumes
-      vi.advanceTimersByTime(61000);
+      await vi.advanceTimersByTimeAsync(61000);
 
       // LeetCode should be unpaused, but GitHub still paused -> queue should NOT resume
       expect(manager.isQueuePaused('leetcode')).toBe(false);
@@ -199,7 +199,7 @@ describe('TokenPoolManager', () => {
       expect(mockQueue.resume).not.toHaveBeenCalled();
 
       // Advance time by another hour so GitHub resumes
-      vi.advanceTimersByTime(3600000);
+      await vi.advanceTimersByTimeAsync(3600000);
 
       // Now all platforms are clear -> queue should resume
       expect(manager.isQueuePaused('github')).toBe(false);

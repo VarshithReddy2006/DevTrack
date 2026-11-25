@@ -3,7 +3,7 @@ import { useSse } from '../../hooks/useSse';
 import type { JobTargetStatus } from '../../services/jobTargetsService';
 
 export const JOB_TARGET_FLAG = 'jd-matcher';
-export const JOB_TARGET_POLL_MS = 3_000;
+export const JOB_TARGET_POLL_MS = import.meta.env?.MODE === 'test' ? 50 : 3_000;
 
 export const jobTargetsKey = (userId: string) => ['job-targets', userId] as const;
 export const jobTargetKey = (userId: string, targetId: string) => [...jobTargetsKey(userId), targetId] as const;

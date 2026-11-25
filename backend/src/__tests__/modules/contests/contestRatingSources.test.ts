@@ -101,8 +101,16 @@ describe('LeetCode per-contest history', () => {
   });
 
   it.each([
-    { errors: [{ message: 'upstream failed' }], data: null },
     { data: { userContestRankingHistory: null } },
+    { errors: [{ message: 'That user does not exist.' }], data: null },
+    { errors: [{ message: 'user not found' }], data: null },
+  ])('returns null for unranked or non-existent LeetCode profiles case %#', async body => {
+    fetchMock.mockResolvedValueOnce(response(body));
+    expect(await settle(fetchLeetcodeResult('Alpha', new Date(100_000)))).toBeNull();
+  });
+
+  it.each([
+    { errors: [{ message: 'upstream failed' }], data: null },
     { data: { userContestRankingHistory: [{ ...historyRow(100, 1500), problemsSolved: 'invalid' }] } },
   ])('does not persist malformed or unavailable GraphQL history case %#', async body => {
     fetchMock.mockResolvedValueOnce(response(body));

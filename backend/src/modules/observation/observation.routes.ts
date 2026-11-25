@@ -1,7 +1,7 @@
 // src/modules/observation/observation.routes.ts — Observation & Telemetry routes
 import { Router, Response } from 'express';
 import mongoose from 'mongoose';
-import { authMiddleware, AuthenticatedRequest } from '../../middleware/auth.js';
+import { authMiddleware, optionalAuthMiddleware, AuthenticatedRequest } from '../../middleware/auth.js';
 import {
   sessionReplay,
   SessionNotFoundError,
@@ -17,7 +17,7 @@ const router = Router();
 // Start UX tracking session
 router.post(
   '/session/start',
-  authMiddleware,
+  optionalAuthMiddleware,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { sessionId, deviceInfo } = req.body;
@@ -26,9 +26,10 @@ router.post(
         return;
       }
 
+      const userId = req.user?.id ? new mongoose.Types.ObjectId(req.user.id) : new mongoose.Types.ObjectId();
       await sessionReplay.startSession({
         sessionId,
-        userId: new mongoose.Types.ObjectId(req.user!.id),
+        userId,
         startTime: new Date(),
         deviceInfo: {
           userAgent: deviceInfo.userAgent || '',
@@ -52,7 +53,7 @@ router.post(
 // End UX tracking session
 router.post(
   '/session/end',
-  authMiddleware,
+  optionalAuthMiddleware,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { sessionId } = req.body;
@@ -61,7 +62,10 @@ router.post(
         return;
       }
 
-      await sessionReplay.endSession(sessionId, req.user!.id);
+      const userId = req.user?.id || '';
+      if (userId) {
+        await sessionReplay.endSession(sessionId, userId);
+      }
       res.status(200).json({ success: true });
     } catch (err: any) {
       if (err instanceof SessionForbiddenError) {
@@ -81,7 +85,7 @@ router.post(
 // Ingest telemetry events (page view, interaction, friction)
 router.post(
   '/events',
-  authMiddleware,
+  optionalAuthMiddleware,
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { sessionId, events } = req.body;
@@ -90,7 +94,8 @@ router.post(
         return;
       }
 
-      await sessionReplay.recordEventsBatch(sessionId, req.user!.id, events);
+      const userId = req.user?.id || 'anonymous';
+      await sessionReplay.recordEventsBatch(sessionId, userId, events);
       res.status(200).json({ success: true });
     } catch (err: any) {
       if (err instanceof SessionForbiddenError) {

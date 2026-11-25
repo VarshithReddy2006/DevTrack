@@ -1,3 +1,4 @@
+import { typstCompilerService } from '../export/typstCompiler.service.js';
 // src/modules/resume-intelligence/controllers/ResumeIntelligenceController.ts
 import type { Request, Response, NextFunction } from 'express';
 import { ResumeIntelligenceService } from '../services/ResumeIntelligenceService.js';
@@ -333,6 +334,24 @@ export async function getReport(req: Request, res: Response, next: NextFunction)
     successResponse(res, session.reportState.reportData);
   } catch (error) {
     logger.error('[ResumeController] Error getting report:', error);
+    next(error);
+  }
+}
+
+/**
+ * Compile structured resume to Typst ATS PDF directly
+ */
+export async function compileResumeTypst(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { resumeData, options } = req.body;
+    const result = await typstCompilerService.compileToPdf(resumeData, options);
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('X-Page-Count', result.pageCount.toString());
+    res.setHeader('X-Compile-Duration-Ms', result.durationMs.toFixed(2));
+    res.send(result.pdf);
+  } catch (error) {
+    logger.error('[ResumeController] Error compiling resume with Typst:', error);
     next(error);
   }
 }

@@ -67,8 +67,68 @@ export interface AtsScoreDto {
 // Resume Export DTOs
 export const ExportResumeSchema = z.object({
   variantId: z.string().optional(),
-  exportType: z.enum(['pdf', 'docx', 'txt', 'json', 'md']).default('pdf'),
+  exportType: z.enum(['pdf', 'docx', 'txt', 'json', 'md', 'typst', 'latex']).default('pdf'),
+  template: z.enum(['classic-academic', 'modern-tech', 'minimal-single-column']).optional(),
+  targetPages: z.number().int().min(1).max(2).optional(),
   includeATSAnalysis: z.boolean().default(true),
+});
+
+export const CompileTypstSchema = z.object({
+  resumeData: z.object({
+    header: z.object({
+      name: z.string(),
+      title: z.string().optional(),
+      email: z.string(),
+      phone: z.string().optional(),
+      location: z.string().optional(),
+      website: z.string().optional(),
+      github: z.string().optional(),
+      linkedin: z.string().optional(),
+    }),
+    summary: z.string().optional(),
+    experience: z.array(z.object({
+      role: z.string(),
+      company: z.string(),
+      location: z.string().optional(),
+      startDate: z.string(),
+      endDate: z.string(),
+      bullets: z.array(z.string()),
+      technologies: z.array(z.string()).optional(),
+    })).optional(),
+    education: z.array(z.object({
+      degree: z.string(),
+      institution: z.string(),
+      location: z.string().optional(),
+      startDate: z.string().optional(),
+      endDate: z.string(),
+      gpa: z.string().optional(),
+      honors: z.array(z.string()).optional(),
+      coursework: z.array(z.string()).optional(),
+    })).optional(),
+    skills: z.union([
+      z.array(z.object({ category: z.string(), skills: z.array(z.string()) })),
+      z.record(z.array(z.string())),
+      z.array(z.string()),
+    ]).optional(),
+    projects: z.array(z.object({
+      name: z.string(),
+      description: z.string().optional(),
+      role: z.string().optional(),
+      url: z.string().optional(),
+      startDate: z.string().optional(),
+      endDate: z.string().optional(),
+      bullets: z.array(z.string()),
+      technologies: z.array(z.string()).optional(),
+    })).optional(),
+  }),
+  options: z.object({
+    template: z.enum(['classic-academic', 'modern-tech', 'minimal-single-column']).optional(),
+    targetPages: z.number().int().min(1).max(2).optional(),
+    paperSize: z.enum(['a4', 'us-letter']).optional(),
+    strictPagination: z.boolean().optional(),
+    fontSizePt: z.number().optional(),
+    lineLeadingEm: z.number().optional(),
+  }).optional(),
 });
 
 // ATS Analysis DTOs

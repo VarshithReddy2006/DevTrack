@@ -7,6 +7,7 @@ export interface MigrationContext {
 
 export interface Migration {
   name: string;
+  transactional?: boolean;
   up(context: MigrationContext): Promise<void>;
   down(context: MigrationContext): Promise<void>;
 }

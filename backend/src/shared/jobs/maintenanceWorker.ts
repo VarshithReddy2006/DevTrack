@@ -4,7 +4,7 @@ import { scheduleQuestGeneration } from '../../modules/quests/questScheduler.js'
 // Designed to run on a cron schedule via BullMQ repeatable jobs.
 
 import { Worker, Job, Queue } from 'bullmq';
-import { getRedisClient } from '../redis/index.js';
+import { getRedisClient, withDistributedLock } from '../redis/index.js';
 import { logger } from '../logger.js';
 import { getQueueTelemetry } from '../tracing/queueTelemetry.js';
 import { createDlqWorker, dlqService, DLQ_QUEUE_NAMES } from './dlq.service.js';
@@ -286,13 +286,19 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
 
       switch (task) {
         case 'generate_quests':
-          await (await import('../../modules/quests/questEngine.service.js')).runQuestGenerationSweep();
+          await withDistributedLock('generate_quests', async () => {
+            await (await import('../../modules/quests/questEngine.service.js')).runQuestGenerationSweep();
+          }, { ttlMs: 10 * 60 * 1000 });
           break;
         case 'cleanup_failed_jobs':
-          await runCleanupFailedJobs();
+          await withDistributedLock('cleanup_failed_jobs', async () => {
+            await runCleanupFailedJobs();
+          }, { ttlMs: 5 * 60 * 1000 });
           break;
         case 'prune_old_events':
-          await runPruneOldEvents();
+          await withDistributedLock('prune_old_events', async () => {
+            await runPruneOldEvents();
+          }, { ttlMs: 10 * 60 * 1000 });
           break;
         case 'health_check':
           await runHealthCheck();
@@ -304,13 +310,19 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
           await runGenerateWeeklyMissions();
           break;
         case 'cleanup_stale_sync_locks':
-          await runCleanupStaleSyncLocks();
+          await withDistributedLock('cleanup_stale_sync_locks', async () => {
+            await runCleanupStaleSyncLocks();
+          }, { ttlMs: 2 * 60 * 1000 });
           break;
         case 'streak_at_risk_check':
-          await runStreakAtRiskCheck();
+          await withDistributedLock('streak_at_risk_check', async () => {
+            await runStreakAtRiskCheck();
+          }, { ttlMs: 5 * 60 * 1000 });
           break;
         case 'check_contest_starting_soon':
-          await runCheckContestStartingSoon();
+          await withDistributedLock('check_contest_starting_soon', async () => {
+            await runCheckContestStartingSoon();
+          }, { ttlMs: 2 * 60 * 1000 });
           break;
         case 'platform_sync_sweep':
           await runScheduledSync();
@@ -323,6 +335,21 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
           break;
         case 'reap_stale_focus_sessions':
           await focusEngine.reapStaleSessions();
+          break;
+        case 'data_export':
+          if (job.data.userId) {
+            const { generateAndNotifyDataExport } = await import('../../modules/privacy/dataExport.service.js');
+            await generateAndNotifyDataExport(job.data.userId);
+          }
+          break;
+        case 'account_erasure':
+          if (job.data.userId) {
+            const { executeAccountErasure } = await import('../../modules/privacy/accountErasure.worker.js');
+            await executeAccountErasure(job.data.userId, job.data.options as any);
+          }
+          break;
+        case 'submission_archive':
+          await (await import('../../modules/dsa/submissionArchive.worker.js')).handleSubmissionArchiveJob();
           break;
         default:
           logger.warn('[maintenance] Unknown task type', { task });
@@ -506,6 +533,20 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
       jobId: 'maintenance-reap-focus-sessions',
       removeOnComplete: { count: 3 },
       removeOnFail: { count: 5 },
+    }
+  );
+
+  // Archive DSA submissions older than 180 days: first Sunday of every month at 03:00 UTC.
+  await _queue.add(
+    'archive-dsa-submissions',
+    { task: 'submission_archive' },
+    {
+      repeat: { pattern: '0 3 1-7 * 0', tz: 'UTC' },
+      jobId: 'maintenance-submission-archive',
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
     }
   );
 
