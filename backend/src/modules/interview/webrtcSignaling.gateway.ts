@@ -125,6 +125,12 @@ export class WebRTCSignalingGateway {
   /** Process an incoming signaling message from the interview client. */
   async handleSignal(sessionId: string, userId: string, raw: unknown): Promise<SignalResponse> {
     const request = signalRequestSchema.parse(raw);
+    this.cleanupStaleSessions();
+
+    const existing = this.sessions.get(sessionId);
+    if (existing && existing.userId !== userId) {
+      return { type: 'error', code: 'FORBIDDEN', message: 'Unauthorized access to signaling session' };
+    }
 
     if (request.type === 'bye') {
       return this.teardown(sessionId, userId);
@@ -146,6 +152,7 @@ export class WebRTCSignalingGateway {
 
   /** Retrieve the current signaling state for a session (diagnostics / teardown). */
   getSession(sessionId: string): SignalingSession | undefined {
+    this.cleanupStaleSessions();
     return this.sessions.get(sessionId);
   }
 
@@ -306,11 +313,24 @@ export class WebRTCSignalingGateway {
   }
 
   private teardown(sessionId: string, userId: string): SignalResponse {
-    const closed = this.closeSession(sessionId);
-    if (!closed) {
-      return this.reject({ sessionId, userId, state: 'CLOSED' } as SignalingSession, 'NOT_FOUND', 'Session not found');
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { type: 'error', code: 'NOT_FOUND', message: 'Session not found' };
     }
+    if (session.userId !== userId) {
+      return { type: 'error', code: 'FORBIDDEN', message: 'Unauthorized access to signaling session' };
+    }
+    this.closeSession(sessionId);
     return { type: 'closed' };
+  }
+
+  private cleanupStaleSessions(): void {
+    const now = this.now();
+    for (const session of this.sessions.values()) {
+      if (now - session.updatedAt >= SIGNALING_SESSION_TTL_MS) {
+        this.closeSession(session.sessionId);
+      }
+    }
   }
 
   private reject(session: SignalingSession, code: string, message: string): SignalResponse {
