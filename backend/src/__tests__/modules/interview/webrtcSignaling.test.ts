@@ -1,7 +1,7 @@
 // src/__tests__/modules/interview/webrtcSignaling.test.ts — WebRTC signaling gateway integration tests
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { WebRTCSignalingGateway, ICE_TIMEOUT_MS, type SignalingSession } from '../../../modules/interview/webrtcSignaling.gateway.js';
+import { WebRTCSignalingGateway, ICE_TIMEOUT_MS, SIGNALING_SESSION_TTL_MS, type SignalingSession } from '../../../modules/interview/webrtcSignaling.gateway.js';
 
 vi.mock('../../../shared/sse/eventBus.js', () => ({
   eventBus: { publishEnvelope: vi.fn() },
@@ -162,6 +162,37 @@ describe('webrtc signaling gateway', () => {
     const response = await gateway.handleSignal('missing-session', 'user-1', { type: 'bye' });
     expect(response.type).toBe('error');
     expect(response.code).toBe('NOT_FOUND');
+  });
+
+  it('rejects cross-user signals and teardown without mutating the owner session', async () => {
+    await gateway.handleSignal('session-1', 'user-1', { type: 'offer', sdp: OFFER_SDP });
+    const session = gateway.getSession('session-1')!;
+    const originalUpdatedAt = session.updatedAt;
+
+    const signal = await gateway.handleSignal('session-1', 'user-2', ICE_CANDIDATE);
+    expect(signal).toMatchObject({ type: 'error', code: 'FORBIDDEN' });
+    expect(session.iceCandidates).toHaveLength(0);
+    expect(session.updatedAt).toBe(originalUpdatedAt);
+
+    const teardown = await gateway.handleSignal('session-1', 'user-2', { type: 'bye' });
+    expect(teardown).toMatchObject({ type: 'error', code: 'FORBIDDEN' });
+    expect(gateway.getSession('session-1')).toBe(session);
+  });
+
+  it('evicts stale sessions on access and clears their ICE timers', async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 1_700_000_000_000;
+      const gw = buildGateway({ now: () => now });
+      await gw.handleSignal('stale-session', 'user-1', { type: 'offer', sdp: OFFER_SDP });
+      expect(gw.getSession('stale-session')?.iceTimer).not.toBeNull();
+
+      now += SIGNALING_SESSION_TTL_MS;
+      expect(gw.getSession('stale-session')).toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to HTTP chunk ingestion when ICE negotiation times out', async () => {

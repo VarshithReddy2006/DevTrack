@@ -50,6 +50,11 @@ export class FakeScoreStore implements LeagueScoreStore {
     if (this.sets.has(key)) this.ttls.set(key, seconds);
   }
 
+  async del(key: string) {
+    this.sets.delete(key);
+    this.ttls.delete(key);
+  }
+
   score(key: string, member: string): number | undefined {
     return this.sets.get(key)?.get(member);
   }

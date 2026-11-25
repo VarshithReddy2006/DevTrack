@@ -760,6 +760,58 @@ describe('ChangeStreamSyncWorker', () => {
   // SEC-04: Stream Lifecycle & Asynchronous Shutdown
   // ==========================================================================
   describe('SEC-04: Stream Lifecycle & Asynchronous Shutdown', () => {
+    it.each([
+      ['invalidate event', async (worker: ChangeStreamSyncWorker, config: CollectionSyncConfig) => {
+        await worker.handleChangeEvent(config, { operationType: 'invalidate', _id: { _data: 'invalidate-token' } });
+      }],
+      ['expired resume token', async (worker: ChangeStreamSyncWorker, config: CollectionSyncConfig) => {
+        await (worker as any).handleStreamError(config, Object.assign(new Error('Resume token is no longer available'), { code: 286 }));
+      }],
+    ])('rebuilds the search index and starts fresh after %s', async (_scenario, triggerRecovery) => {
+      const sourceDocument = {
+        _id: new Types.ObjectId(),
+        title: 'Recovered Problem',
+        category: 'Trees',
+        platform: 'leetcode',
+        difficulty: 'easy',
+        tags: ['tree'],
+      };
+      const streams = [0, 1].map(() => ({
+        on: vi.fn(),
+        removeAllListeners: vi.fn(),
+        close: vi.fn().mockResolvedValue(undefined),
+      }));
+      const watch = vi.fn().mockImplementation(() => streams.shift());
+      const find = vi.fn(() => ({ lean: () => Promise.resolve([sourceDocument]) }));
+      const recoveryConfig: CollectionSyncConfig = {
+        ...testConfig,
+        model: { watch, find } as any,
+      };
+      const worker = new ChangeStreamSyncWorker({
+        searchProvider,
+        resumeTokenStore,
+        leaderLock,
+        monitoredCollections: [recoveryConfig],
+        connection: { readyState: 1, db: { command: vi.fn().mockResolvedValue({ setName: 'rs0' }) } } as any,
+      });
+
+      await searchProvider.indexDocument(recoveryConfig.indexName, 'stale-id', {
+        id: 'stale-id', type: 'dsa', title: 'Stale Problem',
+      });
+      await resumeTokenStore.saveResumeToken(recoveryConfig.collectionName, { _data: 'old-token' });
+      await worker.start();
+      await triggerRecovery(worker, recoveryConfig);
+
+      expect(watch).toHaveBeenCalledTimes(2);
+      expect(watch.mock.calls[1][1]).not.toHaveProperty('resumeAfter');
+      expect(await resumeTokenStore.getResumeToken(recoveryConfig.collectionName)).toBeNull();
+      expect((await searchProvider.search(recoveryConfig.indexName, 'stale')).totalHits).toBe(0);
+      expect((await searchProvider.search(recoveryConfig.indexName, 'recovered')).totalHits).toBe(1);
+      expect(find).toHaveBeenCalledWith({});
+
+      await worker.stop();
+    });
+
     it('awaits stream.close() and removes change listeners on stream close', async () => {
       let closeCalled = false;
       const asyncCloseStream = {

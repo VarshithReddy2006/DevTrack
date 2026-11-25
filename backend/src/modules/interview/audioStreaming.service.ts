@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import { getRedisClient } from '../../shared/redis/index.js';
 import { logger } from '../../shared/logger.js';
 import { enqueueInterviewTranscriptionJob } from './workers/interviewTranscription.worker.js';
+import type { FinalTranscript, TranscriptionQueue } from './transcriptionQueue.js';
 
 export interface AudioChunkMetadata {
   chunkIndex: number;
@@ -51,6 +52,12 @@ export interface IngestChunkResult {
   totalDurationMs?: number;
   leadingTrimmedCount?: number;
   trailingTrimmedCount?: number;
+  liveTranscriptionQueued?: boolean;
+}
+
+export interface LiveTranscriptionOptions {
+  queue: TranscriptionQueue;
+  onFinalTranscript?: (result: FinalTranscript) => void | Promise<void>;
 }
 
 export interface AudioStreamingConfig {
@@ -183,16 +190,65 @@ export class AudioStreamingService {
   // In-memory state store used as fallback when Redis is absent or in local unit test harnesses
   private inMemorySessions: Map<string, { meta: SessionAudioMeta; chunks: Map<number, StoredAudioChunk> }> = new Map();
   private enqueueJob: typeof enqueueInterviewTranscriptionJob;
+  private liveTranscription: LiveTranscriptionOptions | null;
 
   constructor(
     options?: Partial<AudioStreamingConfig>,
     customRedis?: Redis | null,
-    enqueueFn?: typeof enqueueInterviewTranscriptionJob
+    enqueueFn?: typeof enqueueInterviewTranscriptionJob,
+    liveTranscription?: LiveTranscriptionOptions | null
   ) {
     this.config = { ...DEFAULT_AUDIO_CONFIG, ...options };
     this.explicitRedis = customRedis !== undefined;
     this.redisClient = customRedis !== undefined ? customRedis : null;
     this.enqueueJob = enqueueFn ?? enqueueInterviewTranscriptionJob;
+    this.liveTranscription = liveTranscription ?? null;
+  }
+
+  /**
+   * Routes a newly stored chunk through the rate-limited transcription queue. Silent chunks are
+   * marked as empty so they never hold back later segments of the ordered transcript.
+   */
+  private queueLiveTranscription(sessionId: string, chunkIndex: number, buffer: Buffer, isSilent: boolean): boolean {
+    const live = this.liveTranscription;
+    if (!live) return false;
+    try {
+      if (isSilent) {
+        live.queue.skipChunk(sessionId, chunkIndex);
+        return false;
+      }
+      live.queue.submit(sessionId, chunkIndex, buffer.toString('base64')).catch((err: unknown) => {
+        logger.warn('[audio-streaming] Live chunk transcription did not complete', {
+          sessionId,
+          chunkIndex,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      return true;
+    } catch (err) {
+      logger.warn('[audio-streaming] Failed to queue live chunk transcription', { sessionId, chunkIndex, err });
+      return false;
+    }
+  }
+
+  private finalizeLiveTranscription(sessionId: string, lastChunkIndex: number): void {
+    const live = this.liveTranscription;
+    if (!live) return;
+    void live.queue
+      .finalizeSession(sessionId, lastChunkIndex)
+      .then(async (result) => {
+        if (!result.complete) {
+          logger.warn('[audio-streaming] Live transcript finalized with gaps', {
+            sessionId,
+            failedChunks: result.failedChunks,
+            missingChunks: result.missingChunks,
+          });
+        }
+        await live.onFinalTranscript?.(result);
+      })
+      .catch((err: unknown) => {
+        logger.error('[audio-streaming] Failed to finalize live transcript', { sessionId, err });
+      });
   }
 
   private getRedis(): Redis | null {
@@ -454,6 +510,8 @@ export class AudioStreamingService {
       session.meta = meta;
     }
 
+    const liveTranscriptionQueued = this.queueLiveTranscription(sessionId, chunkIndex, buffer, isSilent);
+
     // Evaluate speech completion triggers:
     // Trigger 1: Explicit isLast = true or isLast received previously
     // Trigger 2: Silence > 2.5s detected AFTER speech has begun
@@ -471,6 +529,7 @@ export class AudioStreamingService {
         consecutiveSilenceMs: meta.consecutiveSilenceMs,
         assembled: false,
         transcriptionEnqueued: false,
+        liveTranscriptionQueued,
       };
     }
 
@@ -498,6 +557,7 @@ export class AudioStreamingService {
         assembled: false,
         transcriptionEnqueued: false,
         missingChunks,
+        liveTranscriptionQueued,
       };
     }
 
@@ -518,6 +578,7 @@ export class AudioStreamingService {
       totalDurationMs: assemblyResult.totalDurationMs,
       leadingTrimmedCount: assemblyResult.leadingTrimmedCount,
       trailingTrimmedCount: assemblyResult.trailingTrimmedCount,
+      liveTranscriptionQueued,
     };
   }
 
@@ -602,6 +663,7 @@ export class AudioStreamingService {
       trimAndAssembleChunks(chunksMap, totalExpectedChunks);
 
     meta.status = 'assembled';
+    this.finalizeLiveTranscription(sessionId, totalExpectedChunks - 1);
 
     // Enqueue transcription job if speech is present
     let transcriptionEnqueued = false;
@@ -627,7 +689,7 @@ export class AudioStreamingService {
     }
 
     // Clean up temporary chunks from Redis as requested in acceptance criteria
-    await this.cleanSessionAudio(sessionId);
+    await this.clearAudioBuffers(sessionId);
 
     return {
       assembledBuffer,
@@ -642,6 +704,11 @@ export class AudioStreamingService {
    * Explicitly cleans temporary audio buffers (used on session disconnect or after transcription).
    */
   async cleanSessionAudio(sessionId: string): Promise<void> {
+    this.liveTranscription?.queue.cancelSession(sessionId);
+    await this.clearAudioBuffers(sessionId);
+  }
+
+  private async clearAudioBuffers(sessionId: string): Promise<void> {
     const redis = this.getRedis();
     if (redis) {
       await redis.del(this.redisSessionKey(sessionId));
@@ -657,6 +724,7 @@ export class AudioStreamingService {
     sessionId: string;
     meta: SessionAudioMeta;
     missingChunks: number[];
+    liveTranscript?: string;
   }> {
     const meta = await this.getSessionMeta(sessionId);
     const expected = meta.highestIndex >= 0 ? meta.highestIndex + 1 : 0;
@@ -666,6 +734,7 @@ export class AudioStreamingService {
       sessionId,
       meta,
       missingChunks,
+      ...(this.liveTranscription ? { liveTranscript: this.liveTranscription.queue.getTranscript(sessionId) } : {}),
     };
   }
 }

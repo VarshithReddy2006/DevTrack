@@ -383,6 +383,43 @@ export class FocusEngine {
       },
       { new: true }
     );
+
+    if (abandoned) {
+      const runtime = await UnifiedRuntimeState.findOneAndUpdate(
+        { 'sessionContext.sessionId': String(abandoned._id), 'sessionContext.isActive': true },
+        {
+          $set: {
+            'sessionContext.isActive': false,
+            'sessionContext.status': 'abandoned',
+            'sessionContext.lastResumedAt': null,
+            'sessionContext.activeDurationMs': activeDurationMs,
+          },
+        },
+        { new: true }
+      );
+
+      try {
+        const { cacheManager } = await import('../../shared/cache/cacheManager.js');
+        await cacheManager.invalidateDashboard(userId);
+      } catch (err) {
+        logger.warn('[focus] Failed to invalidate dashboard cache on abandon', {
+          userId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      if (runtime) {
+        try {
+          await eventBus.emitRuntimeStatePatch(userId, { sessionContext: runtime.sessionContext });
+        } catch (err) {
+          logger.warn('[focus] Failed to emit runtime state patch on abandon', {
+            userId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
     return abandoned;
   }
 
@@ -559,28 +596,11 @@ export class FocusEngine {
 
   /**
    * Aborts a focus session (e.g. user manually cancelled early).
+   * Delegates to abandonSession so pauses, active durations, runtime state, and cache stay consistent.
    */
   async abortSession(sessionId: string, userId: string): Promise<boolean> {
-    const userObjId = new Types.ObjectId(userId);
-    const sessionObjId = new Types.ObjectId(sessionId);
-    const done = await FocusSession.findOneAndUpdate(
-      { _id: sessionObjId, userId: userObjId, status: { $in: ['running', 'paused'] } },
-      { $set: { status: 'abandoned', completedAt: new Date(), lastResumedAt: null } },
-      { new: true }
-    );
-    if (done) {
-      await UnifiedRuntimeState.updateMany(
-        { 'sessionContext.sessionId': String(done._id), 'sessionContext.isActive': true },
-        { $set: { 'sessionContext.isActive': false, 'sessionContext.status': 'abandoned', 'sessionContext.lastResumedAt': null } }
-      );
-      try {
-        const { cacheManager } = await import('../../shared/cache/cacheManager.js');
-        await cacheManager.invalidateDashboard(userId);
-      } catch (err) {
-        logger.warn('[focus] Failed to invalidate dashboard cache on abort', { userId, error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-    return Boolean(done);
+    const abandoned = await this.abandonSession(sessionId, userId);
+    return Boolean(abandoned);
   }
 
   /**

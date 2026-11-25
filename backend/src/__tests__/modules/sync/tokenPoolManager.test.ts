@@ -6,6 +6,16 @@ import {
   hashToken,
 } from '../../../modules/sync/tokenPoolManager.service.js';
 
+const redisMocks = vi.hoisted(() => ({
+  isRedisConfigured: vi.fn(() => false),
+  getRedisClient: vi.fn(),
+}));
+
+vi.mock('../../../shared/redis/client.js', () => ({
+  isRedisConfigured: redisMocks.isRedisConfigured,
+  getRedisClient: redisMocks.getRedisClient,
+}));
+
 describe('TokenPoolManager', () => {
   let manager: TokenPoolManager;
   let mockQueue: {
@@ -239,6 +249,37 @@ describe('TokenPoolManager', () => {
       expect(hash1).not.toBe(hash3);
       expect(hash1.length).toBe(12);
       expect(hash1).not.toContain('secret');
+    });
+  });
+
+  describe('Distributed Redis Sync & Post-Sync Quota Restoration', () => {
+    it('restores expired token quotas after Redis hmget sync and persists restored quota to Redis', async () => {
+      const now = Date.now();
+      const expiredReset = now - 5000;
+      const mockRedis = {
+        hmget: vi.fn().mockResolvedValue(['0', String(expiredReset), '0']),
+        hmset: vi.fn().mockResolvedValue('OK'),
+        hincrby: vi.fn().mockResolvedValue(1),
+        hset: vi.fn().mockResolvedValue(1),
+        expire: vi.fn().mockResolvedValue(1),
+      };
+
+      redisMocks.isRedisConfigured.mockReturnValue(true);
+      redisMocks.getRedisClient.mockReturnValue(mockRedis as any);
+
+      manager.registerTokens('github', ['token-expired-in-redis']);
+
+      const lease = await manager.leaseToken('github');
+      expect(lease).not.toBeNull();
+      expect(lease?.token).toBe('token-expired-in-redis');
+      expect(mockQueue.pause).not.toHaveBeenCalled();
+      expect(mockRedis.hmset).toHaveBeenCalledWith(
+        expect.stringContaining('token_pool:github:'),
+        { remaining: '5000', resetEpochMs: '0' },
+      );
+
+      await lease?.release();
+      redisMocks.isRedisConfigured.mockReturnValue(false);
     });
   });
 });

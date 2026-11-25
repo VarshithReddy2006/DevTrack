@@ -5,12 +5,14 @@ import { describe, expect, it, beforeEach, vi, afterEach } from 'vitest';
 import type Redis from 'ioredis';
 import {
   DistributedLock,
+  DistributedLockUnavailableError,
   acquireDistributedLock,
   acquireWithRetry,
   releaseDistributedLock,
   extendDistributedLock,
   withDistributedLock,
   withDistributedLockRetry,
+  clearTestFallbackLocks,
   formatJobLockKey,
   RELEASE_LOCK_LUA_SCRIPT,
   EXTEND_LOCK_LUA_SCRIPT,
@@ -88,6 +90,8 @@ describe('DistributedLock & withDistributedLock', () => {
   });
 
   afterEach(() => {
+    clearTestFallbackLocks();
+    vi.unstubAllEnvs();
     vi.useRealTimers();
   });
 
@@ -377,6 +381,282 @@ describe('DistributedLock & withDistributedLock', () => {
 
       const released = await releaseDistributedLock(lock!);
       expect(released).toBe(true);
+      expect(lock?.isHeld).toBe(false);
+    });
+  });
+
+  describe('Fail-Closed Semantics & Redis Outage Safety (#616)', () => {
+    it('throws DistributedLockUnavailableError when Redis is disconnected even if fallbackOnRedisUnavailable is omitted in test env', async () => {
+      const offlineRedis = {
+        status: 'close',
+      } as unknown as Redis;
+
+      await expect(
+        acquireDistributedLock('fail_closed_default', { redisClient: offlineRedis })
+      ).rejects.toThrow(DistributedLockUnavailableError);
+
+      try {
+        await acquireDistributedLock('fail_closed_default', { redisClient: offlineRedis });
+      } catch (err) {
+        expect(err).toBeInstanceOf(DistributedLockUnavailableError);
+        const lockErr = err as DistributedLockUnavailableError;
+        expect(lockErr.lockKey).toBe(`${DEFAULT_LOCK_PREFIX}fail_closed_default`);
+        expect(lockErr.reason).toBe('redis_not_ready');
+      }
+    });
+
+    it('strictly ignores fallbackOnRedisUnavailable: true outside NODE_ENV=test and fails closed in production', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      const offlineRedis = {
+        status: 'reconnecting',
+      } as unknown as Redis;
+
+      await expect(
+        acquireDistributedLock('prod_critical_sweep', {
+          redisClient: offlineRedis,
+          fallbackOnRedisUnavailable: true,
+        })
+      ).rejects.toThrow(DistributedLockUnavailableError);
+
+      let taskRan = false;
+      const result = await withDistributedLock(
+        'prod_critical_sweep',
+        async () => {
+          taskRan = true;
+          return 'unsafe';
+        },
+        {
+          redisClient: offlineRedis,
+          fallbackOnRedisUnavailable: true,
+        }
+      );
+
+      expect(taskRan).toBe(false);
+      expect(result).toEqual({ executed: false, reason: 'redis_unavailable' });
+    });
+
+    it('never grants pre-held ownership when constructing DistributedLock in fallbackMode outside test env or before acquire()', async () => {
+      const offlineRedis = { status: 'close' } as unknown as Redis;
+
+      // In test env, fallbackMode lock must not report isHeld before acquire()
+      const testLock = new DistributedLock('preheld_check', { redisClient: offlineRedis }, true);
+      expect(testLock.isHeld).toBe(false);
+
+      // Outside test env, fallbackMode constructor flag must be ignored completely
+      vi.stubEnv('NODE_ENV', 'production');
+      const prodLock = new DistributedLock('prod_preheld_check', { redisClient: offlineRedis }, true);
+      expect(prodLock.isHeld).toBe(false);
+      expect(await prodLock.acquire()).toBe(false);
+      expect(prodLock.isHeld).toBe(false);
+    });
+
+    it('prevents two concurrent callers from entering critical section during Redis outage', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      const offlineRedis = { status: 'close' } as unknown as Redis;
+      let executions = 0;
+
+      const [res1, res2] = await Promise.all([
+        withDistributedLock(
+          'concurrent_outage_job',
+          async () => {
+            executions++;
+            return 'worker-1';
+          },
+          { redisClient: offlineRedis, fallbackOnRedisUnavailable: true }
+        ),
+        withDistributedLock(
+          'concurrent_outage_job',
+          async () => {
+            executions++;
+            return 'worker-2';
+          },
+          { redisClient: offlineRedis, fallbackOnRedisUnavailable: true }
+        ),
+      ]);
+
+      expect(executions).toBe(0);
+      expect(res1).toEqual({ executed: false, reason: 'redis_unavailable' });
+      expect(res2).toEqual({ executed: false, reason: 'redis_unavailable' });
+    });
+
+    it('enforces single-owner exclusion even in test-only in-memory fallback mode', async () => {
+      const offlineRedis = { status: 'close' } as unknown as Redis;
+      let activeConcurrent = 0;
+      let maxConcurrent = 0;
+      let releaseFirst!: () => void;
+      const firstStarted = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let finishFirst!: () => void;
+      const holdFirst = new Promise<void>((resolve) => {
+        finishFirst = resolve;
+      });
+
+      const firstPromise = withDistributedLock(
+        'test_in_memory_mutex',
+        async (lock) => {
+          expect(lock.isHeld).toBe(true);
+          activeConcurrent++;
+          maxConcurrent = Math.max(maxConcurrent, activeConcurrent);
+          releaseFirst();
+          await holdFirst;
+          activeConcurrent--;
+          return 'first';
+        },
+        { redisClient: offlineRedis, fallbackOnRedisUnavailable: true }
+      );
+
+      await firstStarted;
+
+      let secondExecuted = false;
+      const secondResult = await withDistributedLock(
+        'test_in_memory_mutex',
+        async () => {
+          secondExecuted = true;
+          return 'second';
+        },
+        { redisClient: offlineRedis, fallbackOnRedisUnavailable: true }
+      );
+
+      expect(secondExecuted).toBe(false);
+      expect(secondResult).toEqual({ executed: false, reason: 'lock_held' });
+      expect(maxConcurrent).toBe(1);
+
+      finishFirst();
+      const firstResult = await firstPromise;
+      expect(firstResult).toEqual({ executed: true, result: 'first' });
+
+      // After release, a new test-mode caller can acquire cleanly
+      const thirdResult = await withDistributedLock(
+        'test_in_memory_mutex',
+        async () => 'third',
+        { redisClient: offlineRedis, fallbackOnRedisUnavailable: true }
+      );
+      expect(thirdResult).toEqual({ executed: true, result: 'third' });
+    });
+
+    it('throws DistributedLockUnavailableError with reason redis_error when Redis SET fails with command error', async () => {
+      const failingSetRedis = {
+        status: 'ready',
+        set: vi.fn().mockRejectedValue(new Error('ETIMEDOUT: socket hang up')),
+      } as unknown as Redis;
+
+      await expect(
+        acquireDistributedLock('set_err_job', { redisClient: failingSetRedis })
+      ).rejects.toThrow(DistributedLockUnavailableError);
+
+      let executed = false;
+      const result = await withDistributedLock(
+        'set_err_job',
+        async () => {
+          executed = true;
+          return 'bad';
+        },
+        { redisClient: failingSetRedis }
+      );
+
+      expect(executed).toBe(false);
+      expect(result).toEqual({ executed: false, reason: 'redis_error' });
+    });
+
+    it('keeps isHeld false and returns false on release after failed acquisition or disconnection', async () => {
+      const offlineRedis = {
+        status: 'close',
+        eval: vi.fn(),
+      } as unknown as Redis;
+
+      const failedLock = new DistributedLock('never_acquired', { redisClient: offlineRedis });
+      expect(await failedLock.acquire()).toBe(false);
+      expect(failedLock.isHeld).toBe(false);
+      expect(await failedLock.release()).toBe(false);
+      expect(failedLock.isHeld).toBe(false);
+      expect(offlineRedis.eval).not.toHaveBeenCalled();
+
+      // Acquire while healthy, then lose Redis before extend/release
+      let currentStatus = 'ready';
+      const flakyRedis = {
+        get status() {
+          return currentStatus;
+        },
+        set: vi.fn().mockResolvedValue('OK'),
+        eval: vi.fn().mockResolvedValue(1),
+      } as unknown as Redis;
+
+      const lock = new DistributedLock('drop_mid_flight', { redisClient: flakyRedis });
+      expect(await lock.acquire()).toBe(true);
+      expect(lock.isHeld).toBe(true);
+
+      // Redis disconnects mid-flight
+      currentStatus = 'close';
+      expect(await lock.extend(10_000)).toBe(false);
+      expect(lock.isHeld).toBe(false);
+      expect(await lock.release()).toBe(false);
+      expect(lock.isHeld).toBe(false);
+    });
+
+    it('recovers cleanly once Redis becomes available again after an outage', async () => {
+      let redisOnline = false;
+      const recoveringRedis = {
+        get status() {
+          return redisOnline ? 'ready' : 'reconnecting';
+        },
+        set: vi.fn(async (key: string, val: string, px?: string, ttl?: number, nx?: string) =>
+          (mockRedis.set as Function)(key, val, px, ttl, nx)
+        ),
+        eval: vi.fn(async (script: string, numKeys: number, ...args: Array<string | number>) =>
+          (mockRedis.eval as Function)(script, numKeys, ...args)
+        ),
+      } as unknown as Redis;
+
+      let outageRan = false;
+      const duringOutage = await withDistributedLock(
+        'recovery_job',
+        async () => {
+          outageRan = true;
+          return 'during-outage';
+        },
+        { redisClient: recoveringRedis }
+      );
+      expect(outageRan).toBe(false);
+      expect(duringOutage).toEqual({ executed: false, reason: 'redis_unavailable' });
+
+      // Redis recovers
+      redisOnline = true;
+      const afterRecovery = await withDistributedLock(
+        'recovery_job',
+        async (lock) => {
+          expect(lock.isHeld).toBe(true);
+          return 'recovered';
+        },
+        { redisClient: recoveringRedis }
+      );
+      expect(afterRecovery).toEqual({ executed: true, result: 'recovered' });
+    });
+
+    it('propagates task exception cleanly when Redis drops before finally release', async () => {
+      let status = 'ready';
+      const dropOnReleaseRedis = {
+        get status() {
+          return status;
+        },
+        set: vi.fn().mockResolvedValue('OK'),
+        eval: vi.fn().mockRejectedValue(new Error('ECONNRESET')),
+      } as unknown as Redis;
+
+      let capturedHandle: any = null;
+      await expect(
+        withDistributedLock(
+          'task_error_during_drop',
+          async (lock) => {
+            capturedHandle = lock;
+            status = 'close';
+            throw new Error('Domain failure');
+          },
+          { redisClient: dropOnReleaseRedis }
+        )
+      ).rejects.toThrow('Domain failure');
+
+      expect(capturedHandle?.isHeld).toBe(false);
     });
   });
 

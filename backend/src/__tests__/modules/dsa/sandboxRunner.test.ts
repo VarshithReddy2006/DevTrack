@@ -1,6 +1,9 @@
 // src/__tests__/modules/dsa/sandboxRunner.test.ts — Unit & Security Integration Tests
 // Verifies isolated WASI and containerized sandbox runner containment, TLE, MLE, and zero-leakage security.
 
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { sandboxRunner, executeCode } from '../../../modules/dsa/execution/sandboxRunner.js';
 import { wasiEngine } from '../../../modules/dsa/execution/wasiEngine.js';
@@ -214,6 +217,127 @@ describe('SandboxRunner — Secure Code Execution Engine (#525)', () => {
       const result = await sandboxRunner.execute(code, 'javascript');
       expect(result.status).toBe('SUCCESS');
       expect(result.stdout.trim()).toBe('undefined');
+    });
+
+    it('rejects template-literal breakout and quote/backtick injection payloads', async () => {
+      const breakoutPayloads = [
+        `} catch (err) {} console.log('RCE_ESCAPED'); try {`,
+        `\`; console.log('BACKTICK_RCE'); //`,
+        `"; process.exit(0); //`,
+      ];
+
+      for (const payload of breakoutPayloads) {
+        const result = await sandboxRunner.execute(payload, 'javascript');
+        expect(result.status).toBe('RTE');
+        expect(result.stdout).not.toContain('RCE_ESCAPED');
+        expect(result.stdout).not.toContain('BACKTICK_RCE');
+      }
+    });
+
+    it('blocks process.binding, process.getBuiltinModule, dynamic import(), and node:vm/module bypasses', async () => {
+      const escapeAttempts = [
+        `process.binding('fs');`,
+        `process.getBuiltinModule('node:fs');`,
+        `require('node:fs/promises');`,
+        `require('node:vm');`,
+        `require('node:module');`,
+        `require('./harness.cjs');`,
+        `import('node:fs').then(() => console.log('ESCAPED'));`,
+      ];
+
+      for (const code of escapeAttempts) {
+        const result = await sandboxRunner.execute(code, 'javascript');
+        expect(result.status).toBe('SECURITY_VIOLATION');
+        expect(result.stderr).toMatch(/SecurityError|ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG/);
+        expect(result.stdout).not.toContain('ESCAPED');
+      }
+    });
+
+    it('strips host secrets and dangerous loader variables even when opts.env is supplied', async () => {
+      process.env.SANDBOX_SECRET_TOKEN = 'super-secret-host-token';
+      try {
+        const code = `
+          process.env.MUTATED = 'nope';
+          console.log(JSON.stringify({
+            secret: process.env.SANDBOX_SECRET_TOKEN ?? null,
+            nodeOpts: process.env.NODE_OPTIONS ?? null,
+            allowed: process.env.SAFE_VAR ?? null,
+            mutated: process.env.MUTATED ?? null,
+          }));
+        `;
+        const result = await sandboxRunner.execute(code, 'javascript', {
+          env: { SAFE_VAR: 'ok', NODE_OPTIONS: '--require=/etc/passwd' },
+        });
+        expect(result.status).toBe('SUCCESS');
+        expect(JSON.parse(result.stdout.trim())).toEqual({
+          secret: null,
+          nodeOpts: null,
+          allowed: 'ok',
+          mutated: null,
+        });
+      } finally {
+        delete process.env.SANDBOX_SECRET_TOKEN;
+      }
+    });
+  });
+
+  describe('Python Sandbox Isolation & Cleanup', () => {
+    it('executes valid Python code with stdin from isolated temp files', async () => {
+      const code = `
+import sys, json, math
+n = int(sys.stdin.read().strip())
+print(json.dumps({"square": n * n, "gcd": math.gcd(n, 18)}))
+`;
+      const result = await sandboxRunner.execute(code, 'python', { stdin: '12\n' });
+      expect(result.status).toBe('SUCCESS');
+      expect(JSON.parse(result.stdout.trim())).toEqual({ square: 144, gcd: 6 });
+    });
+
+    it('blocks __import__("os"), subprocess, socket, open(), and sys.modules purge bypasses in Python', async () => {
+      const payloads = [
+        `__import__('os').system('echo PWNED')`,
+        `import sys; sys.modules.pop('os', None); import os; os.system('echo PWNED')`,
+        `import subprocess; subprocess.run(['echo', 'PWNED'])`,
+        `import socket; socket.socket()`,
+        `open('/etc/passwd').read()`,
+      ];
+
+      for (const code of payloads) {
+        const result = await sandboxRunner.execute(code, 'python');
+        expect(result.status).toBe('SECURITY_VIOLATION');
+        expect(result.stderr).toContain('SecurityError');
+        expect(result.stdout).not.toContain('PWNED');
+      }
+    });
+
+    it('terminates Python infinite loops with TLE and catches syntax errors as RTE', async () => {
+      const tle = await sandboxRunner.execute('while True:\n    pass\n', 'python', { timeoutMs: 400 });
+      expect(tle.status).toBe('TLE');
+
+      const syn = await sandboxRunner.execute('def broken(:\n    pass\n', 'python');
+      expect(syn.status).toBe('RTE');
+      expect(syn.stderr).toContain('SyntaxError');
+    });
+
+    it('cleans up temporary sandbox directories after success, syntax error, security violation, and timeout', async () => {
+      const listSandboxDirs = async () => {
+        const entries = await fs.readdir(os.tmpdir());
+        return entries.filter((name) => name.startsWith('devtrack-sandbox-'));
+      };
+
+      const before = new Set(await listSandboxDirs());
+
+      await sandboxRunner.execute(`console.log('clean');`, 'javascript');
+      await sandboxRunner.execute(`function ( {`, 'javascript');
+      await sandboxRunner.execute(`require('fs');`, 'javascript');
+      await sandboxRunner.execute(`while (true) {}`, 'javascript', { timeoutMs: 250 });
+      await sandboxRunner.execute(`print('clean')`, 'python');
+      await sandboxRunner.execute(`import subprocess`, 'python');
+
+      const after = await listSandboxDirs();
+      const leaked = after.filter((name) => !before.has(name));
+      expect(leaked).toEqual([]);
+      expect(path.isAbsolute(os.tmpdir())).toBe(true);
     });
   });
 

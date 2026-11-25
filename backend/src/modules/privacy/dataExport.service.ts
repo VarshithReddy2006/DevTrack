@@ -23,6 +23,9 @@ import {
   UserXp,
   XpTransaction,
   DailyActivity,
+  RevisionCard,
+  Mission,
+  LeagueStanding,
 } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/sse/index.js';
@@ -129,6 +132,21 @@ export function buildZipArchive(files: ExportFileEntry[]): Buffer {
   return Buffer.concat([...localHeaders, cdBuf, eocd]);
 }
 
+/** Strips internal Mongoose version/private keys before serializing records into the user archive. */
+function sanitizeExportRecords(
+  records: Record<string, any>[],
+  internalKeys: readonly string[] = []
+): Record<string, unknown>[] {
+  return records.map((doc) => {
+    const cleaned: Record<string, unknown> = { ...doc };
+    delete cleaned.__v;
+    for (const key of internalKeys) {
+      delete cleaned[key];
+    }
+    return cleaned;
+  });
+}
+
 /**
  * Extracts and compiles all personal data for a given user into machine-readable JSON files,
  * then packages them into a portable ZIP archive.
@@ -159,6 +177,9 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
     xpData,
     xpTransactions,
     dailyActivities,
+    revisionCards,
+    missions,
+    leagueStandings,
   ] = await Promise.all([
     User?.findById ? User.findById(userId).lean().catch(() => null) : Promise.resolve(null),
     UserProfile?.findOne ? UserProfile.findOne(userFilter).lean().catch(() => null) : Promise.resolve(null),
@@ -179,7 +200,19 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
     UserXp?.findOne ? UserXp.findOne(userFilter).lean().catch(() => null) : Promise.resolve(null),
     XpTransaction?.find ? XpTransaction.find(userFilter).lean().catch(() => []) : Promise.resolve([]),
     DailyActivity?.find ? DailyActivity.find(userFilter).lean().catch(() => []) : Promise.resolve([]),
+    RevisionCard?.find ? RevisionCard.find(userFilter).sort({ dueAt: 1 }).lean().catch(() => []) : Promise.resolve([]),
+    Mission?.find ? Mission.find(userFilter).sort({ createdAt: -1 }).lean().catch(() => []) : Promise.resolve([]),
+    LeagueStanding?.find ? LeagueStanding.find(userFilter).sort({ weekKey: -1 }).lean().catch(() => []) : Promise.resolve([]),
   ]);
+
+  const sanitizedRevisionCards = sanitizeExportRecords(revisionCards || []);
+  const sanitizedMissions = sanitizeExportRecords(missions || [], [
+    'periodKey',
+    'templateKey',
+    'generationCalibration',
+    'completedByFocusSessionId',
+  ]);
+  const sanitizedLeagueStandings = sanitizeExportRecords(leagueStandings || []);
 
   const projectIds = (projects || []).map((p: any) => p._id);
   const projectTasks = projectIds.length > 0 && ProjectTask?.find
@@ -214,6 +247,9 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
     activityLogs: focusSessions.length + streakLogs.length + dailyActivities.length,
     quests: questProgress.length,
     xpRecords: (xpData ? 1 : 0) + xpTransactions.length,
+    revisionCards: sanitizedRevisionCards.length,
+    missions: sanitizedMissions.length,
+    leagueStandings: sanitizedLeagueStandings.length,
   };
 
   const now = new Date();
@@ -267,6 +303,18 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
     {
       name: 'progression.json',
       content: JSON.stringify({ xp: xpData, transactions: xpTransactions, quests: questProgress }, null, 2),
+    },
+    {
+      name: 'revision-cards.json',
+      content: JSON.stringify(sanitizedRevisionCards, null, 2),
+    },
+    {
+      name: 'missions.json',
+      content: JSON.stringify(sanitizedMissions, null, 2),
+    },
+    {
+      name: 'leagues.json',
+      content: JSON.stringify(sanitizedLeagueStandings, null, 2),
     },
   ];
 

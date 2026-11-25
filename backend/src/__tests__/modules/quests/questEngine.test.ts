@@ -32,7 +32,15 @@ import { createDomainEvent, type DomainEventEnvelope } from '../../../shared/eve
 import { toEnvelope } from '../../../shared/events/outboxRelay.js';
 import { weekKeyFor } from '../../../modules/leagues/weeks.js';
 
+vi.mock('../../../shared/redis/client.js', () => ({
+  isRedisConfigured: fixtures.isRedisConfigured,
+  getRedisClient: fixtures.getRedisClient,
+}));
+
 const fixtures = vi.hoisted(() => ({
+  isRedisConfigured: vi.fn(() => false),
+  getRedisClient: vi.fn(),
+  
   publish: vi.fn().mockResolvedValue(undefined), league: vi.fn().mockResolvedValue(undefined),
   cache: vi.fn().mockResolvedValue(undefined), runtime: vi.fn().mockResolvedValue(undefined),
   owner: '111111111111111111111111', limited: false,
@@ -133,6 +141,42 @@ describe('quest generation and period rules', () => {
     await Promise.all(Array.from({ length: 6 }, () => generateUserQuests(userId, now)));
     expect(await UserQuestProgress.countDocuments({ userId })).toBe(5);
     expect(await Quest.countDocuments()).toBe(5);
+  });
+  it('serializes concurrent generateUserQuests callers using Redis SET NX PX lock and releases lock on completion', async () => {
+    const heldLocks = new Map<string, string>();
+    const mockRedis = {
+      set: vi.fn(async (key: string, token: string, _px: string, _ttl: number, _nx: string) => {
+        if (heldLocks.has(key)) return null;
+        heldLocks.set(key, token);
+        return 'OK';
+      }),
+      eval: vi.fn(async (_lua: string, _numKeys: number, key: string, token: string) => {
+        if (heldLocks.get(key) === token) {
+          heldLocks.delete(key);
+          return 1;
+        }
+        return 0;
+      }),
+    };
+
+    fixtures.isRedisConfigured.mockReturnValue(true);
+    fixtures.getRedisClient.mockReturnValue(mockRedis);
+    try {
+      const results = await Promise.all(Array.from({ length: 5 }, () => generateUserQuests(userId, now)));
+      expect(results.every(rows => rows.length === 5)).toBe(true);
+      expect(await UserQuestProgress.countDocuments({ userId })).toBe(5);
+      expect(mockRedis.set).toHaveBeenCalledWith(
+        expect.stringContaining(`quest-gen:${userId}:`),
+        expect.any(String),
+        'PX',
+        5000,
+        'NX',
+      );
+      expect(mockRedis.eval).toHaveBeenCalled();
+      expect(heldLocks.size).toBe(0);
+    } finally {
+      fixtures.isRedisConfigured.mockReturnValue(false);
+    }
   });
   it('uses half-open UTC days and Sunday weeks including year boundaries', () => {
     const last = questPeriods(new Date('2026-12-31T23:59:59.999Z'));
@@ -335,6 +379,22 @@ describe('transactional XP and trophy claims', () => {
     expect(await XpTransaction.countDocuments()).toBe(0);
     expect(await UserAnalytics.countDocuments()).toBe(0);
     expect((await processQuestReward(userId, row._id.toString(), now)).duplicate).toBe(false);
+    expect((await UserXp.findOne({ userId }))!.totalXp).toBe(20);
+    expect(await XpTransaction.countDocuments({ sourceId: 'quest_' + row._id })).toBe(1);
+  });
+  it('guards XP increment with atomic claimed:false transition and never double-credits on partial state', async () => {
+    const row = await eligible();
+    const xpSpy = vi.spyOn(UserXp, 'updateOne');
+    // Simulate a race where claimed was already flipped to true before updateOne
+    vi.spyOn(UserQuestProgress, 'findOneAndUpdate').mockResolvedValueOnce(null as any);
+    const res = await processQuestReward(userId, row._id.toString(), now);
+    expect(res.duplicate).toBe(true);
+    expect(xpSpy).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ $inc: expect.anything() }),
+      expect.anything(),
+    );
+    expect((await UserXp.findOne({ userId }))!.totalXp).toBe(0);
   });
   it('retries post-commit league/SSE projections from durable reward identity without paying again', async () => {
     const row = await eligible();

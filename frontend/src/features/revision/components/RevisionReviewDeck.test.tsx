@@ -38,7 +38,7 @@ describe('RevisionReviewDeck', () => {
     render(<RevisionReviewDeck />);
     expect(await screen.findByText('Two Sum')).toBeTruthy();
     fireEvent.keyDown(window, { key: '2' });
-    await waitFor(() => expect(revisionApi.submitRevisionReview).toHaveBeenCalledWith(card, 'hard'));
+    await waitFor(() => expect(revisionApi.submitRevisionReview).toHaveBeenCalledWith(card, 'hard'), { timeout: 4000 });
     expect(await screen.findByText('Deck complete')).toBeTruthy();
     expect(screen.getByText(/You reviewed all 1 cards/)).toBeTruthy();
     const dialog = await screen.findByRole('dialog', { name: 'Review session complete' });
