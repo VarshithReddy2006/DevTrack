@@ -6,9 +6,11 @@ import type Redis from 'ioredis';
 import {
   DistributedLock,
   acquireDistributedLock,
+  acquireWithRetry,
   releaseDistributedLock,
   extendDistributedLock,
   withDistributedLock,
+  withDistributedLockRetry,
   formatJobLockKey,
   RELEASE_LOCK_LUA_SCRIPT,
   EXTEND_LOCK_LUA_SCRIPT,
@@ -375,6 +377,250 @@ describe('DistributedLock & withDistributedLock', () => {
 
       const released = await releaseDistributedLock(lock!);
       expect(released).toBe(true);
+    });
+  });
+
+  describe('acquireWithRetry & withDistributedLockRetry', () => {
+    it('acquires immediately on attempt #1 without backoff delay', async () => {
+      const lock = await acquireWithRetry('retry_immediate', 15_000, {
+        redisClient: mockRedis as Redis,
+        maxAttempts: 5,
+        retryDelayMs: 50,
+        backoffFactor: 1.5,
+        jitter: 25,
+      });
+
+      expect(lock).not.toBeNull();
+      expect(lock?.isHeld).toBe(true);
+      expect(lock?.ttlMs).toBe(15_000);
+      expect(mockRedis.set).toHaveBeenCalledTimes(1);
+
+      await lock?.release();
+    });
+
+    it('acquires lock after 3 contested attempts using exponential backoff and jitter', async () => {
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const holder = new DistributedLock('contended_job', {
+        redisClient: mockRedis as Redis,
+        ttlMs: 30_000,
+      });
+      await holder.acquire();
+
+      let attemptCount = 0;
+      const originalSet = mockRedis.set as unknown as (
+        key: string,
+        value: string,
+        pxFlag?: string,
+        ttlMs?: number,
+        nxFlag?: string
+      ) => Promise<'OK' | null>;
+      mockRedis.set = vi.fn(
+        async (key: string, value: string, pxFlag?: string, ttlMs?: number, nxFlag?: string) => {
+          attemptCount++;
+          if (attemptCount === 4) {
+            await holder.release();
+          }
+          return originalSet(key, value, pxFlag, ttlMs, nxFlag);
+        }
+      ) as unknown as Redis['set'];
+
+      const retryPromise = acquireWithRetry('contended_job', 20_000, {
+        redisClient: mockRedis as Redis,
+        maxAttempts: 5,
+        retryDelayMs: 50,
+        backoffFactor: 2,
+        jitter: 20,
+      });
+
+      // Attempt 1 fails -> sleep 50 * 2^0 + 0.5 * 20 = 60ms
+      await vi.advanceTimersByTimeAsync(60);
+      expect(attemptCount).toBe(2);
+
+      // Attempt 2 fails -> sleep 50 * 2^1 + 0.5 * 20 = 110ms
+      await vi.advanceTimersByTimeAsync(110);
+      expect(attemptCount).toBe(3);
+
+      // Attempt 3 fails -> sleep 50 * 2^2 + 0.5 * 20 = 210ms -> Attempt 4 succeeds
+      await vi.advanceTimersByTimeAsync(210);
+      const acquired = await retryPromise;
+
+      expect(acquired).not.toBeNull();
+      expect(acquired?.isHeld).toBe(true);
+      expect(attemptCount).toBe(4);
+
+      await acquired?.release();
+      randomSpy.mockRestore();
+    });
+
+    it('caps backoff delay at maxDelayMs', async () => {
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const holder = new DistributedLock('capped_backoff', { redisClient: mockRedis as Redis });
+      await holder.acquire();
+
+      const retryPromise = acquireWithRetry('capped_backoff', 10_000, {
+        redisClient: mockRedis as Redis,
+        maxAttempts: 4,
+        retryDelayMs: 100,
+        maxDelayMs: 150,
+        backoffFactor: 3,
+        jitter: 0,
+      });
+
+      // Attempt 0 fails -> sleep min(150, 100) = 100ms
+      await vi.advanceTimersByTimeAsync(100);
+      expect(mockRedis.set).toHaveBeenCalledTimes(3); // 1 holder + 2 retry attempts
+
+      // Attempt 1 fails -> sleep min(150, 300) = 150ms
+      await vi.advanceTimersByTimeAsync(149);
+      expect(mockRedis.set).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mockRedis.set).toHaveBeenCalledTimes(4);
+
+      // Attempt 2 fails -> sleep min(150, 900) = 150ms -> Attempt 3 fails -> null
+      await vi.advanceTimersByTimeAsync(150);
+      const result = await retryPromise;
+      expect(result).toBeNull();
+      expect(mockRedis.set).toHaveBeenCalledTimes(5);
+
+      randomSpy.mockRestore();
+    });
+
+    it('aborts and returns null when timeoutMs expires while lock is permanently held', async () => {
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const holder = new DistributedLock('permanent_lock', {
+        redisClient: mockRedis as Redis,
+        ttlMs: 60_000,
+      });
+      await holder.acquire();
+
+      const retryPromise = acquireWithRetry('permanent_lock', 10_000, {
+        redisClient: mockRedis as Redis,
+        maxAttempts: 10,
+        retryDelayMs: 100,
+        backoffFactor: 2,
+        jitter: 0,
+        timeoutMs: 250,
+      });
+
+      // Attempt 0 at t=0 (100ms sleep), Attempt 1 at t=100 (150ms remaining capped sleep), timeout at t=250
+      await vi.advanceTimersByTimeAsync(250);
+      const result = await retryPromise;
+
+      expect(result).toBeNull();
+      // Only 1 holder set + 2 attempts before timeoutMs elapsed
+      expect(mockRedis.set).toHaveBeenCalledTimes(3);
+
+      randomSpy.mockRestore();
+    });
+
+    it('cancels cleanly during retry backoff when AbortSignal fires', async () => {
+      const controller = new AbortController();
+      const holder = new DistributedLock('abort_job', { redisClient: mockRedis as Redis });
+      await holder.acquire();
+
+      const retryPromise = acquireWithRetry('abort_job', 10_000, {
+        redisClient: mockRedis as Redis,
+        maxAttempts: 5,
+        retryDelayMs: 500,
+        jitter: 0,
+        abortSignal: controller.signal,
+      });
+
+      // Advance partway through the first backoff sleep, then abort
+      await vi.advanceTimersByTimeAsync(100);
+      controller.abort();
+
+      const result = await retryPromise;
+      expect(result).toBeNull();
+      // 1 holder + 1 attempt before abort; no further attempts or dangling timers
+      expect(mockRedis.set).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('returns null immediately if AbortSignal is already aborted', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await acquireWithRetry('pre_aborted', 10_000, {
+        redisClient: mockRedis as Redis,
+        abortSignal: controller.signal,
+      });
+
+      expect(result).toBeNull();
+      expect(mockRedis.set).not.toHaveBeenCalled();
+    });
+
+    it('withDistributedLockRetry runs critical section after contention and releases lock', async () => {
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const holder = new DistributedLock('retry_wrapper_job', { redisClient: mockRedis as Redis });
+      await holder.acquire();
+
+      const taskPromise = withDistributedLockRetry(
+        'retry_wrapper_job',
+        async (lock) => {
+          expect(lock.isHeld).toBe(true);
+          return 'ok';
+        },
+        {
+          redisClient: mockRedis as Redis,
+          maxAttempts: 4,
+          retryDelayMs: 50,
+          backoffFactor: 2,
+          jitter: 0,
+        }
+      );
+
+      // Attempt 0 fails -> 50ms sleep -> release holder before attempt 1
+      await vi.advanceTimersByTimeAsync(25);
+      await holder.release();
+      await vi.advanceTimersByTimeAsync(25);
+
+      const outcome = await taskPromise;
+      expect(outcome).toEqual({ executed: true, result: 'ok' });
+
+      // Lock must have been released automatically after task completion
+      const postCheck = new DistributedLock('retry_wrapper_job', { redisClient: mockRedis as Redis });
+      expect(await postCheck.acquire()).toBe(true);
+
+      randomSpy.mockRestore();
+    });
+
+    it('withDistributedLockRetry reports timeout and aborted reasons when acquisition fails', async () => {
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const holder = new DistributedLock('retry_reason_job', { redisClient: mockRedis as Redis });
+      await holder.acquire();
+
+      const timeoutPromise = withDistributedLockRetry(
+        'retry_reason_job',
+        async () => 'never',
+        {
+          redisClient: mockRedis as Redis,
+          maxAttempts: 5,
+          retryDelayMs: 100,
+          jitter: 0,
+          timeoutMs: 150,
+        }
+      );
+      await vi.advanceTimersByTimeAsync(150);
+      expect(await timeoutPromise).toEqual({ executed: false, reason: 'timeout' });
+
+      const controller = new AbortController();
+      const abortPromise = withDistributedLockRetry(
+        'retry_reason_job',
+        async () => 'never',
+        {
+          redisClient: mockRedis as Redis,
+          maxAttempts: 5,
+          retryDelayMs: 200,
+          jitter: 0,
+          abortSignal: controller.signal,
+        }
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      controller.abort();
+      expect(await abortPromise).toEqual({ executed: false, reason: 'aborted' });
+
+      randomSpy.mockRestore();
     });
   });
 });
