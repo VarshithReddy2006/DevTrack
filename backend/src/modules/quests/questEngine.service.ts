@@ -169,15 +169,16 @@ export async function expireStaleQuests(
     });
 
     const writeResult = await UserQuestProgress.bulkWrite(ops, { ordered: false });
-    expiredCount += writeResult.modifiedCount ?? 0;
+    const modifiedCount = writeResult.modifiedCount ?? 0;
+    expiredCount += modifiedCount;
 
-    if ((writeResult.modifiedCount ?? 0) > 0) {
+    if (modifiedCount > 0) {
       for (const doc of stale) {
         affectedUsers.add(doc.userId.toString());
       }
     }
 
-    if (stale.length < limit) break;
+    if (modifiedCount === 0 || stale.length < limit) break;
   }
 
   if (affectedUsers.size > 0) {
@@ -210,9 +211,10 @@ export async function expireStaleQuests(
       { _id: { $in: ids }, status: { $ne: 'archived' } },
       { $set: { status: 'archived', archivedAt: now } }
     );
-    archivedCount += archiveResult.modifiedCount ?? 0;
+    const modifiedCount = archiveResult.modifiedCount ?? 0;
+    archivedCount += modifiedCount;
 
-    if (archivable.length < limit) break;
+    if (modifiedCount === 0 || archivable.length < limit) break;
   }
 
   logger.info('[quests] Quest expiration sweep completed', {
