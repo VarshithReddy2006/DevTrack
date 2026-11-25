@@ -327,6 +327,10 @@ async function performShutdown(server?: Server): Promise<void> {
     setRedisStatus('stopped');
   });
   await runPhase('MongoDB teardown', 2_000, disconnectDatabase);
+  await runPhase('Browser pool teardown', 2_000, async () => {
+    const { shutdownBrowserPool } = await import('../../modules/resume/export/browserPool.js');
+    await shutdownBrowserPool();
+  });
 
   setApiStatus('stopped');
   const metrics = { durationMs: Date.now() - startedAt, failedPhases: failures };

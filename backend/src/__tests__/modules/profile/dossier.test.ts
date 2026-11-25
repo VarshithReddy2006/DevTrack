@@ -14,6 +14,7 @@ import { renderDossierArtifact } from '../../../modules/profile/dossier/dossier.
 import { dossierDeps } from '../../../modules/profile/dossier.controller.js';
 import profileRoutes from '../../../modules/profile/profile.routes.js';
 import { getObjectStorage, LocalDiskObjectStorage } from '../../../shared/storage/objectStorage.js';
+import { resetBrowserPool } from '../../../modules/resume/export/browserPool.js';
 
 const env = vi.hoisted(() => {
   process.env.UPLOAD_DIR = `${process.env.TMPDIR ?? '/tmp'}/devtrack-dossier-test-${process.pid}`;
@@ -23,7 +24,7 @@ const env = vi.hoisted(() => {
 const actor = vi.hoisted(() => ({ id: '' }));
 const browser = vi.hoisted(() => ({
   launch: vi.fn(), pdf: vi.fn(), setContent: vi.fn(), setJavaScriptEnabled: vi.fn(), setRequestInterception: vi.fn(),
-  on: vi.fn(), pageClose: vi.fn(), close: vi.fn(),
+  on: vi.fn(), pageClose: vi.fn(), contextClose: vi.fn(), createBrowserContext: vi.fn(), close: vi.fn(),
 }));
 vi.mock('puppeteer', () => ({ default: { launch: browser.launch } }));
 vi.mock('../../../middleware/index.js', async original => {
@@ -38,17 +39,28 @@ vi.mock('../../../middleware/index.js', async original => {
   };
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  await resetBrowserPool();
   vi.clearAllMocks();
   browser.pdf.mockResolvedValue(Buffer.from('%PDF-1.4 synthetic dossier'));
   browser.setContent.mockResolvedValue(undefined);
   browser.pageClose.mockResolvedValue(undefined);
+  browser.contextClose.mockResolvedValue(undefined);
   browser.close.mockResolvedValue(undefined);
+  const makePage = () => ({
+    close: browser.pageClose, setJavaScriptEnabled: browser.setJavaScriptEnabled,
+    setRequestInterception: browser.setRequestInterception, on: browser.on, setContent: browser.setContent, pdf: browser.pdf,
+  });
+  browser.createBrowserContext.mockImplementation(async () => ({
+    newPage: async () => makePage(),
+    close: browser.contextClose,
+  }));
   browser.launch.mockResolvedValue({
-    newPage: async () => ({
-      close: browser.pageClose, setJavaScriptEnabled: browser.setJavaScriptEnabled,
-      setRequestInterception: browser.setRequestInterception, on: browser.on, setContent: browser.setContent, pdf: browser.pdf,
-    }),
+    connected: true,
+    on: vi.fn(),
+    off: vi.fn(),
+    createBrowserContext: browser.createBrowserContext,
+    newPage: async () => makePage(),
     close: browser.close,
   });
 });
@@ -104,7 +116,7 @@ describe('dossier render worker job (Puppeteer mocked, real local-disk storage)'
     if (outcome.status !== 'rendered') return;
 
     // Chromium is driven the safe way: no JS, every request aborted, --no-sandbox launch.
-    expect(browser.launch).toHaveBeenCalledWith(expect.objectContaining({ headless: true, args: ['--no-sandbox'] }));
+    expect(browser.launch).toHaveBeenCalledWith(expect.objectContaining({ headless: true, args: expect.arrayContaining(['--no-sandbox']) }));
     expect(browser.setJavaScriptEnabled).toHaveBeenCalledWith(false);
     expect(browser.setRequestInterception).toHaveBeenCalledWith(true);
     const onRequest = browser.on.mock.calls.find(([event]) => event === 'request')![1] as (request: { abort(): Promise<void> }) => void;
@@ -112,7 +124,8 @@ describe('dossier render worker job (Puppeteer mocked, real local-disk storage)'
     onRequest({ abort });
     expect(abort).toHaveBeenCalledOnce();
     expect(browser.pdf).toHaveBeenCalledWith(expect.objectContaining({ pageRanges: '1', printBackground: true }));
-    expect(browser.close).toHaveBeenCalledOnce();
+    expect(browser.contextClose).toHaveBeenCalledOnce();
+    expect(browser.close).not.toHaveBeenCalled();
 
     const html = browser.setContent.mock.calls[0][0] as string;
     expect(html).toContain('Grace &lt;b&gt;Hopper&lt;/b&gt;');
@@ -141,7 +154,8 @@ describe('dossier render worker job (Puppeteer mocked, real local-disk storage)'
     await PublicProfile.updateOne({ _id: profile._id }, { $set: { 'snapshot.dsa.totalSolved': 800 } });
     const second = await renderDossierArtifact(profile.userId);
     expect(second.status).toBe('rendered');
-    expect(browser.launch).toHaveBeenCalledTimes(2);
+    expect(browser.launch).toHaveBeenCalledOnce();
+    expect(browser.contextClose).toHaveBeenCalledTimes(2);
     expect(await RenderArtifact.countDocuments({ userId: profile.userId })).toBe(1);
     const files = await readdir(path.join(env.uploadDir, 'render', 'dossiers', String(profile.userId)));
     expect(files).toEqual([path.basename((second as { key: string }).key)]);
