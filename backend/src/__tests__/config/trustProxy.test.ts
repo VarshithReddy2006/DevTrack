@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 // Tiny in-memory Redis stand-in for rateLimitAdvanced (no sockets, no real service).
 const redis = vi.hoisted(() => ({ counts: new Map<string, number>() }));
 vi.mock('../../shared/redis/client.js', () => ({
+  isRedisConfigured: () => true,
   getRedisClient: () => ({
     get: async (k: string) => (redis.counts.has(k) ? String(redis.counts.get(k)) : null),
     ttl: async () => 30,
