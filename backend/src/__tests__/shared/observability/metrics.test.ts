@@ -81,16 +81,15 @@ describe('prometheus metrics', () => {
 });
 
 describe('health probes', () => {
-  it('/healthz answers 200 while the event loop is responsive and 503 when it lags', async () => {
+  const healthyRuntime = () => ({ eventLoopP99Ms: 4, heapUsedBytes: 50, heapTotalBytes: 100 });
+  it('/healthz remains a lightweight liveness check without transient pressure gates', async () => {
     const app = express();
-    let lag = 4;
-    app.get('/healthz', livenessHandler(() => lag));
+    app.get('/healthz', livenessHandler());
     const base = await listen(app);
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
-    lag = 250;
     const res = await fetch(`${base}/healthz`);
-    expect(res.status).toBe(503);
-    expect((await res.json()).status).toBe('unhealthy');
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('ok');
   });
 
   it('/readyz is 200 when every dependency answers', async () => {
@@ -99,11 +98,12 @@ describe('health probes', () => {
       pingMongo: async () => ({ ok: 1 }),
       pingRedis: async () => 'PONG',
       checkQueues: async () => [],
+      readRuntime: healthyRuntime,
     }));
     const base = await listen(app);
     const res = await fetch(`${base}/readyz`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: 'ready', checks: { mongodb: 'up', redis: 'up', queues: 'up' } });
+    expect(await res.json()).toEqual({ status: 'ready', checks: { mongodb: 'up', redis: 'up', queues: 'up', eventLoop: 'up', heap: 'up' }, diagnostics: { ...healthyRuntime(), heapRatio: 0.5 } });
   });
 
   it('/readyz is 503 when mongo is offline', async () => {
@@ -116,6 +116,26 @@ describe('health probes', () => {
     const res = await fetch(`${base}/readyz`);
     expect(res.status).toBe(503);
     expect((await res.json()).checks.mongodb).toBe('down');
+  });
+
+  it('sheds runtime pressure through HTTP readiness and recovers without failing liveness', async () => {
+    const app = express();
+    let runtime = healthyRuntime();
+    app.get('/readyz', readinessHandler({ pingMongo: async () => true, readRuntime: () => runtime }));
+    app.get('/healthz', livenessHandler());
+    const base = await listen(app);
+    expect((await fetch(`${base}/readyz`)).status).toBe(200);
+    runtime = { ...healthyRuntime(), eventLoopP99Ms: 700 };
+    let response = await fetch(`${base}/readyz`);
+    expect(response.status).toBe(503);
+    expect((await response.json()).checks.eventLoop).toBe('down');
+    expect((await fetch(`${base}/healthz`)).status).toBe(200);
+    runtime = { ...healthyRuntime(), heapUsedBytes: 91 };
+    response = await fetch(`${base}/readyz`);
+    expect(response.status).toBe(503);
+    expect((await response.json()).checks.heap).toBe('down');
+    runtime = healthyRuntime();
+    expect((await fetch(`${base}/readyz`)).status).toBe(200);
   });
 
   it('/readyz is 503 when redis drops', async () => {
@@ -137,8 +157,8 @@ describe('health probes', () => {
   });
 
   it('skips redis and queue checks when they are not configured', async () => {
-    const { ready, checks } = await runReadiness({ pingMongo: async () => ({ ok: 1 }) });
+    const { ready, checks } = await runReadiness({ pingMongo: async () => ({ ok: 1 }), readRuntime: healthyRuntime });
     expect(ready).toBe(true);
-    expect(checks).toEqual({ mongodb: 'up', redis: 'skipped', queues: 'skipped' });
+    expect(checks).toEqual({ mongodb: 'up', redis: 'skipped', queues: 'skipped', eventLoop: 'up', heap: 'up' });
   });
 });

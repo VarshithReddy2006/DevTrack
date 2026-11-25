@@ -16,22 +16,17 @@ vi.mock('../../../shared/logger.js', () => ({ logger: { debug: vi.fn(), info: vi
 
 const userId = '000000000000000000000051';
 const otherId = '000000000000000000000052';
-const now = new Date(2026, 9, 28, 12);
+let now = new Date();
 beforeAll(async () => {
-  // The ledger unique index must be ready before any award. Mission's unrelated
-  // conflicting expiry indexes are not awaited, matching existing mission tests.
   await Promise.all([User.init(), UserXp.init(), UserAnalytics.init(), XpTransaction.init()]);
-  // Keep one calendar clock for the whole suite so MongoDB heartbeats cannot
-  // jump between real time and the frozen date during per-test DB cleanup.
-  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(now);
 });
 beforeEach(async () => {
+  now = new Date();
   vi.clearAllMocks();
   await User.create({ _id: userId, clerkId: 'reward_owner', username: 'rewardowner', displayName: 'Synthetic Owner', email: 'owner@example.test' });
   await UserXp.create({ userId });
 });
 afterEach(() => { vi.restoreAllMocks(); });
-afterAll(() => { vi.useRealTimers(); });
 
 async function createMission(overrides: Record<string, unknown> = {}) {
   return Mission.create({ userId, title: 'Solve a easy problem', description: 'Synthetic mission', type: 'daily', category: 'dsa',

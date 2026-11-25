@@ -11,7 +11,7 @@ const fixture = vi.hoisted(() => ({
 
 // Expiring Redis fixture: no sockets, credentials, or cleanup against a real service.
 vi.mock('../../shared/redis/client.js', () => ({
-  isRedisConfigured: () => false,
+  isRedisConfigured: () => true,
   getRedisClient: () => ({
     async get(key: string) {
       const entry = fixture.values.get(key);
