@@ -56,26 +56,63 @@ async function readMissedEvents(
   }
 }
 
+function isInitializedRuntimeState(state: unknown): boolean {
+  if (!state || typeof state !== 'object') return false;
+
+  const value = state as Record<string, unknown>;
+  if (value.lastCalculatedAt === null || value.lastCalculatedAt === undefined) return false;
+
+  return Number.isFinite(new Date(value.lastCalculatedAt as string | number | Date).getTime())
+    && typeof value.xp === 'number'
+    && typeof value.level === 'number'
+    && Boolean(value.sessionContext && typeof value.sessionContext === 'object');
+}
+
+function normalizeStatePayload(state: unknown): unknown {
+  if (state && typeof state === 'object') {
+    const toObject = (state as { toObject?: unknown }).toObject;
+    if (typeof toObject === 'function') return toObject.call(state);
+  }
+  return state;
+}
+
 async function sendFullState(
   userId: string,
   controller: ReadableStreamDefaultController<Uint8Array>
 ): Promise<void> {
-  // Import runtime state service to get full state
-  const { unifiedRuntimeStateService } = await import('../../modules/runtime-state/unifiedRuntimeState.service.js');
-  const state = await unifiedRuntimeStateService.getRuntimeState(userId);
+  try {
+    const { unifiedRuntimeStateService } = await import('../../modules/runtime-state/unifiedRuntimeState.service.js');
+    let state = await unifiedRuntimeStateService.getRuntimeState(userId);
+    if (!isInitializedRuntimeState(state)) {
+      state = await unifiedRuntimeStateService.getRuntimeStateFresh(userId);
+    }
+    if (!isInitializedRuntimeState(state)) throw new Error('Runtime state is unavailable or incomplete');
 
-  if (state) {
     const fullStateEvent = {
       id: `${userId}-full-${Date.now()}`,
       type: 'runtime_state_full' as const,
       sequence: 0,
       timestamp: new Date().toISOString(),
       userId,
-      payload: { state: state.toObject() },
+      payload: { state: normalizeStatePayload(state) },
     };
 
     const payload = `id: ${fullStateEvent.id}\ndata: ${JSON.stringify(fullStateEvent)}\n\n`;
-    controller.enqueue(new TextEncoder().encode(payload));
+    controller.enqueue(encoder.encode(payload));
+  } catch (error) {
+    logger.warn('[sse] Failed to send initial runtime state', {
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    const errorEvent = {
+      id: `${userId}-initial-error-${Date.now()}`,
+      type: 'INITIAL_STATE_ERROR',
+      sequence: 0,
+      timestamp: new Date().toISOString(),
+      userId,
+      payload: { error: 'Unable to load initial runtime state' },
+    };
+    controller.enqueue(encoder.encode(`id: ${errorEvent.id}\ndata: ${JSON.stringify(errorEvent)}\n\n`));
   }
 }
 
@@ -167,10 +204,9 @@ export function createSseStream(
     async start(controller) {
       controllerRef = controller;
 
-      // The event bus writes straight to client.controller. While a replay is being read, that
-      // controller holds writes back, so a reconnecting client gets the replay first and nothing
-      // published in between is lost or delivered out of order.
-      let replaying = Boolean(lastEventId);
+      // The event bus writes straight to client.controller. While the initial state or replay is
+      // being read, this controller holds writes back so live events are delivered afterward.
+      let replaying = true;
       const heldBack: Uint8Array[] = [];
       const gatedController = {
         enqueue(chunk: Uint8Array) {
@@ -222,24 +258,24 @@ export function createSseStream(
         return;
       }
 
-      // Replay missed events if Last-Event-ID header present
-      if (lastEventId) {
-        const replayedIds = await replayMissedEvents(userId, lastEventId, controller);
-        replaying = false;
-        // An event written to the stream just before the read can be both replayed and held back.
-        const decoder = new TextDecoder();
-        for (const chunk of heldBack) {
-          const id = /^id: (.+)$/m.exec(decoder.decode(chunk))?.[1];
-          if (id && replayedIds.has(id)) continue;
-          try {
-            controller.enqueue(chunk);
-          } catch {
-            // Stream closed while replaying
-            break;
-          }
+      // Replay missed events or send the initial full state before releasing live events.
+      let replayedIds = new Set<string>();
+      if (lastEventId) replayedIds = await replayMissedEvents(userId, lastEventId, controller);
+      else await sendFullState(userId, controller);
+      replaying = false;
+      // An event written just before the read can be both replayed and held back.
+      const decoder = new TextDecoder();
+      for (const chunk of heldBack) {
+        const id = /^id: (.+)$/m.exec(decoder.decode(chunk))?.[1];
+        if (id && replayedIds.has(id)) continue;
+        try {
+          controller.enqueue(chunk);
+        } catch {
+          // Stream closed while replaying
+          break;
         }
-        heldBack.length = 0;
       }
+      heldBack.length = 0;
     },
     cancel() {
       eventBus.unregister(clientId);
