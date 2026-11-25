@@ -1,0 +1,60 @@
+name: Vercel Preview Deployment
+
+# Automatically builds and deploys a preview environment on Vercel for every PR,
+# including PRs submitted from external forks, without requiring manual approval.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'frontend/**'
+      - 'packages/contracts/**'
+      - '.github/workflows/deploy-preview.yml'
+
+concurrency:
+  group: vercel-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-preview:
+    name: Deploy Preview to Vercel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      deployments: write
+
+    steps:
+      - name: Check Configuration
+        id: check-secrets
+        run: |
+          if [ -z "${{ secrets.VERCEL_TOKEN }}" ] || [ -z "${{ secrets.VERCEL_ORG_ID }}" ] || [ -z "${{ secrets.VERCEL_PROJECT_ID }}" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Vercel Secrets Missing::VERCEL_TOKEN, VERCEL_ORG_ID, or VERCEL_PROJECT_ID is not configured in GitHub Secrets. Preview deployment skipped."
+            echo "To enable automated preview deployments without approval:"
+            echo "1. Go to https://vercel.com/account/tokens and create a token (save as VERCEL_TOKEN)"
+            echo "2. Find Project ID at https://vercel.com/varshithreddy6147-4234s-projects/dev-track/settings (save as VERCEL_PROJECT_ID)"
+            echo "3. Find your Org/User ID under Account Settings (save as VERCEL_ORG_ID)"
+            echo "4. Add all three to GitHub Repository Settings -> Secrets and variables -> Actions"
+          else
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout PR Code
+        if: steps.check-secrets.outputs.missing == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Deploy Preview to Vercel
+        if: steps.check-secrets.outputs.missing == 'false'
+        id: vercel-deploy
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./frontend
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-comment: true
