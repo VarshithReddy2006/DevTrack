@@ -1,5 +1,12 @@
 // src/db/models/dsaContest.model.ts
-import { Schema, model, type Document } from 'mongoose';
+import { Schema, model, Types, type Document } from 'mongoose';
+
+export interface IDsaContestRatingSyncCheckpoint {
+  lastUserSettingsId: Types.ObjectId | null;
+  retryUserSettingsIds: Types.ObjectId[];
+  consecutiveTrips: number;
+  updatedAt: Date;
+}
 
 export interface IDsaContest extends Document {
   userId?: Schema.Types.ObjectId;
@@ -22,6 +29,7 @@ export interface IDsaContest extends Document {
   stale?: boolean;
   alertEmitted?: boolean;
   fetchedAt?: Date | null;
+  ratingSyncCheckpoint?: IDsaContestRatingSyncCheckpoint | null;
   createdAt: Date;
 }
 
@@ -82,6 +90,18 @@ const dsaContestSchema = new Schema<IDsaContest>(
     },
     fetchedAt: {
       type: Date,
+      default: null,
+    },
+    ratingSyncCheckpoint: {
+      type: new Schema(
+        {
+          lastUserSettingsId: { type: Schema.Types.ObjectId, default: null },
+          retryUserSettingsIds: { type: [Schema.Types.ObjectId], default: [] },
+          consecutiveTrips: { type: Number, default: 0 },
+          updatedAt: { type: Date, required: true },
+        },
+        { _id: false }
+      ),
       default: null,
     },
     rank: {

@@ -10,25 +10,41 @@ export interface ContestResult {
 }
 
 export class ContestProviderRateLimit extends Error {
-  constructor(readonly retryAfterMs: number) { super('Contest provider rate limited'); }
+  constructor(
+    readonly retryAfterMs: number,
+    readonly hasRetryAfterHeader = false
+  ) {
+    super('Contest provider rate limited');
+  }
 }
 
-let lastRequestAt = 0;
+export class ContestProviderHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Contest provider HTTP ${status}`);
+  }
+}
+
+let nextRequestAt = 0;
 async function request(url: string, init: RequestInit = {}, intervalMs = 2100): Promise<unknown> {
-  const delay = Math.max(0, lastRequestAt + intervalMs - Date.now());
-  if (delay) await new Promise(resolve => setTimeout(resolve, delay));
-  lastRequestAt = Date.now();
+  const now = Date.now();
+  const scheduledAt = Math.max(now, nextRequestAt);
+  nextRequestAt = scheduledAt + intervalMs;
+  const delay = scheduledAt - now;
+  if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
   const response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(20_000) });
   if (response.status === 429) {
     const header = response.headers.get('retry-after');
     const retryAfterMs = header && /^\d+(?:\.\d+)?$/.test(header)
       ? Number(header) * 1000 : header ? Date.parse(header) - Date.now() : 60_000;
     await response.body?.cancel();
-    throw new ContestProviderRateLimit(Number.isFinite(retryAfterMs) ? Math.max(2100, retryAfterMs) : 60_000);
+    throw new ContestProviderRateLimit(
+      Number.isFinite(retryAfterMs) ? Math.max(2100, retryAfterMs) : 60_000,
+      Boolean(header)
+    );
   }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error(`Contest provider HTTP ${response.status}`);
+    throw new ContestProviderHttpError(response.status);
   }
   return response.json();
 }
