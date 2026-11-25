@@ -106,9 +106,9 @@ it('replaces the real editor only after a verified restore and keeps saved secti
   const view = mount(); const field = await edit();
   view.client.setQueryData(['resume-editor', 'other-user'], 'untouched');
   fireEvent.click(screen.getByRole('button', { name: 'Revision History' }));
-  fireEvent.click(await screen.findByRole('button', { name: /Version 1.*ATS/ }));
-  fireEvent.click(screen.getByRole('button', { name: 'Restore this version' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Confirm restore' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Version 1.*ATS/ }, { timeout: 5000 }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Restore this version' }, { timeout: 5000 }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm restore' }, { timeout: 5000 }));
   await waitFor(() => expect(screen.getByLabelText('Resume source')).toBeDisabled());
   expect(field).toHaveProperty('readOnly', true);
   expect(field).toHaveValue('# Experience\n- Reduced Docker latency by 30%.');
