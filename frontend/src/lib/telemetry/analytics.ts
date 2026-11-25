@@ -62,13 +62,25 @@ interface TelemetrySession {
 }
 
 async function postObservation(path: string, body: string, token: string, keepalive = false) {
-  const response = await fetch(`${envConfig.VITE_API_BASE_URL.replace(/\/$/, '')}/observation/${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body,
-    keepalive,
-  });
-  if (!response.ok) throw new Error(`Observation request failed (${response.status})`);
+  try {
+    const response = await fetch(`${envConfig.VITE_API_BASE_URL.replace(/\/$/, '')}/observation/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body,
+      keepalive,
+    });
+    if (!response.ok) {
+      if (response.status === 401) {
+        // Expired or missing session token; drop telemetry quietly
+        return;
+      }
+      throw new Error(`Observation request failed (${response.status})`);
+    }
+  } catch (err) {
+    if (import.meta.env.DEV) {
+      console.debug('[Telemetry] postObservation error:', err);
+    }
+  }
 }
 
 class TelemetryManager {

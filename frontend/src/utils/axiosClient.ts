@@ -96,7 +96,7 @@ axiosClient.interceptors.response.use(
 
     // Normalize error for consumers
     const retryAfter = error.response?.headers['retry-after'] ?? error.response?.data?.retryAfter;
-    const normalized: ApiError & { rawData?: any } = {
+    const normalized: ApiError = {
       success: false,
       message:
         error.response?.data?.message ||
