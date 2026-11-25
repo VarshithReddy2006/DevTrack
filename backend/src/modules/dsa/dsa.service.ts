@@ -97,10 +97,10 @@ export async function generateRollingHeatmap(
 ): Promise<Array<{ date: string; count: number }>> {
   const userObjId = new Types.ObjectId(userId);
   const today = new Date();
-  today.setHours(23, 59, 59, 999);
+  today.setUTCHours(23, 59, 59, 999);
   const start = new Date(today);
-  start.setDate(start.getDate() - 364);
-  start.setHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() - 364);
+  start.setUTCHours(0, 0, 0, 0);
 
   // 1. Get Codeforces submissions grouped by day (from DsaSubmission)
   const t0 = Date.now();
@@ -114,7 +114,7 @@ export async function generateRollingHeatmap(
     },
     {
       $group: {
-        _id: { $dateToString: { format: '%Y-%m-%d', date: '$submittedAt' } },
+        _id: { $dateToString: { format: '%Y-%m-%d', date: '$submittedAt', timezone: 'UTC' } },
         count: { $sum: 1 },
       },
     },
@@ -146,7 +146,7 @@ export async function generateRollingHeatmap(
     const cfCount = cfMap.get(dateStr) ?? 0;
     const lcCount = lcCalendar[dateStr] ?? 0;
     heatmap.push({ date: dateStr, count: cfCount + lcCount });
-    cursor.setDate(cursor.getDate() + 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
   return heatmap;
@@ -174,7 +174,7 @@ export function calculateStreaksFromHeatmap(
   // Current streak — walk backwards from today (or yesterday)
   const todayStr = new Date().toISOString().split('T')[0];
   const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
   const yesterdayStr = yesterday.toISOString().split('T')[0];
 
   let current = 0;
