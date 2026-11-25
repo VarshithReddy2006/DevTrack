@@ -1,7 +1,11 @@
 // src/modules/dsa/execution/sandboxRunner.ts — Isolated & Containerized Sandbox Runner for DSA Code Execution
 // Enforces hard CPU limits (2.0s), 256MB memory cgroup/V8 limits, and zero-network/zero-disk system call isolation.
 
+import { randomUUID } from 'node:crypto';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { wasiEngine, type WasiStatus } from './wasiEngine.js';
 import { logger } from '../../../shared/logger.js';
@@ -15,6 +19,107 @@ function killProcessSafely(child: ChildProcess): void {
     }
     child.kill('SIGKILL');
   } catch {}
+}
+
+interface DockerRunResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  error?: string;
+}
+
+function isDockerUnavailable(result: DockerRunResult): boolean {
+  return result.exitCode === null || [125, 126, 127].includes(result.exitCode) ||
+    /failed to connect to the docker api|cannot connect to the docker daemon|docker daemon is not running/i.test(result.stderr);
+}
+
+function removeDockerContainer(containerName: string): Promise<void> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn('docker', ['rm', '--force', containerName], { stdio: 'ignore', windowsHide: true });
+    } catch {
+      return resolve();
+    }
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(cleanupTimer);
+      resolve();
+    };
+    const cleanupTimer = setTimeout(() => {
+      killProcessSafely(child);
+      finish();
+    }, 2000);
+    child.on('error', finish);
+    child.on('close', finish);
+  });
+}
+
+function runDockerContainer(
+  containerName: string,
+  args: string[],
+  timeoutMs: number,
+  stdin: string,
+  maxOutputBytes: number
+): Promise<DockerRunResult> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    } catch (err) {
+      return resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false, error: String(err) });
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const appendOutput = (current: string, chunk: Buffer, truncatedMessage: string): string => {
+      if (current.length >= maxOutputBytes) return current;
+      const output = current + chunk.toString('utf-8');
+      return output.length > maxOutputBytes
+        ? `${output.slice(0, maxOutputBytes)}\n${truncatedMessage}`
+        : output;
+    };
+    const finish = (result: DockerRunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      resolve(result);
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      killProcessSafely(child);
+      void removeDockerContainer(containerName).then(() => {
+        resolve({
+          exitCode: 124,
+          stdout,
+          stderr: `${stderr}${stderr ? '\n' : ''}Time Limit Exceeded: Process terminated after ${timeoutMs}ms`,
+          timedOut: true,
+        });
+      });
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout = appendOutput(stdout, chunk, '[Output Truncated]');
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr = appendOutput(stderr, chunk, '[Error Output Truncated]');
+    });
+    child.stdin?.on('error', () => {});
+    child.on('error', (err: Error) => {
+      finish({ exitCode: null, stdout, stderr, timedOut: false, error: err.message });
+    });
+    child.on('close', (exitCode: number | null) => {
+      finish({ exitCode, stdout, stderr, timedOut: false });
+    });
+    child.stdin?.end(stdin);
+  });
 }
 
 export type ExecutionStatus = 'SUCCESS' | 'TLE' | 'MLE' | 'RTE' | 'SECURITY_VIOLATION';
@@ -528,7 +633,7 @@ for mod in ['socket', 'http', 'urllib', 'requests', 'subprocess']:
   /**
    * Runs C++ code inside the sandboxed runner
    */
-  private executeCpp(
+  private async executeCpp(
     sourceCode: string,
     opts: {
       timeoutMs: number;
@@ -539,17 +644,117 @@ for mod in ['socket', 'http', 'urllib', 'requests', 'subprocess']:
     }
   ): Promise<ExecutionResult> {
     const startTime = performance.now();
-    // For C++, if not compiled ahead of time or if compiler invoked, return safe diagnostic or execute
-    const duration = Math.round((performance.now() - startTime) * 100) / 100;
-    return Promise.resolve({
-      status: 'SUCCESS',
-      exitCode: 0,
-      stdout: '[C++ Sandboxed Execution Ready]\n',
-      stderr: '',
-      executionDurationMs: duration,
-      peakMemoryBytes: 10 * 1024 * 1024,
-      verdict: 'OK',
+    let workspace: string | undefined;
+    const result = (
+      status: ExecutionStatus,
+      exitCode: number,
+      stdout: string,
+      stderr: string,
+      peakMemoryBytes = 0,
+      error?: string
+    ): ExecutionResult => ({
+      status,
+      exitCode,
+      stdout,
+      stderr,
+      executionDurationMs: Math.round((performance.now() - startTime) * 100) / 100,
+      peakMemoryBytes,
+      verdict: status === 'SUCCESS' ? 'OK' : status,
+      error,
     });
+
+    try {
+      workspace = await mkdtemp(join(tmpdir(), 'devtrack-cpp-'));
+      await chmod(workspace, 0o755);
+      await writeFile(join(workspace, 'main.cpp'), sourceCode, { mode: 0o644 });
+
+      const image = process.env.CPP_SANDBOX_IMAGE || 'gcc:14';
+      const compileName = `devtrack-cpp-compile-${randomUUID()}`;
+      const compile = await runDockerContainer(
+        compileName,
+        [
+          'run', '--pull=never', '--rm', '--name', compileName,
+          '--network=none', '--memory=512m', '--memory-swap=512m', '--cpus=1', '--pids-limit=64',
+          '--security-opt=no-new-privileges', '--cap-drop=ALL', '--read-only',
+          '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',
+          '--volume', `${workspace}:/work:rw`, '--workdir', '/work',
+          image, 'g++', '-O2', '-std=c++20', '-static', '-pipe', '-o', '/work/program', '/work/main.cpp',
+        ],
+        5000,
+        '',
+        opts.maxOutputBytes
+      );
+
+      if (compile.timedOut) {
+        return result('TLE', 124, compile.stdout, compile.stderr, 0, 'C++ compilation exceeded the 5000ms limit');
+      }
+      if (compile.error) {
+        const stderr = `C++ sandbox could not start: ${compile.error}`;
+        return result('RTE', 1, compile.stdout, stderr, 0, stderr);
+      }
+      if (compile.exitCode !== 0) {
+        const stderr = compile.stderr || compile.stdout || `C++ compiler exited with code ${compile.exitCode}`;
+        const sandboxUnavailable = isDockerUnavailable(compile);
+        const error = sandboxUnavailable ? `C++ sandbox unavailable: ${stderr}` : stderr;
+        return result('RTE', compile.exitCode ?? 1, compile.stdout, stderr, 0, error);
+      }
+
+      const memoryLimitMb = Math.max(1, Math.min(opts.memoryLimitMb, 128));
+      const runName = `devtrack-cpp-run-${randomUUID()}`;
+      const execution = await runDockerContainer(
+        runName,
+        [
+          'run', '--pull=never', '--rm', '--interactive', '--name', runName,
+          '--network=none', `--memory=${memoryLimitMb}m`, `--memory-swap=${memoryLimitMb}m`, '--cpus=1', '--pids-limit=32',
+          '--security-opt=no-new-privileges', '--cap-drop=ALL', '--read-only', '--user=65534:65534',
+          '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16m',
+          '--volume', `${workspace}:/work:ro`, '--workdir', '/work',
+          image, '/work/program',
+        ],
+        opts.timeoutMs,
+        opts.stdin,
+        opts.maxOutputBytes
+      );
+
+      if (execution.timedOut) {
+        return result('TLE', 124, execution.stdout, execution.stderr, 0, `Time Limit Exceeded (${opts.timeoutMs}ms hard limit)`);
+      }
+      if (execution.error) {
+        const stderr = `C++ sandbox could not start: ${execution.error}`;
+        return result('RTE', 1, execution.stdout, stderr, 0, stderr);
+      }
+      const runtimeError = execution.stderr.toLowerCase();
+      if (execution.exitCode !== 0 && (execution.exitCode === 137 || runtimeError.includes('std::bad_alloc') || runtimeError.includes('cannot allocate memory'))) {
+        return result(
+          'MLE',
+          137,
+          execution.stdout,
+          `Memory Limit Exceeded: Runtime memory limit of ${memoryLimitMb}MB exceeded`,
+          memoryLimitMb * 1024 * 1024,
+          `Memory Limit Exceeded (${memoryLimitMb}MB limit)`
+        );
+      }
+      if (execution.exitCode !== 0) {
+        const exitCode = execution.exitCode ?? 1;
+        const stderr = execution.stderr || `C++ program exited with code ${exitCode}`;
+        const sandboxUnavailable = isDockerUnavailable(execution);
+        const error = sandboxUnavailable ? `C++ sandbox unavailable: ${stderr}` : stderr;
+        return result('RTE', exitCode, execution.stdout, stderr, 0, error);
+      }
+
+      return result('SUCCESS', 0, execution.stdout, execution.stderr);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return result('RTE', 1, '', message, 0, message);
+    } finally {
+      if (workspace) {
+        try {
+          await rm(workspace, { recursive: true, force: true });
+        } catch (err) {
+          logger.warn('[sandboxRunner] Failed to remove C++ temporary workspace', { error: err });
+        }
+      }
+    }
   }
 }
 

@@ -1,12 +1,68 @@
 // src/__tests__/modules/dsa/sandboxRunner.test.ts — Unit & Security Integration Tests
 // Verifies isolated WASI and containerized sandbox runner containment, TLE, MLE, and zero-leakage security.
 
+import { spawnSync } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
 import { sandboxRunner, executeCode } from '../../../modules/dsa/execution/sandboxRunner.js';
 import { wasiEngine } from '../../../modules/dsa/execution/wasiEngine.js';
 import { evaluateSubmission } from '../../../workers/worker-dsa-eval.js';
 
+const cppSandboxImage = process.env.CPP_SANDBOX_IMAGE || 'gcc:14';
+const cppSandboxAvailable = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { stdio: 'ignore', timeout: 2000 }).status === 0 &&
+  spawnSync('docker', ['image', 'inspect', cppSandboxImage], { stdio: 'ignore', timeout: 2000 }).status === 0;
+
 describe('SandboxRunner — Secure Code Execution Engine (#525)', () => {
+  it.skipIf(cppSandboxAvailable)('reports when the Docker sandbox runtime is unavailable', async () => {
+    const result = await sandboxRunner.execute('int main() { return 0; }', 'cpp');
+
+    expect(result.status).toBe('RTE');
+    expect(result.error).toContain('C++ sandbox');
+  });
+
+  describe.skipIf(!cppSandboxAvailable)('C++ sandbox execution', () => {
+    it('compiles and executes C++20 code with stdin', async () => {
+      const result = await sandboxRunner.execute(`#include <iostream>
+int main() { int a, b; std::cin >> a >> b; std::cout << a + b << '\\n'; }`, 'cpp', {
+        stdin: '20 22\n',
+      });
+
+      expect(result.status).toBe('SUCCESS');
+      expect(result.stdout.trim()).toBe('42');
+    });
+
+    it('returns compiler diagnostics with source line and column', async () => {
+      const result = await sandboxRunner.execute(`#include <iostream>
+int main() {
+  this is not valid C++;
+}`, 'cpp');
+
+      expect(result.status).toBe('RTE');
+      expect(result.stderr).toMatch(/main\.cpp:\d+:\d+: error:/);
+    });
+
+    it('enforces the runtime timeout', async () => {
+      const result = await sandboxRunner.execute('int main() { for (;;) {} }', 'cpp', { timeoutMs: 200 });
+
+      expect(result.status).toBe('TLE');
+      expect(result.exitCode).toBe(124);
+    });
+
+    it('reports segmentation faults as runtime errors', async () => {
+      const result = await sandboxRunner.execute('int main() { int* p = nullptr; return *p; }', 'cpp');
+
+      expect(result.status).toBe('RTE');
+      expect(result.exitCode).not.toBe(0);
+    });
+
+    it('enforces the 128MB C++ runtime memory ceiling', async () => {
+      const result = await sandboxRunner.execute(`#include <vector>
+int main() { std::vector<char> memory(160 * 1024 * 1024); return memory[0]; }`, 'cpp');
+
+      expect(result.status).toBe('MLE');
+      expect(result.exitCode).toBe(137);
+    });
+  });
+
   describe('Valid Algorithm Execution', () => {
     it('executes valid JavaScript code and captures stdout', async () => {
       const code = `
