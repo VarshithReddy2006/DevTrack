@@ -47,14 +47,33 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
+      - name: Setup Node.js
+        if: steps.check-secrets.outputs.missing == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Deploy Preview to Vercel
         if: steps.check-secrets.outputs.missing == 'false'
         id: vercel-deploy
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: ./frontend
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          github-comment: true
+        working-directory: ./frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          PREVIEW_URL=$(npx --yes vercel@latest deploy --yes --token="$VERCEL_TOKEN")
+          echo "preview_url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+          echo "✅ Deployed preview: $PREVIEW_URL"
+
+      - name: Comment Preview URL on PR
+        if: steps.check-secrets.outputs.missing == 'false' && steps.vercel-deploy.outputs.preview_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIEW_URL: ${{ steps.vercel-deploy.outputs.preview_url }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "### ▲ Vercel Preview Deployed
+          **Preview URL:** $PREVIEW_URL
+          **Commit:** \`${{ github.event.pull_request.head.sha }}\`"
