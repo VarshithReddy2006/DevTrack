@@ -9,7 +9,13 @@ import {
   DsaSubmission,
   DsaProfile,
   Project,
+  ProjectTask,
   ResumeProfile,
+  ResumeExport,
+  ResumeEvidenceClaim,
+  ResumeSession,
+  ResumeVariant,
+  ResumeCredibility,
   RevisionCard,
   JobTarget,
   PublicProfile,
@@ -74,17 +80,84 @@ describe('GDPR Privacy: Data Export & Cascading Account Erasure', () => {
       submittedAt: new Date(),
     });
 
-    // Seed Project
-    await Project.create({
+    // Seed Project and ProjectTask
+    const project = await Project.create({
       userId: user._id,
       name: 'DevTrack Privacy Service',
       description: 'GDPR Article 17 and 20 compliance suite',
     });
 
-    // Seed Resume
-    await ResumeProfile.create({
+    await ProjectTask.create({
+      projectId: project._id,
+      title: 'Implement GDPR account erasure',
+      description: 'Cascade deletion of all user records',
+      status: 'done',
+      priority: 'high',
+      labels: ['gdpr', 'privacy'],
+    });
+
+    // Seed Resume Models
+    const resumeProfile = await ResumeProfile.create({
       userId: user._id,
       summary: 'Experienced full stack developer',
+    });
+
+    await ResumeExport.create({
+      userId: user._id,
+      resumeProfileId: resumeProfile._id,
+      exportType: 'pdf',
+      exportPath: '/exports/test.pdf',
+      checksum: 'sha256-test',
+      atsValidationState: 'passed',
+      exportVersion: '1.0',
+      templateVersion: 'modern',
+      metadata: { fileSize: 1024, pageCount: 1, generationDurationMs: 120, atsAnalysisId: null },
+    });
+
+    await ResumeEvidenceClaim.create({
+      userId: user._id,
+      resumeProfileId: resumeProfile._id,
+      subjectType: 'resume_claim',
+      subjectKey: 'claim-123',
+      source: 'user',
+      claimText: 'Led development of distributed storage engine',
+      variantId: null,
+      verificationStatus: 'verified',
+    });
+
+    const testSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    await ResumeSession.create({
+      sessionId: testSessionId,
+      userId: user._id,
+      stage: 'COMPLETED',
+      uploadMetadata: {
+        originalFilename: 'resume.pdf',
+        fileType: 'pdf',
+        fileSize: 1024,
+        mimeType: 'application/pdf',
+        uploadPath: '/uploads/resume.pdf',
+        uploadedAt: new Date(),
+      },
+      timestamps: {
+        uploadedAt: new Date(),
+        lastUpdated: new Date(),
+      },
+    });
+
+    await ResumeVariant.create({
+      userId: user._id,
+      resumeProfileId: resumeProfile._id,
+      variantId: 'variant-backend-v1',
+      roleType: 'Backend',
+    });
+
+    await ResumeCredibility.create({
+      sessionId: testSessionId,
+      overallCredibility: 90,
+      dsaCredibility: 85,
+      projectCredibility: 95,
+      consistencyScore: 92,
+      summary: 'High credibility verification profile',
     });
 
     // Seed Revision Card
@@ -175,6 +248,8 @@ describe('GDPR Privacy: Data Export & Cascading Account Erasure', () => {
       const projectsJsonStr = await zip.file('projects.json')!.async('string');
       const projectsData = JSON.parse(projectsJsonStr);
       expect(projectsData[0].name).toBe('DevTrack Privacy Service');
+      expect(projectsData[0].tasks).toHaveLength(1);
+      expect(projectsData[0].tasks[0].title).toBe('Implement GDPR account erasure');
     });
 
     it('stores and retrieves archive via expiring token', async () => {
@@ -218,7 +293,13 @@ describe('GDPR Privacy: Data Export & Cascading Account Erasure', () => {
       expect(result.deletedCounts.DsaSubmission).toBe(1);
       expect(result.deletedCounts.DsaProfile).toBe(1);
       expect(result.deletedCounts.Project).toBe(1);
+      expect(result.deletedCounts.ProjectTask).toBe(1);
       expect(result.deletedCounts.ResumeProfile).toBe(1);
+      expect(result.deletedCounts.ResumeExport).toBe(1);
+      expect(result.deletedCounts.ResumeEvidenceClaim).toBe(1);
+      expect(result.deletedCounts.ResumeSession).toBe(1);
+      expect(result.deletedCounts.ResumeVariant).toBe(1);
+      expect(result.deletedCounts.ResumeCredibility).toBe(1);
       expect(result.deletedCounts.RevisionCard).toBe(1);
       expect(result.deletedCounts.JobTarget).toBe(1);
       expect(result.deletedCounts.PublicProfile).toBe(1);
@@ -240,8 +321,26 @@ describe('GDPR Privacy: Data Export & Cascading Account Erasure', () => {
       const projectsAfter = await Project.find({ userId: testUserId });
       expect(projectsAfter).toHaveLength(0);
 
+      const tasksAfter = await ProjectTask.find({});
+      expect(tasksAfter).toHaveLength(0);
+
       const resumesAfter = await ResumeProfile.find({ userId: testUserId });
       expect(resumesAfter).toHaveLength(0);
+
+      const exportsAfter = await ResumeExport.find({ userId: testUserId });
+      expect(exportsAfter).toHaveLength(0);
+
+      const claimsAfter = await ResumeEvidenceClaim.find({ userId: testUserId });
+      expect(claimsAfter).toHaveLength(0);
+
+      const sessionsAfter = await ResumeSession.find({ userId: testUserId });
+      expect(sessionsAfter).toHaveLength(0);
+
+      const variantsAfter = await ResumeVariant.find({ userId: testUserId });
+      expect(variantsAfter).toHaveLength(0);
+
+      const credAfter = await ResumeCredibility.find({});
+      expect(credAfter).toHaveLength(0);
 
       const publicProfileAfter = await PublicProfile.findOne({ userId: testUserId });
       expect(publicProfileAfter).toBeNull();

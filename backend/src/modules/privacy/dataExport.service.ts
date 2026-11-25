@@ -181,6 +181,16 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
     DailyActivity?.find ? DailyActivity.find(userFilter).lean().catch(() => []) : Promise.resolve([]),
   ]);
 
+  const projectIds = (projects || []).map((p: any) => p._id);
+  const projectTasks = projectIds.length > 0 && ProjectTask?.find
+    ? await ProjectTask.find({ projectId: { $in: projectIds } }).lean().catch(() => [])
+    : [];
+
+  const projectsWithTasks = (projects || []).map((p: any) => ({
+    ...p,
+    tasks: projectTasks.filter((t: any) => String(t.projectId) === String(p._id)),
+  }));
+
   const sanitizedUser = userDoc
     ? {
         id: userDoc._id,
@@ -232,7 +242,7 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
     },
     {
       name: 'projects.json',
-      content: JSON.stringify(projects, null, 2),
+      content: JSON.stringify(projectsWithTasks, null, 2),
     },
     {
       name: 'resume.json',

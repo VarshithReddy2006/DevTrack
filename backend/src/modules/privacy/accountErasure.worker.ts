@@ -12,6 +12,11 @@ import {
   ResumeProfile,
   ResumeVersion,
   ResumeBulletRevision,
+  ResumeExport,
+  ResumeEvidenceClaim,
+  ResumeSession,
+  ResumeVariant,
+  ResumeCredibility,
   RevisionCard,
   InterviewReport,
   JobTarget,
@@ -76,6 +81,14 @@ export async function executeAccountErasure(
   const cascadeOperations = async (session: ClientSession | null) => {
     const sessionOpts = session ? { session } : {};
 
+    // Resolve user's projects first so ProjectTask can be cascade deleted by projectId (ProjectTask schema has no userId)
+    const userProjects = await Project.find(userFilter, { _id: 1 }, sessionOpts).lean();
+    const projectIds = userProjects.map((p) => p._id);
+
+    // Resolve user's resume sessions to cascade delete ResumeCredibility by sessionId
+    const userSessions = await ResumeSession.find(userFilter, { sessionId: 1 }, sessionOpts).lean();
+    const sessionIds = userSessions.map((s: any) => s.sessionId).filter(Boolean);
+
     // Cascade deletions across all related user collections
     const modelsToCascade: Array<[string, any, any]> = [
       ['User', User, { _id: userId }],
@@ -85,10 +98,15 @@ export async function executeAccountErasure(
       ['DsaProfile', DsaProfile, userFilter],
       ['DsaTopicProgress', DsaTopicProgress, userFilter],
       ['Project', Project, userFilter],
-      ['ProjectTask', ProjectTask, userFilter],
+      ['ProjectTask', ProjectTask, { projectId: { $in: projectIds } }],
       ['ResumeProfile', ResumeProfile, userFilter],
       ['ResumeVersion', ResumeVersion, userFilter],
       ['ResumeBulletRevision', ResumeBulletRevision, userFilter],
+      ['ResumeExport', ResumeExport, userFilter],
+      ['ResumeEvidenceClaim', ResumeEvidenceClaim, userFilter],
+      ['ResumeSession', ResumeSession, userFilter],
+      ['ResumeVariant', ResumeVariant, userFilter],
+      ['ResumeCredibility', ResumeCredibility, { sessionId: { $in: sessionIds } }],
       ['RevisionCard', RevisionCard, userFilter],
       ['InterviewReport', InterviewReport, userFilter],
       ['JobTarget', JobTarget, userFilter],
