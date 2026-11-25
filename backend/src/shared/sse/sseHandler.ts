@@ -112,7 +112,11 @@ async function sendFullState(
       userId,
       payload: { error: 'Unable to load initial runtime state' },
     };
-    controller.enqueue(encoder.encode(`id: ${errorEvent.id}\ndata: ${JSON.stringify(errorEvent)}\n\n`));
+    try {
+      controller.enqueue(encoder.encode(`id: ${errorEvent.id}\ndata: ${JSON.stringify(errorEvent)}\n\n`));
+    } catch {
+      // Stream already closed before error event could be sent
+    }
   }
 }
 
@@ -207,13 +211,17 @@ export function createSseStream(
       // The event bus writes straight to client.controller. While the initial state or replay is
       // being read, this controller holds writes back so live events are delivered afterward.
       let replaying = true;
+      let closeRequested = false;
       const heldBack: Uint8Array[] = [];
       const gatedController = {
         enqueue(chunk: Uint8Array) {
           if (replaying) heldBack.push(chunk);
           else controller.enqueue(chunk);
         },
-        close: () => controller.close(),
+        close: () => {
+          if (replaying) closeRequested = true;
+          else controller.close();
+        },
         error: (reason?: unknown) => controller.error(reason),
         get desiredSize() {
           return controller.desiredSize;
@@ -276,6 +284,13 @@ export function createSseStream(
         }
       }
       heldBack.length = 0;
+      if (closeRequested) {
+        try {
+          controller.close();
+        } catch {
+          // Stream already closed
+        }
+      }
     },
     cancel() {
       eventBus.unregister(clientId);
