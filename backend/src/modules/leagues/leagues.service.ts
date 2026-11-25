@@ -5,14 +5,15 @@
 // `XpTransaction` ledger.
 
 import { Types } from 'mongoose';
-import { LeagueStanding, UserSettings, User, XpTransaction } from '../../db/models/index.js';
+import { LeagueCohort, LeagueStanding, UserSettings, User, XpTransaction } from '../../db/models/index.js';
 import type { ILeagueStanding, LeagueDivision } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
-import { pickCohortForLateJoiner } from './cohorts.js';
+import { cohortIdFor } from './cohorts.js';
 import {
   DEFAULT_DIVISION,
   DEMOTION_PERCENT,
   PROMOTION_PERCENT,
+  TARGET_COHORT_SIZE,
   cohortKey,
   dedupeSetKey,
 } from './leagues.constants.js';
@@ -72,8 +73,146 @@ export function zoneSlots(size: number): { promotion: number; demotion: number }
   };
 }
 
+const MAX_COHORT_RESERVATION_ATTEMPTS = 256;
+const bootstrapInFlight = new Map<string, Promise<void>>();
+const joinInFlight = new Map<string, Promise<StandingRow>>();
+const reservationQueue = new Map<string, Promise<void>>();
+
+async function withDivisionReservationQueue<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const previous = reservationQueue.get(key) ?? Promise.resolve();
+  const next = previous.then(task);
+  const tail = next.then(() => undefined, () => undefined);
+  reservationQueue.set(key, tail);
+  try {
+    return await next;
+  } finally {
+    if (reservationQueue.get(key) === tail) {
+      reservationQueue.delete(key);
+    }
+  }
+}
+
 function isDuplicateKey(error: unknown): boolean {
-  return (error as { code?: number })?.code === 11000;
+  const err = error as { code?: number; writeErrors?: Array<{ code?: number }> };
+  if (err?.code === 11000) return true;
+  return Array.isArray(err?.writeErrors) && err.writeErrors.length > 0 && err.writeErrors.every(e => e.code === 11000);
+}
+
+function parseCohortIndex(cohortId: string): number {
+  const parsed = Number(cohortId.slice(1));
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+/**
+ * Seeds `LeagueCohort` metadata from existing active `LeagueStanding` rows when a
+ * week+division has no cohort metadata yet (e.g., after rollover or pre-existing rows).
+ * Uses `$setOnInsert` so concurrent callers never overwrite incremented counters.
+ */
+async function ensureDivisionCohortsBootstrapped(weekKey: string, division: LeagueDivision): Promise<void> {
+  await LeagueCohort.init();
+  if (await LeagueCohort.exists({ weekKey, division })) return;
+
+  const key = `${weekKey}:${division}`;
+  const inFlight = bootstrapInFlight.get(key);
+  if (inFlight) {
+    await inFlight;
+    return;
+  }
+
+  const run = (async () => {
+    if (await LeagueCohort.exists({ weekKey, division })) return;
+    const counts = await LeagueStanding.aggregate<{ _id: string; n: number }>([
+      { $match: { weekKey, division, status: 'active' } },
+      { $group: { _id: '$cohortId', n: { $sum: 1 } } },
+    ]);
+    if (counts.length === 0) return;
+
+    const ops = counts
+      .map(c => ({
+        cohortId: c._id,
+        cohortIndex: parseCohortIndex(c._id) || 1,
+        memberCount: c.n,
+      }))
+      .sort((a, b) => b.cohortIndex - a.cohortIndex)
+      .map(c => ({
+        updateOne: {
+          filter: { weekKey, division, cohortId: c.cohortId },
+          update: {
+            $setOnInsert: {
+              weekKey,
+              division,
+              cohortId: c.cohortId,
+              cohortIndex: c.cohortIndex,
+              memberCount: c.memberCount,
+            },
+          },
+          upsert: true,
+        },
+      }));
+
+    try {
+      await LeagueCohort.bulkWrite(ops, { ordered: false });
+    } catch (error) {
+      if (!isDuplicateKey(error)) throw error;
+    }
+  })();
+
+  bootstrapInFlight.set(key, run);
+  try {
+    await run;
+  } finally {
+    bootstrapInFlight.delete(key);
+  }
+}
+
+/**
+ * Atomically reserves one slot in the emptiest cohort below `TARGET_COHORT_SIZE`,
+ * or opens the next cohort (`c{highestIndex + 1}`) if every existing cohort is full.
+ */
+async function reserveCohortSlot(weekKey: string, division: LeagueDivision): Promise<string> {
+  return withDivisionReservationQueue(`${weekKey}:${division}`, async () => {
+    await ensureDivisionCohortsBootstrapped(weekKey, division);
+
+    for (let attempt = 0; attempt < MAX_COHORT_RESERVATION_ATTEMPTS; attempt++) {
+      const reserved = await LeagueCohort.findOneAndUpdate(
+        { weekKey, division, memberCount: { $lt: TARGET_COHORT_SIZE } },
+        { $inc: { memberCount: 1 } },
+        { sort: { memberCount: 1, cohortIndex: 1 }, returnDocument: 'after' },
+      ).lean();
+
+      if (reserved) return reserved.cohortId;
+
+      const latest = await LeagueCohort.findOne({ weekKey, division })
+        .sort({ cohortIndex: -1 })
+        .select('cohortIndex')
+        .lean();
+      const nextIndex = (latest?.cohortIndex ?? 0) + 1;
+      const nextCohortId = cohortIdFor(nextIndex - 1);
+
+      try {
+        await LeagueCohort.create({
+          weekKey,
+          division,
+          cohortId: nextCohortId,
+          cohortIndex: nextIndex,
+          memberCount: 1,
+        });
+        return nextCohortId;
+      } catch (error) {
+        if (isDuplicateKey(error)) continue;
+        throw error;
+      }
+    }
+
+    throw new Error(`Unable to reserve league cohort slot for ${weekKey}:${division} after ${MAX_COHORT_RESERVATION_ATTEMPTS} attempts`);
+  });
+}
+
+async function releaseCohortSlot(weekKey: string, division: LeagueDivision, cohortId: string): Promise<void> {
+  await LeagueCohort.updateOne(
+    { weekKey, division, cohortId, memberCount: { $gt: 0 } },
+    { $inc: { memberCount: -1 } },
+  );
 }
 
 // ─── Membership ─────────────────────────────────────────────────────────────
@@ -103,25 +242,42 @@ export async function joinCurrentWeek(userId: string, now: Date, store: LeagueSc
   const existing = await LeagueStanding.findOne({ weekKey, userId: userObjId }).lean<StandingRow>();
   if (existing) return existing;
 
-  const division = await divisionForNextWeek(userObjId);
-  const counts = await LeagueStanding.aggregate<{ _id: string; n: number }>([
-    { $match: { weekKey, division, status: 'active' } },
-    { $group: { _id: '$cohortId', n: { $sum: 1 } } },
-  ]);
-  const cohortId = pickCohortForLateJoiner(new Map(counts.map(c => [c._id, c.n])));
+  const flightKey = `${weekKey}:${userId}`;
+  const inFlight = joinInFlight.get(flightKey);
+  if (inFlight) return inFlight;
 
-  let row: StandingRow;
+  const run = (async (): Promise<StandingRow> => {
+    const doubleChecked = await LeagueStanding.findOne({ weekKey, userId: userObjId }).lean<StandingRow>();
+    if (doubleChecked) return doubleChecked;
+
+    const division = await divisionForNextWeek(userObjId);
+    const cohortId = await reserveCohortSlot(weekKey, division);
+
+    let row: StandingRow;
+    try {
+      const created = await LeagueStanding.create({
+        weekKey, userId: userObjId, division, cohortId, status: 'active', joinedAt: now,
+      });
+      row = created.toObject() as StandingRow;
+    } catch (error) {
+      await releaseCohortSlot(weekKey, division, cohortId).catch(releaseErr => {
+        logger.warn('[leagues] Failed to release reserved cohort slot', {
+          weekKey, division, cohortId, error: String(releaseErr),
+        });
+      });
+      if (!isDuplicateKey(error)) throw error;
+      return (await LeagueStanding.findOne({ weekKey, userId: userObjId }).lean<StandingRow>())!;
+    }
+    await store.seed(cohortKey(weekKey, row.division, row.cohortId), [userId]);
+    return row;
+  })();
+
+  joinInFlight.set(flightKey, run);
   try {
-    const created = await LeagueStanding.create({
-      weekKey, userId: userObjId, division, cohortId, status: 'active', joinedAt: now,
-    });
-    row = created.toObject() as StandingRow;
-  } catch (error) {
-    if (!isDuplicateKey(error)) throw error;
-    return (await LeagueStanding.findOne({ weekKey, userId: userObjId }).lean<StandingRow>())!;
+    return await run;
+  } finally {
+    joinInFlight.delete(flightKey);
   }
-  await store.seed(cohortKey(weekKey, row.division, row.cohortId), [userId]);
-  return row;
 }
 
 /** Opt in or out. Opting out removes the user from the live week; finished weeks stay as history. */
@@ -139,7 +295,10 @@ export async function setParticipation(
   } else {
     const weekKey = weekKeyFor(now);
     const row = await LeagueStanding.findOneAndDelete({ weekKey, userId: userObjId, status: 'active' }).lean<StandingRow>();
-    if (row) await store.remove(cohortKey(weekKey, row.division, row.cohortId), userId);
+    if (row) {
+      await releaseCohortSlot(weekKey, row.division, row.cohortId);
+      await store.remove(cohortKey(weekKey, row.division, row.cohortId), userId);
+    }
   }
   return { participating: participate };
 }
