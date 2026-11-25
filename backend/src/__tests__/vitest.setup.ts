@@ -5,23 +5,27 @@ process.env.MONGOMS_MD5_CHECK = '0';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
-let mongoServer: MongoMemoryReplSet;
+let localMongoServer: MongoMemoryReplSet | null = null;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryReplSet.create({
-    replSet: { count: 1 },
-    binary: {
-      version: '7.0.14',
-    },
-  });
-  const mongoUri = mongoServer.getUri();
+  let mongoUri = process.env.MONGO_TEST_URI;
+  if (!mongoUri) {
+    localMongoServer = await MongoMemoryReplSet.create({
+      replSet: { count: 1 },
+      binary: {
+        version: '7.0.14',
+      },
+    });
+    mongoUri = localMongoServer.getUri();
+  }
   await mongoose.connect(mongoUri);
 });
 
 afterAll(async () => {
   await mongoose.disconnect();
-  if (mongoServer) {
-    await mongoServer.stop();
+  if (localMongoServer) {
+    await localMongoServer.stop();
+    localMongoServer = null;
   }
 });
 
