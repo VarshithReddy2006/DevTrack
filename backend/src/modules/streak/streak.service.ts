@@ -1,7 +1,7 @@
 // src/modules/streak/streak.service.ts — Streak Engine V2
 // Timezone-safe streak computation with anti-cheat, deduplication, and freeze support.
 
-import { Types } from 'mongoose';
+import { Types, type ClientSession } from 'mongoose';
 import { User, UserStreakLog, UserAnalytics, DailyActivity, type StreakType, type IUserStreakLog } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/sse/index.js';
@@ -11,7 +11,7 @@ import { unifiedRuntimeStateService } from '../runtime-state/unifiedRuntimeState
 
 const STREAK_FREEZE_DAYS = 1; // Freeze grants 1 day of protection
 const MAX_VALID_AGE_DAYS = 2; // Reject activity older than 2 days (anti-cheat)
-const ALL_STREAK_TYPES: StreakType[] = ['dsa', 'github', 'focus', 'unified'];
+const ALL_STREAK_TYPES: StreakType[] = ['dsa', 'github', 'focus', 'revision', 'unified'];
 
 export interface RecordActivityPayload {
   userId: string;
@@ -46,11 +46,15 @@ export interface StreakDayItem {
 
 // ─── Core streak recorder ─────────────────────────────────────────────────────
 
-export async function recordActivity(payload: RecordActivityPayload, options?: { trustedCompletion?: boolean }): Promise<void> {
+export async function recordActivity(
+  payload: RecordActivityPayload,
+  options?: { trustedCompletion?: boolean; session?: ClientSession }
+): Promise<void> {
   const { userId, streakType, source, activityDate = new Date(), metadata = {} } = payload;
+  const session = options?.session;
   const timezone = payload.timezone && payload.timezone !== 'UTC'
     ? payload.timezone
-    : (await getUserTimezone(userId)) || 'UTC';
+    : (await getUserTimezone(userId, session)) || 'UTC';
   const userObjId = new Types.ObjectId(userId);
 
   // ── Step 1: Normalize date to user's timezone midnight ───────────────────
@@ -112,6 +116,7 @@ export async function recordActivity(payload: RecordActivityPayload, options?: {
       await UserStreakLog.findOneAndUpdate(filter, updatePipeline, {
         upsert: true,
         new: true,
+        session,
       });
       break;
     } catch (err: any) {
@@ -124,7 +129,7 @@ export async function recordActivity(payload: RecordActivityPayload, options?: {
   }
 
   // ── Step 4: Recalculate streak ────────────────────────────────────────────
-  await recalculateStreak(userId, streakType);
+  await recalculateStreak(userId, streakType, { session });
 }
 
 // ─── Recalculation ─────────────────────────────────────────────────────────
@@ -132,10 +137,11 @@ export async function recordActivity(payload: RecordActivityPayload, options?: {
 export async function recalculateStreak(
   userId: string,
   streakType: StreakType,
-  options?: { skipCacheInvalidation?: boolean }
+  options?: { skipCacheInvalidation?: boolean; session?: ClientSession }
 ): Promise<StreakStatus> {
   const userObjId = new Types.ObjectId(userId);
-  const timezone = await getUserTimezone(userId);
+  const session = options?.session;
+  const timezone = await getUserTimezone(userId, session);
 
   // Get all logs for this user and streak type, sorted by date descending.
   // Nothing writes 'unified' logs, so 'unified' is the union of every type's days.
@@ -145,7 +151,8 @@ export async function recalculateStreak(
     streakType: isUnified ? { $in: ALL_STREAK_TYPES } : streakType,
   })
     .sort({ date: -1 })
-    .limit(365 * (isUnified ? ALL_STREAK_TYPES.length : 1)); // Cap at 1 year of days for performance
+    .limit(365 * (isUnified ? ALL_STREAK_TYPES.length : 1))
+    .session(session ?? null); // Cap at 1 year of days for performance
 
   if (logs.length === 0) {
     const dailyActivities = await DailyActivity.find({
@@ -153,7 +160,8 @@ export async function recalculateStreak(
       count: { $gt: 0 },
     })
       .sort({ date: -1 })
-      .limit(365);
+      .limit(365)
+      .session(session ?? null);
 
     if (dailyActivities.length > 0) {
       logs = dailyActivities.map((da) => ({
@@ -166,8 +174,8 @@ export async function recalculateStreak(
   if (logs.length === 0) {
     // currentStreak is one field per user. Only reset it when the user has no
     // activity at all; a single type without logs must not zero the others' streak.
-    if (isUnified) return resetStreak(userId, streakType);
-    const existing = await UserAnalytics.findOne({ userId: userObjId }).lean();
+    if (isUnified) return resetStreak(userId, streakType, session);
+    const existing = await UserAnalytics.findOne({ userId: userObjId }).session(session ?? null).lean();
     return {
       currentStreak: 0,
       bestStreak: existing?.bestStreak ?? 0,
@@ -179,7 +187,7 @@ export async function recalculateStreak(
   }
 
   // Fetch analytics for freeze data before calculating streak
-  const analytics = await UserAnalytics.findOne({ userId: userObjId });
+  const analytics = await UserAnalytics.findOne({ userId: userObjId }).session(session ?? null);
 
   // Calculate current streak (freeze-aware)
   const { currentStreak, streakDays, freezeConsumed } = calculateCurrentStreak(
@@ -243,7 +251,7 @@ export async function recalculateStreak(
   await UserAnalytics.findOneAndUpdate(
     { userId: userObjId },
     { $set: update },
-    { upsert: true, new: true }
+    { upsert: true, new: true, session }
   );
 
   // Invalidate before events can trigger dashboard reloads.
@@ -402,7 +410,7 @@ function calculateCurrentStreak(
 
 // ─── Reset streak ────────────────────────────────────────────────────────────
 
-async function resetStreak(userId: string, streakType: StreakType): Promise<StreakStatus> {
+async function resetStreak(userId: string, streakType: StreakType, session?: ClientSession): Promise<StreakStatus> {
   await UserAnalytics.findOneAndUpdate(
     { userId: new Types.ObjectId(userId) },
     {
@@ -413,7 +421,7 @@ async function resetStreak(userId: string, streakType: StreakType): Promise<Stre
         updatedAt: new Date(),
       },
     },
-    { upsert: true }
+    { upsert: true, session }
   );
 
   return {
@@ -521,9 +529,9 @@ function normalizeToUserDate(date: Date, timezone: string): Date {
   }
 }
 
-async function getUserTimezone(userId: string): Promise<string> {
+async function getUserTimezone(userId: string, session?: ClientSession): Promise<string> {
   try {
-    const user = await User.findById(userId).select('timezone').lean();
+    const user = await User.findById(userId).select('timezone').session(session ?? null).lean();
     return (user as Record<string, unknown>)?.timezone as string || 'UTC';
   } catch (err) {
     logger.warn('[streak] Failed to fetch user timezone', { userId, error: err instanceof Error ? err.message : String(err) });

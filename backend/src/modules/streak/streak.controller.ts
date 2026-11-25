@@ -4,7 +4,7 @@ import type { StreakType } from '../../db/models/index.js';
 import { ApiResponse } from '../../shared/response.js';
 import { withAuth } from '../../shared/controllerUtils.js';
 
-const VALID_STREAK_TYPES = ['dsa', 'github', 'unified', 'focus'] as const;
+const VALID_STREAK_TYPES = ['dsa', 'github', 'unified', 'focus', 'revision'] as const;
 
 export const streakController = {
   getStreak: withAuth('[streak]', 'get streak status', async (userId, _req, res) => {
@@ -16,7 +16,7 @@ export const streakController = {
     const { type } = req.params;
 
     if (!VALID_STREAK_TYPES.includes(type as StreakType)) {
-      ApiResponse.badRequest(res, 'Invalid streak type. Use: dsa, github, unified, or focus');
+      ApiResponse.badRequest(res, 'Invalid streak type. Use: dsa, github, unified, focus, or revision');
       return;
     }
 
