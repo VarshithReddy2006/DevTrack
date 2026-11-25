@@ -17,7 +17,19 @@ import { DsaProblem } from '../../../db/models/dsaProblem.model.js';
 import { DsaSubmission } from '../../../db/models/dsaSubmission.model.js';
 import { FocusSession } from '../../../db/models/focusSession.model.js';
 import { RevisionCard } from '../../../db/models/revisionCard.model.js';
-import { generateUserQuests, listUserQuests, questDefinitions, questPeriods, runQuestGenerationSweep } from '../../../modules/quests/questEngine.service.js';
+import {
+  QUEST_SWEEP_BATCH_SIZE,
+  QUEST_SWEEP_CHECKPOINT_PREFIX,
+  QUEST_SWEEP_CHECKPOINT_TTL_SECONDS,
+  QUEST_SWEEP_CONCURRENCY,
+  executeQuestGenerationSweep,
+  generateUserQuests,
+  listUserQuests,
+  questDefinitions,
+  questPeriods,
+  runQuestGenerationSweep,
+  type SweepRedisClient,
+} from '../../../modules/quests/questEngine.service.js';
 import { registerQuestConsumers, trackQuestEvent, questNotificationConsumer } from '../../../modules/quests/questEvents.consumer.js';
 import { processQuestReward } from '../../../modules/xp/processor.js';
 import { RevisionService } from '../../../modules/revision/revision.service.js';
@@ -158,6 +170,251 @@ describe('quest generation and period rules', () => {
     await generateUserQuests(userId, now);
     expect(await runQuestGenerationSweep(now)).toEqual({ users: 1 });
     expect(await UserQuestProgress.countDocuments()).toBe(5);
+  });
+
+  it('paginates with keyset cursors, bounds concurrency, and clears the checkpoint on completion', async () => {
+    const extraUsers = await Promise.all(
+      Array.from({ length: 6 }, (_, idx) =>
+        User.create({
+          _id: new Types.ObjectId(),
+          clerkId: `sweep-user-${idx}`,
+          email: `sweep-${idx}@example.test`,
+          username: `sweep-user-${idx}`,
+          displayName: `Sweep User ${idx}`,
+        })
+      )
+    );
+    const allIds = [userId, ...extraUsers.map(u => u._id.toString())].sort();
+
+    const store = new Map<string, { value: string; ttlSeconds: number }>();
+    const setCalls: Array<{ key: string; value: string; ttlSeconds: number }> = [];
+    const redisClient: SweepRedisClient = {
+      status: 'ready',
+      get: vi.fn(async (key: string) => store.get(key)?.value ?? null) as unknown as SweepRedisClient['get'],
+      set: vi.fn(async (key: string, value: string, _mode?: unknown, ttl?: unknown) => {
+        const ttlSeconds = Number(ttl ?? 0);
+        store.set(key, { value, ttlSeconds });
+        setCalls.push({ key, value, ttlSeconds });
+        return 'OK';
+      }) as unknown as SweepRedisClient['set'],
+      del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)) as unknown as SweepRedisClient['del'],
+    };
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const processedOrder: string[] = [];
+
+    const report = await executeQuestGenerationSweep(now, {
+      batchSize: 3,
+      concurrency: 2,
+      redisClient,
+      processUser: async (uid, at) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        try {
+          processedOrder.push(uid);
+          return await generateUserQuests(uid, at);
+        } finally {
+          inFlight--;
+        }
+      },
+    });
+
+    expect(QUEST_SWEEP_BATCH_SIZE).toBe(250);
+    expect(QUEST_SWEEP_CONCURRENCY).toBe(10);
+    expect(report).toMatchObject({
+      users: 7,
+      failed: 0,
+      batches: 3,
+      resumedFromUserId: null,
+      completed: true,
+    });
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect([...processedOrder].sort()).toEqual(allIds);
+    expect(await UserQuestProgress.countDocuments()).toBe(35);
+
+    const expectedKey = `${QUEST_SWEEP_CHECKPOINT_PREFIX}:${questPeriods(now).daily.periodKey}`;
+    expect(setCalls).toHaveLength(3);
+    expect(setCalls.every(call => call.key === expectedKey && call.ttlSeconds === QUEST_SWEEP_CHECKPOINT_TTL_SECONDS)).toBe(true);
+    expect(JSON.parse(setCalls[0].value).lastUserId).toBe(allIds[2]);
+    expect(JSON.parse(setCalls[1].value).lastUserId).toBe(allIds[5]);
+    expect(JSON.parse(setCalls[2].value).lastUserId).toBe(allIds[6]);
+    expect(store.has(expectedKey)).toBe(false);
+  });
+
+  it('resumes from the last Redis checkpoint after a batch failure without reprocessing earlier batches', async () => {
+    const extraUsers = await Promise.all(
+      Array.from({ length: 5 }, (_, idx) =>
+        User.create({
+          _id: new Types.ObjectId(),
+          clerkId: `resume-user-${idx}`,
+          email: `resume-${idx}@example.test`,
+          username: `resume-user-${idx}`,
+          displayName: `Resume User ${idx}`,
+        })
+      )
+    );
+    const allIds = [userId, ...extraUsers.map(u => u._id.toString())].sort();
+
+    const store = new Map<string, string>();
+    const redisClient: SweepRedisClient = {
+      status: 'ready',
+      get: vi.fn(async (key: string) => store.get(key) ?? null) as unknown as SweepRedisClient['get'],
+      set: vi.fn(async (key: string, value: string) => {
+        store.set(key, value);
+        return 'OK';
+      }) as unknown as SweepRedisClient['set'],
+      del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)) as unknown as SweepRedisClient['del'],
+    };
+
+    const originalFind = User.find.bind(User);
+    let findCalls = 0;
+    const findSpy = vi.spyOn(User, 'find').mockImplementation(((...args: unknown[]) => {
+      findCalls++;
+      if (findCalls === 2) {
+        return {
+          sort: () => ({
+            limit: () => ({
+              select: () => ({
+                lean: async () => {
+                  throw new Error('transient Mongo cursor timeout');
+                },
+              }),
+            }),
+          }),
+        } as never;
+      }
+      return originalFind(...(args as Parameters<typeof User.find>));
+    }) as typeof User.find);
+
+    const firstAttemptUsers: string[] = [];
+    await expect(
+      executeQuestGenerationSweep(now, {
+        batchSize: 2,
+        concurrency: 2,
+        redisClient,
+        processUser: async (uid, at) => {
+          firstAttemptUsers.push(uid);
+          return generateUserQuests(uid, at);
+        },
+      })
+    ).rejects.toThrow('transient Mongo cursor timeout');
+
+    findSpy.mockRestore();
+    expect(firstAttemptUsers).toEqual(allIds.slice(0, 2));
+
+    const expectedKey = `${QUEST_SWEEP_CHECKPOINT_PREFIX}:${questPeriods(now).daily.periodKey}`;
+    expect(JSON.parse(store.get(expectedKey)!).lastUserId).toBe(allIds[1]);
+
+    const resumedUsers: string[] = [];
+    const resumedReport = await executeQuestGenerationSweep(now, {
+      batchSize: 2,
+      concurrency: 2,
+      redisClient,
+      processUser: async (uid, at) => {
+        resumedUsers.push(uid);
+        return generateUserQuests(uid, at);
+      },
+    });
+
+    expect(resumedReport).toMatchObject({
+      users: 4,
+      failed: 0,
+      batches: 2,
+      resumedFromUserId: allIds[1],
+      completed: true,
+    });
+    expect(resumedUsers).toEqual(allIds.slice(2));
+    expect(store.has(expectedKey)).toBe(false);
+    expect(await UserQuestProgress.countDocuments()).toBe(30);
+  });
+
+  it('isolates per-user failures so remaining users in the batch and later batches still succeed', async () => {
+    const extraUsers = await Promise.all(
+      Array.from({ length: 4 }, (_, idx) =>
+        User.create({
+          _id: new Types.ObjectId(),
+          clerkId: `iso-user-${idx}`,
+          email: `iso-${idx}@example.test`,
+          username: `iso-user-${idx}`,
+          displayName: `Iso User ${idx}`,
+        })
+      )
+    );
+    const failingUserId = extraUsers[1]._id.toString();
+
+    // Real 503 pending-rollover failure for one user must not block the other 4 users.
+    const sunday = new Date('2026-11-22T00:00:00Z');
+    await LeagueStanding.create({
+      userId: failingUserId,
+      weekKey: '2026-11-15',
+      division: 'silver',
+      status: 'active',
+      cohortId: '1',
+      joinedAt: sunday,
+    });
+
+    const report = await executeQuestGenerationSweep(sunday, {
+      batchSize: 3,
+      concurrency: 3,
+    });
+
+    expect(report).toMatchObject({
+      users: 4,
+      failed: 1,
+      batches: 2,
+      completed: true,
+    });
+    expect(await UserQuestProgress.countDocuments({ userId: failingUserId })).toBe(0);
+    expect(await UserQuestProgress.countDocuments()).toBe(20);
+  });
+
+  it('ignores corrupted or prior-period checkpoints and preserves checkpoint when lock is lost', async () => {
+    const extraUser = await User.create({
+      _id: new Types.ObjectId(),
+      clerkId: 'lock-loss-user',
+      email: 'lock-loss@example.test',
+      username: 'lock-loss-user',
+      displayName: 'Lock Loss User',
+    });
+    const allIds = [userId, extraUser._id.toString()].sort();
+    const expectedKey = `${QUEST_SWEEP_CHECKPOINT_PREFIX}:${questPeriods(now).daily.periodKey}`;
+
+    const store = new Map<string, string>([
+      [expectedKey, JSON.stringify({ runId: 'old', periodKey: 'daily:2020-01-01', lastUserId: allIds[0] })],
+    ]);
+    const redisClient: SweepRedisClient = {
+      status: 'ready',
+      get: vi.fn(async (key: string) => store.get(key) ?? null) as unknown as SweepRedisClient['get'],
+      set: vi.fn(async (key: string, value: string) => {
+        store.set(key, value);
+        return 'OK';
+      }) as unknown as SweepRedisClient['set'],
+      del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)) as unknown as SweepRedisClient['del'],
+    };
+
+    let batchesDone = 0;
+    const interrupted = await executeQuestGenerationSweep(now, {
+      batchSize: 1,
+      concurrency: 1,
+      redisClient,
+      shouldContinue: () => batchesDone < 1,
+      processUser: async (uid, at) => {
+        batchesDone++;
+        return generateUserQuests(uid, at);
+      },
+    });
+
+    expect(interrupted).toMatchObject({
+      users: 1,
+      failed: 0,
+      batches: 1,
+      resumedFromUserId: null,
+      completed: false,
+    });
+    expect(store.has(expectedKey)).toBe(true);
+    expect(JSON.parse(store.get(expectedKey)!).lastUserId).toBe(allIds[0]);
   });
   it('registers UTC daily, Sunday weekly, and retryable startup catch-up jobs', async () => {
     const add = vi.fn().mockResolvedValue({});
