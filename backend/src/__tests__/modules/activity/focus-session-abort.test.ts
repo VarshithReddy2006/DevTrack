@@ -4,6 +4,7 @@ import { FocusSession, UnifiedRuntimeState } from '../../../db/models/index.js';
 import { FocusEngine } from '../../../modules/activity/focusEngine.service.js';
 import { unifiedRuntimeStateService } from '../../../modules/runtime-state/unifiedRuntimeState.service.js';
 import { cacheManager } from '../../../shared/cache/cacheManager.js';
+import { eventBus } from '../../../shared/sse/index.js';
 
 vi.mock('../../../shared/cache/cacheManager.js', () => ({
   cacheManager: {
@@ -180,5 +181,61 @@ describe('FocusEngine.abortSession and UnifiedRuntimeState reconciliation', () =
     expect(abortedSession!.lastResumedAt).toBeNull();
 
     expect(cacheManager.invalidateDashboard).toHaveBeenCalledWith(cancelUserId);
+  });
+
+  it('abandonSession reconciles UnifiedRuntimeState, closes unclosed pauses, invalidates cache, and emits SSE patch', async () => {
+    const startedAt = new Date(Date.now() - 20 * 60 * 1000);
+    const pausedAt = new Date(Date.now() - 5 * 60 * 1000);
+    const session = await FocusSession.create({
+      userId: new Types.ObjectId(userId),
+      mode: 'pomodoro',
+      status: 'paused',
+      isOpen: true,
+      startedAt,
+      lastResumedAt: null,
+      lastHeartbeatAt: pausedAt,
+      plannedDurationMinutes: 25,
+      pauses: [{ startedAt: pausedAt, endedAt: null }],
+    });
+
+    await UnifiedRuntimeState.create({
+      userId: new Types.ObjectId(userId),
+      sessionContext: {
+        isActive: true,
+        sessionId: session._id.toString(),
+        status: 'paused',
+        startedAt,
+        lastResumedAt: null,
+        duration: 25,
+        mode: 'pomodoro',
+      },
+    });
+
+    const abandoned = await engine.abandonSession(session._id.toString(), userId);
+    expect(abandoned).not.toBeNull();
+    expect(abandoned!.status).toBe('abandoned');
+    expect(abandoned!.isOpen).toBe(false);
+    expect(abandoned!.pauses).toHaveLength(1);
+    expect(abandoned!.pauses[0].endedAt).toBeInstanceOf(Date);
+    expect(abandoned!.activeDurationMs).toBeGreaterThan(0);
+    expect(abandoned!.actualDurationMinutes).toBeGreaterThan(0);
+
+    const runtimeState = await UnifiedRuntimeState.findOne({ userId: new Types.ObjectId(userId) });
+    expect(runtimeState!.sessionContext).toMatchObject({
+      isActive: false,
+      status: 'abandoned',
+      lastResumedAt: null,
+    });
+
+    expect(cacheManager.invalidateDashboard).toHaveBeenCalledWith(userId);
+    expect(eventBus.emitRuntimeStatePatch).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        sessionContext: expect.objectContaining({
+          isActive: false,
+          status: 'abandoned',
+        }),
+      }),
+    );
   });
 });
