@@ -3,7 +3,7 @@
 
 import mongoose, { Schema, type Document } from 'mongoose';
 
-export type StreakType = 'dsa' | 'github' | 'unified' | 'focus';
+export type StreakType = 'dsa' | 'github' | 'unified' | 'focus' | 'revision';
 
 export interface IUserStreakLog extends Document {
   userId: Schema.Types.ObjectId;
@@ -25,7 +25,7 @@ const userStreakLogSchema = new Schema<IUserStreakLog>(
     streakType: {
       type: String,
       required: true,
-      enum: ['dsa', 'github', 'unified', 'focus'],
+      enum: ['dsa', 'github', 'unified', 'focus', 'revision'],
     },
     activityCount: { type: Number, required: true, min: 0, default: 1 },
     sources: { type: [String], default: [] },

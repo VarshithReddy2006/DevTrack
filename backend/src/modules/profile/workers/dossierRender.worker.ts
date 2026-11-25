@@ -8,6 +8,7 @@ import { QueueNames, type DossierRenderJobData } from '../../../shared/jobs/type
 import { getRedisClient } from '../../../shared/redis/index.js';
 import { logger } from '../../../shared/logger.js';
 import { markFailed, renderDossierArtifact } from '../dossier/dossier.service.js';
+import { shutdownBrowserPool } from '../../resume/export/browserPool.js';
 
 let _worker: Worker<DossierRenderJobData> | null = null;
 
@@ -52,6 +53,10 @@ export function startDossierRenderWorker(): Worker<DossierRenderJobData> {
 
 export async function stopDossierRenderWorker(): Promise<void> {
   if (!_worker) return;
-  await _worker.close();
-  _worker = null;
+  try {
+    await _worker.close();
+  } finally {
+    _worker = null;
+    await shutdownBrowserPool();
+  }
 }

@@ -27,6 +27,7 @@ export const SSE_BRIDGE_ALLOWLIST: readonly string[] = [
   'contest.starting-soon',
   'dsa.problem.solved',
   'revision.reviewed',
+  'revision.card_reviewed',
   'league.week.finalized',
 ];
 
@@ -74,6 +75,8 @@ export function mapDomainEventToSseType(type: string): SseEventType {
       return 'dsa_problem_solved';
     case 'revision.reviewed':
       return 'revision_reviewed';
+    case 'revision.card_reviewed':
+      return 'revision_card_reviewed' as SseEventType;
     case 'league.week.finalized':
       return 'league_week_finalized';
     default:

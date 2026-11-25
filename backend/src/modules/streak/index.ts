@@ -12,4 +12,10 @@ export {
   type RecordActivityPayload,
   type CanonicalStreakData,
 } from './streak.service.js';
+export {
+  focusStreakConsumer,
+  dsaProblemSolvedStreakConsumer,
+  revisionCardReviewedStreakConsumer,
+  registerStreakConsumers,
+} from './consumers/index.js';
 export type { StreakType } from '../../db/models/index.js';
