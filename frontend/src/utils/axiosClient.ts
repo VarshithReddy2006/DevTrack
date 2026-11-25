@@ -96,7 +96,7 @@ axiosClient.interceptors.response.use(
 
     // Normalize error for consumers
     const retryAfter = error.response?.headers['retry-after'] ?? error.response?.data?.retryAfter;
-    const normalized: ApiError = {
+    const normalized: ApiError & { rawData?: any } = {
       success: false,
       message:
         error.response?.data?.message ||
@@ -106,7 +106,8 @@ axiosClient.interceptors.response.use(
       statusCode: error.response?.status || 500,
       retryAfter: typeof retryAfter === 'string' || typeof retryAfter === 'number' ? retryAfter : undefined,
       timestamp: new Date().toISOString(),
-      details: error.response?.data?.details,
+      details: error.response?.data?.details ?? error.response?.data,
+      rawData: error.response?.data,
     };
 
     return Promise.reject(normalized);
