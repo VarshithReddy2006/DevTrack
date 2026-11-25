@@ -56,7 +56,6 @@ jobs:
       - name: Deploy Preview to Vercel
         if: steps.check-secrets.outputs.missing == 'false'
         id: vercel-deploy
-        working-directory: ./frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
