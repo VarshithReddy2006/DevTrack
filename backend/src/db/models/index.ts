@@ -70,7 +70,13 @@ export { FocusSession, type IFocusSession } from './focusSession.model.js';
 export { PublicProfile, type IPublicProfile } from './publicProfile.model.js';
 export { UsernameReservation, type IUsernameReservation } from './usernameReservation.model.js';
 export { VerifiedProject, type IVerifiedProject } from './verifiedProject.model.js';
-export { ProfileAuditLog, type IProfileAuditLog } from './profileAuditLog.model.js';
+export {
+  ProfileAuditLog,
+  AuditEncryptionKey,
+  type IProfileAuditLog,
+  type IAuditEncryptionKey,
+  type ProfileAuditEventType,
+} from './profileAuditLog.model.js';
 export { ProfileView, type IProfileView } from './profileView.model.js';
 export { ProfileTimelineEvent, type IProfileTimelineEvent } from './profileTimelineEvent.model.js';
 export { AIConversation, type IAIConversation, type IConversationTurn } from './aiConversation.model.js';
