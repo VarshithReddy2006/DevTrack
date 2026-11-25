@@ -324,6 +324,8 @@ describe('AudioStreamingService - Redis Storage & TTL Verification', () => {
     const delMock = vi.fn().mockResolvedValue(1);
     const hgetallMock = vi.fn().mockResolvedValue({});
     const hgetMock = vi.fn().mockResolvedValue(null);
+    const hkeysMock = vi.fn().mockResolvedValue(['chunk:0']);
+    const hsetnxMock = vi.fn().mockResolvedValue(1);
 
     const mockRedis = {
       hset: hsetMock,
@@ -332,6 +334,8 @@ describe('AudioStreamingService - Redis Storage & TTL Verification', () => {
       del: delMock,
       hget: hgetMock,
       hgetall: hgetallMock,
+      hkeys: hkeysMock,
+      hsetnx: hsetnxMock,
     } as any;
 
     const service = new AudioStreamingService(
@@ -358,6 +362,89 @@ describe('AudioStreamingService - Redis Storage & TTL Verification', () => {
     // Explicit cleanup calls DEL
     await service.cleanSessionAudio(sessionId);
     expect(delMock).toHaveBeenCalledWith(`audio:session:${sessionId}`);
+  });
+});
+
+describe('AudioStreamingService - Concurrency & Atomic Lock Verification', () => {
+  it('handles concurrent chunk uploads without dropping chunk indices or reporting false missing chunks', async () => {
+    const memoryStore: Record<string, Record<string, string>> = {};
+    const mockRedis = {
+      hexists: vi.fn(async (key: string, field: string) => (memoryStore[key]?.[field] ? 1 : 0)),
+      hset: vi.fn(async (key: string, fields: Record<string, string>) => {
+        if (!memoryStore[key]) memoryStore[key] = {};
+        Object.assign(memoryStore[key], fields);
+        return Object.keys(fields).length;
+      }),
+      hget: vi.fn(async (key: string, field: string) => memoryStore[key]?.[field] ?? null),
+      hkeys: vi.fn(async (key: string) => Object.keys(memoryStore[key] ?? {})),
+      hgetall: vi.fn(async (key: string) => memoryStore[key] ?? {}),
+      hsetnx: vi.fn(async (key: string, field: string, val: string) => {
+        if (!memoryStore[key]) memoryStore[key] = {};
+        if (memoryStore[key][field] !== undefined) return 0;
+        memoryStore[key][field] = val;
+        return 1;
+      }),
+      expire: vi.fn().mockResolvedValue(1),
+      del: vi.fn(async (key: string) => {
+        delete memoryStore[key];
+        return 1;
+      }),
+    } as any;
+
+    const mockEnqueue = vi.fn().mockResolvedValue(undefined);
+    const service = new AudioStreamingService({}, mockRedis, mockEnqueue);
+    const sessionId = 'session-concurrent-test';
+
+    // Ingest chunks 0, 1, 2, 3 concurrently
+    const chunkBuffers = [0, 1, 2, 3].map(() => createMockAudioChunk('speech', 512));
+    await Promise.all(
+      chunkBuffers.map((buf, idx) =>
+        service.ingestChunk(sessionId, { chunkIndex: idx, isLast: idx === 3 }, buf)
+      )
+    );
+
+    // Verify all chunks were registered and assembly succeeded with 1 enqueue
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('guarantees only one transcription job is enqueued under concurrent assembly triggers', async () => {
+    let assemblingFlag = 0;
+    const mockRedis = {
+      hexists: vi.fn().mockResolvedValue(0),
+      hset: vi.fn().mockResolvedValue(1),
+      hget: vi.fn().mockResolvedValue(null),
+      hkeys: vi.fn().mockResolvedValue(['chunk:0', 'chunk:1']),
+      hgetall: vi.fn().mockResolvedValue({
+        'chunk:0': createMockAudioChunk('speech', 512).toString('base64'),
+        'chunkMeta:0': JSON.stringify({ chunkIndex: 0, energy: 0.1, isSilent: false, durationMs: 1500, receivedAt: 100 }),
+        'chunk:1': createMockAudioChunk('speech', 512).toString('base64'),
+        'chunkMeta:1': JSON.stringify({ chunkIndex: 1, energy: 0.1, isSilent: false, durationMs: 1500, receivedAt: 200 }),
+      }),
+      hsetnx: vi.fn(async (_key: string, _field: string, _val: string) => {
+        if (assemblingFlag === 1) return 0;
+        assemblingFlag = 1;
+        return 1;
+      }),
+      expire: vi.fn().mockResolvedValue(1),
+      del: vi.fn().mockResolvedValue(1),
+    } as any;
+
+    const mockEnqueue = vi.fn().mockResolvedValue(undefined);
+    const service = new AudioStreamingService({}, mockRedis, mockEnqueue);
+    const sessionId = 'session-race-assembly';
+
+    // Two concurrent calls attempting to assemble
+    const chunk0 = createMockAudioChunk('speech', 512);
+    const chunk1 = createMockAudioChunk('speech', 512);
+    const [res0, res1] = await Promise.all([
+      service.ingestChunk(sessionId, { chunkIndex: 0, isLast: true }, chunk0),
+      service.ingestChunk(sessionId, { chunkIndex: 1, isLast: true }, chunk1),
+    ]);
+
+    // Exactly one call should have enqueued the transcription job
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    const enqueuedCount = [res0.transcriptionEnqueued, res1.transcriptionEnqueued].filter(Boolean).length;
+    expect(enqueuedCount).toBe(1);
   });
 });
 
