@@ -84,7 +84,7 @@ export async function trackQuestEvent(event: DomainEventEnvelope, now = new Date
       await ProcessedEvent.create([{ consumer: 'quests.progress', eventId, eventType: event.type, userId: event.userId,
         processedAt: now, result: { success: true } }], { session });
       row.currentCount = Math.min(row.targetCount, row.currentCount + source.amount);
-      if (row.currentCount >= row.targetCount) { row.completed = true; row.completedAt = now; }
+      if (row.currentCount >= row.targetCount) { row.completed = true; row.completedAt = now; row.status = 'completed'; }
       await row.save({ session });
       if (row.completed) await writeOutboxEvent(session, {
         type: 'quest.completed', aggregateType: 'UserQuestProgress', aggregateId: row._id.toString(), userId: event.userId,
