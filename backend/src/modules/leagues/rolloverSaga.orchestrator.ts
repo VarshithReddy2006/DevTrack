@@ -341,27 +341,27 @@ export class RolloverSagaOrchestrator {
     cohortId: string,
   ): Promise<SagaCohortExecutionResult> {
     const idempotencyKey = `rollover:${weekKey}:${division}:${cohortId}`;
-
-    // 1. If already committed and no active rows remain, skip immediately
-    const existing = await LeagueRolloverLog.findOne({ idempotencyKey });
-    if (existing && existing.status === 'committed') {
-      const activeCount = await LeagueStanding.countDocuments({ weekKey, division, cohortId, status: 'active' });
-      if (activeCount === 0) {
-        return {
-          cohortId,
-          division,
-          status: 'skipped',
-          finalizedCount: 0,
-          promotedCount: 0,
-          demotedCount: 0,
-        };
-      }
-    }
-
-    // 2. Atomic acquisition: acquire the cohort checkpoint lock
     const leaseCutoff = new Date(Date.now() - this.stalledLeaseTimeoutMs);
     let log: ILeagueRolloverLog | null = null;
 
+    const acquireUpdate = {
+      $setOnInsert: {
+        weekKey,
+        division,
+        cohortId,
+        idempotencyKey,
+      },
+      $set: {
+        status: 'in_progress',
+        currentStep: 'snapshot_scores',
+        startedAt: this.now,
+        error: null,
+      },
+      $inc: { attempts: 1 },
+    };
+
+    // 1. Atomic lock acquisition first (eliminates TOCTOU between pre-lock read and lock write).
+    // Only claim non-committed states or expired leases; committed logs are never blindly overwritten.
     try {
       log = await LeagueRolloverLog.findOneAndUpdate(
         {
@@ -369,45 +369,65 @@ export class RolloverSagaOrchestrator {
           $or: [
             { status: { $in: ['pending', 'compensated', 'failed'] } },
             { status: 'in_progress', updatedAt: { $lte: leaseCutoff } },
-            { status: 'committed' }, // if active rows remained from previous partial run
           ],
         },
-        {
-          $setOnInsert: {
-            weekKey,
-            division,
-            cohortId,
-            idempotencyKey,
-          },
-          $set: {
-            status: 'in_progress',
-            currentStep: 'snapshot_scores',
-            startedAt: this.now,
-            error: null,
-          },
-          $inc: { attempts: 1 },
-        },
+        acquireUpdate,
         { upsert: true, new: true, returnDocument: 'after' },
       );
     } catch (err: any) {
-      // If a concurrent upsert race occurred on unique key and another worker acquired it
+      // If a concurrent upsert race occurred on unique key (or doc already exists in committed/in_progress state),
+      // leave log as null and fall through to step 2 to inspect committed/partial state safely.
       if (err?.code === 11000 || err?.message?.includes('E11000')) {
-        logger.debug(`[saga] Concurrent lock race on ${idempotencyKey}, another worker acquired it`);
-        return {
-          cohortId,
-          division,
-          status: 'skipped',
-          finalizedCount: 0,
-          promotedCount: 0,
-          demotedCount: 0,
-        };
+        logger.debug(`[saga] Concurrent upsert/existing doc on ${idempotencyKey}, checking committed state`);
+        log = null;
+      } else {
+        throw err;
       }
-      throw err;
     }
 
-    // If query condition did not match (another live worker holds the unexpired lease)
+    // 2. If not acquired, check if it's already committed (and whether any active rows remain from a partial run)
     if (!log) {
-      logger.info(`[saga] Cohort ${division}:${cohortId} is actively leased by another worker; skipping concurrent execution.`);
+      const existing = await LeagueRolloverLog.findOne({ idempotencyKey }).lean();
+      if (existing?.status === 'committed') {
+        const activeCount = await LeagueStanding.countDocuments({ weekKey, division, cohortId, status: 'active' });
+        if (activeCount === 0) {
+          return {
+            cohortId,
+            division,
+            status: 'skipped',
+            finalizedCount: 0,
+            promotedCount: 0,
+            demotedCount: 0,
+          };
+        }
+        // Partial run recovery: atomically transition committed -> in_progress so only one worker recovers it
+        log = await LeagueRolloverLog.findOneAndUpdate(
+          { idempotencyKey, status: 'committed' },
+          acquireUpdate,
+          { new: true, returnDocument: 'after' },
+        );
+      }
+    }
+
+    // If query condition still did not match (another live worker holds the unexpired lease or won the recovery race)
+    if (!log) {
+      logger.info(`[saga] Cohort ${division}:${cohortId} is actively leased or already handled by another worker; skipping concurrent execution.`);
+      return {
+        cohortId,
+        division,
+        status: 'skipped',
+        finalizedCount: 0,
+        promotedCount: 0,
+        demotedCount: 0,
+      };
+    }
+
+    // 3. Double-checked verification inside lock boundary: if no active standings remain, commit & skip
+    const activeInsideLock = await LeagueStanding.countDocuments({ weekKey, division, cohortId, status: 'active' });
+    if (activeInsideLock === 0) {
+      log.status = 'committed';
+      log.completedAt = new Date();
+      await log.save();
       return {
         cohortId,
         division,
