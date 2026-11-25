@@ -1,10 +1,21 @@
 // src/modules/dsa/execution/sandboxRunner.ts — Isolated & Containerized Sandbox Runner for DSA Code Execution
 // Enforces hard CPU limits (2.0s), 256MB memory cgroup/V8 limits, and zero-network/zero-disk system call isolation.
 
-import { spawn } from 'node:child_process';
+import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { wasiEngine, type WasiStatus } from './wasiEngine.js';
 import { logger } from '../../../shared/logger.js';
+
+function killProcessSafely(child: ChildProcess): void {
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      try {
+        execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' });
+      } catch {}
+    }
+    child.kill('SIGKILL');
+  } catch {}
+}
 
 export type ExecutionStatus = 'SUCCESS' | 'TLE' | 'MLE' | 'RTE' | 'SECURITY_VIOLATION';
 export type SupportedLanguage = 'javascript' | 'typescript' | 'python' | 'cpp' | 'wasm';
@@ -289,7 +300,7 @@ export class SandboxRunner {
         isSettled = true;
 
         try {
-          child.kill('SIGKILL');
+          killProcessSafely(child);
         } catch (_) {}
 
         const duration = Math.round((performance.now() - startTime) * 100) / 100;
@@ -454,7 +465,7 @@ for mod in ['socket', 'http', 'urllib', 'requests', 'subprocess']:
       const timeoutTimer = setTimeout(() => {
         if (isSettled) return;
         isSettled = true;
-        try { child.kill('SIGKILL'); } catch (_) {}
+        try { killProcessSafely(child); } catch (_) {}
         const duration = Math.round((performance.now() - startTime) * 100) / 100;
         resolve({
           status: 'TLE',

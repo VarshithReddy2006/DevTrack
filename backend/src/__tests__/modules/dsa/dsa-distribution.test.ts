@@ -18,6 +18,7 @@ describe('DSA Problem Distribution Analytics', () => {
     await DsaProblem.create([
       {
         userId: new Types.ObjectId(userId),
+        externalId: 'dist-two-sum',
         title: 'Two Sum',
         platform: 'leetcode',
         difficulty: 'easy',
@@ -29,6 +30,7 @@ describe('DSA Problem Distribution Analytics', () => {
       },
       {
         userId: new Types.ObjectId(userId),
+        externalId: 'dist-3sum',
         title: '3Sum',
         platform: 'leetcode',
         difficulty: 'medium',
@@ -40,6 +42,7 @@ describe('DSA Problem Distribution Analytics', () => {
       },
       {
         userId: new Types.ObjectId(userId),
+        externalId: 'dist-trapping-rain-water',
         title: 'Trapping Rain Water',
         platform: 'leetcode',
         difficulty: 'hard',
@@ -51,6 +54,7 @@ describe('DSA Problem Distribution Analytics', () => {
       },
       {
         userId: new Types.ObjectId(userId),
+        externalId: 'dist-watermelon',
         title: 'Watermelon',
         platform: 'codeforces',
         difficulty: 'easy',
@@ -62,6 +66,7 @@ describe('DSA Problem Distribution Analytics', () => {
       },
       {
         userId: new Types.ObjectId(foreignUserId),
+        externalId: 'dist-foreign',
         title: 'Foreign Problem',
         platform: 'leetcode',
         difficulty: 'hard',
