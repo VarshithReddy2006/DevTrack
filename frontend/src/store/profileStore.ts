@@ -411,10 +411,10 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
     const currentCc = get().codechef;
     const currentGh = get().github;
 
-    let nextLc = { ...currentLc, loading: false };
-    let nextCf = { ...currentCf, loading: false };
-    let nextCc = { ...currentCc, loading: false };
-    let nextGh = { ...currentGh, loading: false };
+    const nextLc = { ...currentLc, loading: false };
+    const nextCf = { ...currentCf, loading: false };
+    const nextCc = { ...currentCc, loading: false };
+    const nextGh = { ...currentGh, loading: false };
 
     if (failedConnections.includes('leetcode')) nextLc.error = 'Connection failed';
     if (failedConnections.includes('codeforces')) nextCf.error = 'Connection failed';
