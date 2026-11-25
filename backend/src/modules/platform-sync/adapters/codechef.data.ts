@@ -28,6 +28,12 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
     throw new Error(`CodeChef scrape error (${res.status})`);
   }
 
+  // CodeChef redirects non-existent users with HTTP 302 to the homepage
+  if (res.redirected && (!res.url.includes('/users/') || res.url.replace(/\/$/, '') === 'https://www.codechef.com')) {
+    logger.error('CodeChef user not found (redirected to homepage)', { username, url, redirectedUrl: res.url });
+    throw new Error('CodeChef user not found');
+  }
+
   const html = await res.text();
   const $ = cheerio.load(html);
 

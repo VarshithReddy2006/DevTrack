@@ -28,7 +28,7 @@ export function rateLimit(options: RateLimitOptions) {
   const { windowMs, maxRequests, message = 'Too many requests. Please try again later.' } = options;
 
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (process.env.NODE_ENV === 'development') {
+    if (req.method === 'OPTIONS' || process.env.NODE_ENV === 'development') {
       next();
       return;
     }
