@@ -32,6 +32,8 @@ export interface LeagueScoreStore {
   ranked(key: string, start: number, stop: number): Promise<ScoreEntry[]>;
   exists(key: string): Promise<boolean>;
   expire(key: string, seconds: number): Promise<void>;
+  /** Deletes a sorted set key (used for saga compensation rollback). */
+  del(key: string): Promise<void>;
 }
 
 // Add to the applied-set first; only a first-time award touches the score. Atomic in Redis.
@@ -41,7 +43,7 @@ redis.call('EXPIRE', KEYS[2], ARGV[3])
 return redis.call('ZINCRBY', KEYS[1], ARGV[1], ARGV[4])
 `;
 
-type RedisLike = Pick<Redis, 'eval' | 'zadd' | 'zrem' | 'zrevrange' | 'exists' | 'expire' | 'multi'>;
+type RedisLike = Pick<Redis, 'eval' | 'zadd' | 'zrem' | 'zrevrange' | 'exists' | 'expire' | 'del' | 'multi'>;
 
 export function createRedisScoreStore(client: RedisLike): LeagueScoreStore {
   return {
@@ -86,6 +88,10 @@ export function createRedisScoreStore(client: RedisLike): LeagueScoreStore {
 
     async expire(key, seconds) {
       await client.expire(key, seconds);
+    },
+
+    async del(key) {
+      await client.del(key);
     },
   };
 }
