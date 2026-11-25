@@ -1,3 +1,4 @@
+// Verification test for automated Vercel preview deployment
 import './utils/envCheck'; // Validate env before anything else
 import { createRoot } from 'react-dom/client';
 import { QueryClientProvider } from '@tanstack/react-query';
