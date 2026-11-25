@@ -1,4 +1,4 @@
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DsaProblem } from '../../../db/models/dsaProblem.model.js';
 import { DsaSubmission } from '../../../db/models/dsaSubmission.model.js';
@@ -8,6 +8,10 @@ import { DAY_IN_MS } from '../../../modules/revision/sm2.js';
 import { enqueueSubmissionEvaluation, generateStruggleCard } from '../../../modules/revision/cardGenerator.service.js';
 import * as generator from '../../../modules/revision/cardGenerator.service.js';
 import { registerRevisionConsumers, revisionCardCreatedConsumer, struggleCardConsumer } from '../../../modules/revision/dsaEvents.consumer.js';
+import { RevisionQueueService } from '../../../modules/revision/revisionQueue.service.js';
+import { RevisionAnalyticsService } from '../../../modules/revision/revisionAnalytics.service.js';
+import { discoverMigrations } from '../../../db/migrations/discover.js';
+import { createMigrationRunner } from '../../../db/migrations/runner.js';
 import { persistSubmissions } from '../../../modules/platform-sync/sync.persistence.js';
 import { createDomainOutboxRelay } from '../../../workers/focus-completion.worker.js';
 import { processDomainReadinessJob } from '../../../modules/readiness/workers/domainReadiness.worker.js';
@@ -203,5 +207,111 @@ describe('production producer -> outbox -> domain consumer -> SSE route', () => 
     await expect(revisionCardCreatedConsumer.handle({ ...event, userId: owner })).rejects.toThrow('SSE offline');
     await revisionCardCreatedConsumer.handle({ ...event, userId: owner });
     expect(eventBus.publishEnvelope).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('BSON ObjectId userId storage and revision queue visibility', () => {
+  it('stores userId as BSON ObjectId in MongoDB and returns struggle cards from RevisionQueueService.getQueue and analytics', async () => {
+    const row = await submission('time_limit_exceeded');
+    const result = await generate(row.id);
+    expect(result.created).toBe(true);
+
+    const rawDoc = await RevisionCard.collection.findOne({ _id: new Types.ObjectId(result.cardId!) });
+    expect(rawDoc).not.toBeNull();
+    expect(rawDoc!.userId).toBeInstanceOf(Types.ObjectId);
+    expect((rawDoc!.userId as Types.ObjectId).toHexString()).toBe(owner);
+
+    const afterDue = new Date(Date.now() + 2 * DAY_IN_MS);
+    const queue = await RevisionQueueService.getQueue({ userId: owner, now: afterDue });
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({
+      id: result.cardId,
+      problemKey: 'leetcode:two-sum',
+      title: 'Two Sum',
+    });
+
+    const analytics = await RevisionAnalyticsService.getAnalytics(owner, afterDue);
+    expect(analytics.totalCards).toBe(1);
+    expect(analytics.cardsDueToday).toBe(1);
+  });
+
+  it('normalizes legacy string userId entries via versioned migration and merges duplicate problemKey collisions', async () => {
+    const pastDue = new Date(Date.now() - DAY_IN_MS);
+    const legacyOnlyId = new Types.ObjectId();
+    const legacyCollisionId = new Types.ObjectId();
+
+    // Seed a legacy card stored with a raw string userId (invisible to aggregation pipelines).
+    await RevisionCard.collection.insertOne({
+      _id: legacyOnlyId,
+      userId: owner,
+      problemKey: 'leetcode:legacy-string-card',
+      title: 'Legacy String Card',
+      difficulty: 'medium',
+      tags: ['arrays', 'struggle_topic'],
+      tagWeight: 2,
+      reviewSeq: 0,
+      repetitions: 0,
+      easeFactor: 2.5,
+      intervalDays: 1,
+      dueAt: pastDue,
+      snoozedUntil: null,
+      lastReviewedAt: null,
+      notes: '',
+      createdAt: pastDue,
+      updatedAt: pastDue,
+    });
+
+    // Seed a duplicate collision: both an ObjectId card and a legacy string card for the same problemKey.
+    const existingObjCard = await RevisionCard.create({
+      userId: new Types.ObjectId(owner),
+      problemKey: 'leetcode:two-sum',
+      title: 'Two Sum',
+      difficulty: 'easy',
+      tags: ['hash-table'],
+      tagWeight: 1,
+      dueAt: pastDue,
+    });
+    await RevisionCard.collection.insertOne({
+      _id: legacyCollisionId,
+      userId: owner,
+      problemKey: 'leetcode:two-sum',
+      title: 'Two Sum',
+      difficulty: 'easy',
+      tags: ['arrays', 'struggle_topic'],
+      tagWeight: 2,
+      reviewSeq: 0,
+      repetitions: 0,
+      easeFactor: 2.5,
+      intervalDays: 1,
+      dueAt: pastDue,
+      snoozedUntil: null,
+      lastReviewedAt: null,
+      notes: '',
+      createdAt: pastDue,
+      updatedAt: pastDue,
+    });
+
+    // Before migration, the string-typed legacy card is invisible to RevisionQueueService.
+    const beforeQueue = await RevisionQueueService.getQueue({ userId: owner, now: new Date() });
+    expect(beforeQueue.map(card => card.problemKey)).toEqual(['leetcode:two-sum']);
+
+    const migrations = await discoverMigrations();
+    const runner = createMigrationRunner(mongoose.connection, migrations);
+    await runner.up();
+
+    const rawMigrated = await RevisionCard.collection.findOne({ _id: legacyOnlyId });
+    expect(rawMigrated?.userId).toBeInstanceOf(Types.ObjectId);
+    expect((rawMigrated?.userId as Types.ObjectId).toHexString()).toBe(owner);
+
+    expect(await RevisionCard.collection.findOne({ _id: legacyCollisionId })).toBeNull();
+    const mergedCard = await RevisionCard.findById(existingObjCard._id).lean();
+    expect(mergedCard?.tagWeight).toBe(2);
+    expect(mergedCard?.tags).toEqual(expect.arrayContaining(['hash-table', 'arrays', 'struggle_topic']));
+
+    const afterQueue = await RevisionQueueService.getQueue({ userId: owner, now: new Date() });
+    expect(afterQueue.map(card => card.problemKey).sort()).toEqual([
+      'leetcode:legacy-string-card',
+      'leetcode:two-sum',
+    ]);
   });
 });
