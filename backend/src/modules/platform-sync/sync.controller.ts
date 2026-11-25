@@ -50,7 +50,7 @@ export async function syncAll(req: AuthenticatedRequest, res: Response): Promise
       error: r.error ?? null,
     }));
 
-    const allSucceeded = sanitized.every((r) => r.success);
+    const allSucceeded = sanitized.length > 0 && sanitized.every((r) => r.success);
     const someSucceeded = sanitized.some((r) => r.success);
 
     const message = sanitized.length === 0

@@ -159,7 +159,7 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
     try {
       const payload = mapProfileDataToApi(profile);
       const response = await updateProfileApi(payload);
-      const savedProfile = mapApiToProfileData(response.data.data as ApiUserProfile);
+      const savedProfile = response?.data?.data ? mapApiToProfileData(response.data.data as ApiUserProfile) : profile;
       set(state => ({
         profile: state.profile === profile ? savedProfile : state.profile,
         isDirty: state.profile === profile ? false : state.isDirty,
@@ -248,6 +248,15 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
 
   // ─── Sync All Platforms ─────────────────────────────────────────────
   fetchAllPlatforms: async () => {
+    // If there are unsaved profile edits, save them first
+    if (get().isDirty) {
+      try {
+        await get().saveProfile();
+      } catch (err) {
+        console.warn('Auto-save profile before sync failed:', err);
+      }
+    }
+
     const { profile } = get();
 
     // Reset gamification session XP totals before starting sync
@@ -267,15 +276,26 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
     };
 
     const platformMap: [string, string][] = [
-      ['leetcode', profile.leetcodeUsername],
-      ['codeforces', profile.codeforcesUsername],
-      ['codechef', profile.codechefUsername],
-      ['github', getGithubUsername(profile.githubUrl)],
+      ['leetcode', (profile.leetcodeUsername || '').trim()],
+      ['codeforces', (profile.codeforcesUsername || '').trim()],
+      ['codechef', (profile.codechefUsername || '').trim()],
+      ['github', getGithubUsername(profile.githubUrl || '')],
     ];
 
-    const activePlatforms = platformMap
-      .filter(([, username]) => username && username.trim().length > 0)
-      .map(([name]) => name);
+    const platformsToConnect = platformMap.filter(([, username]) => username.length > 0);
+    const activePlatforms = platformsToConnect.map(([name]) => name);
+
+    if (activePlatforms.length === 0) {
+      set({
+        syncState: 'error',
+        syncMessage: 'Please enter at least one platform username to sync.',
+      });
+      return {
+        success: false,
+        results: null,
+        message: 'Please enter at least one platform username to sync.',
+      };
+    }
 
     let progressPercent = 5;
     let timeRemaining = Math.max(4, activePlatforms.length * 2);
@@ -286,10 +306,10 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
       syncingPlatform: activePlatforms[0] || null,
       syncProgressPercent: progressPercent,
       syncTimeRemaining: timeRemaining,
-      leetcode: { ...get().leetcode, loading: true, error: null },
-      codeforces: { ...get().codeforces, loading: true, error: null },
-      codechef: { ...get().codechef, loading: true, error: null },
-      github: { ...get().github, loading: true, error: null },
+      leetcode: activePlatforms.includes('leetcode') ? { ...get().leetcode, loading: true, error: null } : { ...get().leetcode, loading: false },
+      codeforces: activePlatforms.includes('codeforces') ? { ...get().codeforces, loading: true, error: null } : { ...get().codeforces, loading: false },
+      codechef: activePlatforms.includes('codechef') ? { ...get().codechef, loading: true, error: null } : { ...get().codechef, loading: false },
+      github: activePlatforms.includes('github') ? { ...get().github, loading: true, error: null } : { ...get().github, loading: false },
     });
 
     // Start progress simulator
@@ -318,24 +338,16 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
       });
     }, 1000);
 
-    const connectPromises = platformMap
-      .filter(([, username]) => username.trim().length > 0)
-      .map(([name, username]) => connectPlatform(name, username).catch((err) => {
+    const connectResults = await Promise.allSettled(
+      platformsToConnect.map(([name, username]) => connectPlatform(name, username).catch((err) => {
         console.error(`Failed to connect ${name}:`, err);
         throw err;
-      }));
+      }))
+    );
 
-    try {
-      await Promise.allSettled(connectPromises);
-    } catch {
-      // Handled by allSettled below
-    }
-
-    // Actually, let's use allSettled to aggregate.
-    const results = await Promise.allSettled(connectPromises);
-    const failedConnections = results
-      .map((r, i) => r.status === 'rejected' ? platformMap[i][0] : null)
-      .filter(Boolean);
+    const failedConnections = connectResults
+      .map((r, i) => r.status === 'rejected' ? platformsToConnect[i][0] : null)
+      .filter((name): name is string => Boolean(name));
 
     let syncSucceeded = false;
     let syncMessage = '';
@@ -358,28 +370,82 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
           syncMessage += `All ${succeeded} platform(s) synced successfully`;
           syncSucceeded = failedConnections.length === 0;
         } else if (succeeded > 0) {
-          syncMessage += `${succeeded}/${results.length} synced. Failed: ${failed.map((f) => f.platform).join(', ')}`;
+          syncMessage += `${succeeded}/${results.length} synced. Failed: ${failed.map((f) => `${f.platform}${f.error ? ` (${f.error})` : ''}`).join(', ')}`;
           syncSucceeded = true; // Partial success
         } else {
           syncMessage += `Sync failed: ${failed.map((f) => `${f.platform}: ${f.error || 'unknown'}`).join('; ')}`;
+          syncSucceeded = false;
         }
       } else {
         syncMessage += 'Sync completed';
         syncSucceeded = failedConnections.length === 0;
       }
-    } catch (err) {
-      syncMessage += err instanceof Error ? err.message : 'Platform sync failed';
+    } catch (err: any) {
+      // Extract per-platform results from error if present (e.g., 502/207 responses)
+      const data = err?.response?.data?.data || err?.details?.data || err?.rawData?.data;
+      if (data?.results && Array.isArray(data.results)) {
+        apiResults = data.results;
+        const results = data.results as Array<{ platform: string; success: boolean; error?: string | null }>;
+        const succeeded = results.filter((r) => r.success).length;
+        const failed = results.filter((r) => !r.success);
+
+        if (succeeded > 0) {
+          syncMessage += `${succeeded}/${results.length} synced. Failed: ${failed.map((f) => `${f.platform}${f.error ? ` (${f.error})` : ''}`).join(', ')}`;
+          syncSucceeded = true;
+        } else {
+          syncMessage += `Sync failed: ${failed.map((f) => `${f.platform}: ${f.error || 'unknown'}`).join('; ')}`;
+          syncSucceeded = false;
+        }
+      } else {
+        const errMsg = err?.response?.data?.message || err?.message || (err instanceof Error ? err.message : 'Platform sync failed');
+        syncMessage += errMsg;
+        syncSucceeded = false;
+      }
     }
 
     clearInterval(progressInterval);
 
+    // Reset platform loading flags and attach individual error messages if any
+    const currentLc = get().leetcode;
+    const currentCf = get().codeforces;
+    const currentCc = get().codechef;
+    const currentGh = get().github;
+
+    const nextLc = { ...currentLc, loading: false };
+    const nextCf = { ...currentCf, loading: false };
+    const nextCc = { ...currentCc, loading: false };
+    const nextGh = { ...currentGh, loading: false };
+
+    if (failedConnections.includes('leetcode')) nextLc.error = 'Connection failed';
+    if (failedConnections.includes('codeforces')) nextCf.error = 'Connection failed';
+    if (failedConnections.includes('codechef')) nextCc.error = 'Connection failed';
+    if (failedConnections.includes('github')) nextGh.error = 'Connection failed';
+
+    if (apiResults && Array.isArray(apiResults)) {
+      for (const r of apiResults) {
+        if (r.platform === 'leetcode' && !r.success) {
+          nextLc.error = r.error || 'Sync failed';
+        } else if (r.platform === 'codeforces' && !r.success) {
+          nextCf.error = r.error || 'Sync failed';
+        } else if (r.platform === 'codechef' && !r.success) {
+          nextCc.error = r.error || 'Sync failed';
+        } else if (r.platform === 'github' && !r.success) {
+          nextGh.error = r.error || 'Sync failed';
+        }
+      }
+    }
+
     set({
       syncState: syncSucceeded ? 'success' : 'error',
-      syncMessage,
+      syncMessage: syncMessage.trim() || (syncSucceeded ? 'Platform sync completed' : 'Platform sync failed'),
       syncingPlatform: null,
       syncProgressPercent: 100,
       syncTimeRemaining: 0,
       lastSyncedAt: syncSucceeded ? new Date().toISOString() : get().lastSyncedAt,
+      leetcode: nextLc,
+      codeforces: nextCf,
+      codechef: nextCc,
+      github: nextGh,
     });
 
     const { useDashboardStore } = await import('./dashboardStore');

@@ -46,7 +46,7 @@ it('serves canonical metrics and immediately applies changes to public visibilit
       { userId, platform: 'leetcode', contestName: 'Biweekly', ratingAfter: null, participatedAt: now },
     ]),
     DsaProblem.insertMany(['Graphs', 'Trees'].map(category => ({
-      userId, platform: 'leetcode', title: category, category, difficulty: 'easy', status: 'solved',
+      userId, platform: 'leetcode', externalId: category.toLowerCase(), title: category, category, difficulty: 'easy', status: 'solved',
       url: `https://example.test/${category}`, solvedAt: now,
     }))),
     DailyActivity.create({ userId, date: getStartOfDay(now), count: 6, activities: [{ type: 'problem_solved', count: 2 }] }),
