@@ -257,6 +257,7 @@ export class RolloverSagaOrchestrator {
 
     let assigned = 0;
     const insertedUserIds: string[] = [];
+    const seededKeys: string[] = [];
 
     try {
       for (let i = 0; i < placements.length; i += WRITE_BATCH) {
@@ -305,6 +306,7 @@ export class RolloverSagaOrchestrator {
       }
 
       for (const [key, entry] of members) {
+        seededKeys.push(key);
         await this.store.seed(key, entry.ids);
       }
 
@@ -317,6 +319,21 @@ export class RolloverSagaOrchestrator {
         error: err instanceof Error ? err.message : String(err),
       });
 
+      // Inverse compensation for Redis sorted sets seeded before failure
+      for (const key of seededKeys) {
+        try {
+          await this.store.del(key);
+        } catch (cleanupErr) {
+          logger.warn('[saga] Failed to clean up Redis cohort key during rollback', {
+            event: 'league_next_week_redis_cleanup_failed',
+            weekKey,
+            upcomingWeekKey,
+            key,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          });
+        }
+      }
+
       // Inverse compensation for step 4: clean up any inserted next-week standings
       if (insertedUserIds.length > 0) {
         await LeagueStanding.deleteMany({
@@ -324,6 +341,21 @@ export class RolloverSagaOrchestrator {
           userId: { $in: insertedUserIds.map(id => new Types.ObjectId(id)) },
         });
       }
+
+      // Reset cohort checkpoint logs from 'seed_next_cohorts' back to 'persist_standings' with error context
+      await LeagueRolloverLog.updateMany(
+        { weekKey, status: 'committed', currentStep: 'seed_next_cohorts' },
+        {
+          $set: {
+            currentStep: 'persist_standings',
+            error: {
+              message: err instanceof Error ? err.message : String(err),
+              step: 'seed_next_cohorts',
+              occurredAt: new Date(),
+            },
+          },
+        },
+      );
 
       throw err;
     }

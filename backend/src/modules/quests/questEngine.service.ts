@@ -10,7 +10,7 @@ import { UserXp } from '../../db/models/userXp.model.js';
 import { runInTransaction } from '../../db/transaction.js';
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { logger } from '../../shared/logger.js';
-import { getRedisClient } from '../../shared/redis/index.js';
+import { getRedisClient, isRedisConfigured } from '../../shared/redis/client.js';
 import { weekKeyFor, weekRange, previousWeekKey } from '../leagues/weeks.js';
 
 export const questObjectId = z.string().regex(/^[a-fA-F0-9]{24}$/);
@@ -51,6 +51,11 @@ export async function questTransaction<T>(work: (session: ClientSession) => Prom
   }
 }
 
+const QUEST_GEN_LOCK_TTL_MS = 5000;
+const QUEST_GEN_LOCK_WAIT_MS = 100;
+const QUEST_GEN_LOCK_MAX_WAIT_ATTEMPTS = 15;
+const RELEASE_LOCK_LUA = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+
 export async function generateUserQuests(userId: string, now = new Date(), cadence?: 'daily' | 'weekly') {
   questObjectId.parse(userId);
   const periods = questPeriods(now);
@@ -58,33 +63,81 @@ export async function generateUserQuests(userId: string, now = new Date(), caden
   const existing = await UserQuestProgress.find(filter).sort({ cadence: 1, slot: 1 }).lean();
   const slots = questDefinitions('bronze').filter(item => !cadence || item.cadence === cadence).map(item => item.slot);
   if (slots.every(slot => existing.some(row => row.slot === slot))) return existing;
-  const active = await LeagueStanding.findOne({ userId, weekKey: weekKeyFor(now) }).lean();
-  if (!active && await LeagueStanding.exists({ userId, weekKey: previousWeekKey(weekKeyFor(now)), status: 'active' })) {
-    throw questError(503, 'League rollover is pending; retry quest generation');
-  }
-  const previous = active ? null : await LeagueStanding.findOne({ userId, status: 'finalized' }).sort({ weekKey: -1 }).lean();
-  const division = active?.division ?? previous?.nextDivision ?? 'bronze';
-  const definitions = questDefinitions(division).filter(item => !cadence || item.cadence === cadence);
-  const templates: Array<(IQuest & { _id: Types.ObjectId; __v?: number }) | null> = [];
-  for (const definition of definitions) {
+
+  const lockKey = `quest-gen:${userId}:${periods.daily.periodKey}:${periods.weekly.periodKey}`;
+  const lockToken = randomUUID();
+  let lockAcquired = false;
+
+  if (isRedisConfigured()) {
     try {
-      templates.push(await Quest.findOneAndUpdate({ key: definition.key }, { $setOnInsert: definition }, { upsert: true, new: true }).lean());
-    } catch (error) {
-      if ((error as { code?: number }).code !== 11000) throw error;
-      templates.push(await Quest.findOne({ key: definition.key }).lean());
+      const redis = getRedisClient();
+      const res = await redis.set(lockKey, lockToken, 'PX', QUEST_GEN_LOCK_TTL_MS, 'NX');
+      lockAcquired = res === 'OK';
+
+      if (!lockAcquired) {
+        for (let attempt = 0; attempt < QUEST_GEN_LOCK_MAX_WAIT_ATTEMPTS; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, QUEST_GEN_LOCK_WAIT_MS));
+          const refreshed = await UserQuestProgress.find(filter).sort({ cadence: 1, slot: 1 }).lean();
+          if (slots.every(slot => refreshed.some(row => row.slot === slot))) return refreshed;
+          const retryLock = await redis.set(lockKey, lockToken, 'PX', QUEST_GEN_LOCK_TTL_MS, 'NX');
+          if (retryLock === 'OK') {
+            lockAcquired = true;
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn('[quests] Redis lock unavailable during generateUserQuests, falling back to DB transaction', {
+        userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
-  await questTransaction(async session => {
-    for (const template of templates) {
-      if (!template) throw new Error('Quest definition missing');
-      const { _id, key: _key, __v: _version, ...snapshot } = template;
-      const period = periods[template.cadence];
-      await UserQuestProgress.updateOne({ userId, slot: template.slot, periodKey: period.periodKey }, {
-        $setOnInsert: { ...snapshot, userId: new Types.ObjectId(userId), questId: _id, ...period },
-      }, { upsert: true, session });
+
+  try {
+    // Double-checked read inside the lock boundary
+    const rechecked = await UserQuestProgress.find(filter).sort({ cadence: 1, slot: 1 }).lean();
+    if (slots.every(slot => rechecked.some(row => row.slot === slot))) return rechecked;
+
+    const active = await LeagueStanding.findOne({ userId, weekKey: weekKeyFor(now) }).lean();
+    if (!active && await LeagueStanding.exists({ userId, weekKey: previousWeekKey(weekKeyFor(now)), status: 'active' })) {
+      throw questError(503, 'League rollover is pending; retry quest generation');
     }
-  });
-  return UserQuestProgress.find({ userId, periodKey: { $in: [periods.daily.periodKey, periods.weekly.periodKey] } }).sort({ cadence: 1, slot: 1 }).lean();
+    const previous = active ? null : await LeagueStanding.findOne({ userId, status: 'finalized' }).sort({ weekKey: -1 }).lean();
+    const division = active?.division ?? previous?.nextDivision ?? 'bronze';
+    const definitions = questDefinitions(division).filter(item => !cadence || item.cadence === cadence);
+    const templates: Array<(IQuest & { _id: Types.ObjectId; __v?: number }) | null> = [];
+    for (const definition of definitions) {
+      try {
+        templates.push(await Quest.findOneAndUpdate({ key: definition.key }, { $setOnInsert: definition }, { upsert: true, new: true }).lean());
+      } catch (error) {
+        if ((error as { code?: number }).code !== 11000) throw error;
+        templates.push(await Quest.findOne({ key: definition.key }).lean());
+      }
+    }
+    await questTransaction(async session => {
+      for (const template of templates) {
+        if (!template) throw new Error('Quest definition missing');
+        const { _id, key: _key, __v: _version, ...snapshot } = template;
+        const period = periods[template.cadence];
+        await UserQuestProgress.updateOne({ userId, slot: template.slot, periodKey: period.periodKey }, {
+          $setOnInsert: { ...snapshot, userId: new Types.ObjectId(userId), questId: _id, ...period },
+        }, { upsert: true, session });
+      }
+    });
+    return UserQuestProgress.find({ userId, periodKey: { $in: [periods.daily.periodKey, periods.weekly.periodKey] } }).sort({ cadence: 1, slot: 1 }).lean();
+  } finally {
+    if (lockAcquired && isRedisConfigured()) {
+      try {
+        await getRedisClient().eval(RELEASE_LOCK_LUA, 1, lockKey, lockToken);
+      } catch (err) {
+        logger.warn('[quests] Failed to release quest generation lock', {
+          lockKey,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
 }
 
 export async function listUserQuests(userId: string, now = new Date()) {

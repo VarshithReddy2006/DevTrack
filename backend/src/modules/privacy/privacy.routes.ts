@@ -125,7 +125,8 @@ privacyRoutes.post('/delete-account', authMiddleware, async (req: AuthenticatedR
       details: {
         completedAt: erasureResult.completedAt,
         deletedCollections: Object.keys(erasureResult.deletedCounts).length,
-        auditLogsAnonymized: erasureResult.anonymizedAuditLogs,
+        auditLogTombstoneAppended: erasureResult.tombstoneAppended,
+        shreddedAuditKeys: erasureResult.shreddedAuditKeys,
       },
     });
   } catch (error) {

@@ -526,18 +526,25 @@ export async function processQuestReward(userId: string, progressId: string, now
     if (!Number.isSafeInteger(newTotalXp) || !Number.isSafeInteger(trophies)) throw new Error('Unsafe quest reward aggregate');
     const levelBefore = calculateLevel(previousTotalXp);
     const levelAfter = calculateLevel(newTotalXp);
-    await UserXp.updateOne({ _id: wallet._id }, {
-      $inc: { totalXp: progress.xpReward, leagueTrophies: progress.trophyReward, 'lifetimeStats.totalXpEarned': progress.xpReward },
-      $set: { currentLevel: levelAfter, xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter), lastXpGainedAt: now },
-    }, { session });
-    progress.claimed = true;
-    progress.claimedAt = now;
-    await progress.save({ session });
+    const claimedProgress = await UserQuestProgress.findOneAndUpdate(
+      { _id: progressId, userId, claimed: false },
+      { $set: { claimed: true, claimedAt: now } },
+      { session, new: true },
+    );
+    if (!claimedProgress) {
+      const currentWallet = await UserXp.findOne({ userId }).session(session).lean();
+      return { questId: progressId, claimed: true, duplicate: true, xpReward: progress.xpReward,
+        trophyReward: progress.trophyReward, totalXp: currentWallet!.totalXp, leagueTrophies: currentWallet!.leagueTrophies ?? 0 };
+    }
     await XpTransaction.create([{
       userId, sourceType: 'manual', sourceId, xpAwarded: progress.xpReward,
       previousTotalXp, newTotalXp, levelBefore, levelAfter,
       metadata: { questId: progressId, periodKey: progress.periodKey, leagueTrophies: progress.trophyReward },
     }], { session });
+    await UserXp.updateOne({ _id: wallet._id }, {
+      $inc: { totalXp: progress.xpReward, leagueTrophies: progress.trophyReward, 'lifetimeStats.totalXpEarned': progress.xpReward },
+      $set: { currentLevel: levelAfter, xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter), lastXpGainedAt: now },
+    }, { session });
     await UserAnalytics.updateOne({ userId }, { $max: { totalXp: newTotalXp, currentLevel: levelAfter } }, { upsert: true, session });
     await writeOutboxEvent(session, { type: 'quest.claimed', aggregateType: 'UserQuestProgress', aggregateId: progressId,
       userId, payload: { progressId } });

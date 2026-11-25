@@ -345,15 +345,17 @@ describe('GDPR Privacy: Data Export & Cascading Account Erasure', () => {
       const publicProfileAfter = await PublicProfile.findOne({ userId: testUserId });
       expect(publicProfileAfter).toBeNull();
 
-      // Verify ProfileAuditLog was anonymized instead of deleted (to preserve audit chain)
-      const auditLogsAfter = await ProfileAuditLog.find({ 'details.anonymized': true });
-      expect(auditLogsAfter.length).toBeGreaterThan(0);
-      expect(auditLogsAfter[0].userId).toBeNull();
-      expect(auditLogsAfter[0].details.anonymized).toBe(true);
+      // Verify an ACCOUNT_ERASURE_TOMBSTONE was appended instead of mutating audit logs
+      const tombstones = await ProfileAuditLog.find({ eventType: 'ACCOUNT_ERASURE_TOMBSTONE' });
+      expect(tombstones.length).toBe(1);
+      expect(tombstones[0].userId).toBeNull();
+      expect(tombstones[0].details.reason).toBe('gdpr_right_to_erasure');
 
-      // Verify no audit log contains the original testUserId
-      const lingeringAuditLogs = await ProfileAuditLog.find({ userId: new Types.ObjectId(testUserId) });
-      expect(lingeringAuditLogs).toHaveLength(0);
+      // Verify original audit records still reference the erased userId (immutable)
+      const originalAuditLogs = await ProfileAuditLog.find({
+        userId: new Types.ObjectId(testUserId),
+      });
+      expect(originalAuditLogs.length).toBe(1); // The seeded profile_computed record
     });
 
     it('gracefully handles erasure of non-existent user or already purged records', async () => {

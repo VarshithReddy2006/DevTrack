@@ -32,11 +32,11 @@ import {
   NotificationPreference,
   CareerIntent,
   CareerRoadmap,
-  ProfileAuditLog,
 } from '../../db/models/index.js';
 import { runInTransaction } from '../../db/transaction.js';
 import { logger } from '../../shared/logger.js';
 import { getRedisClient, isRedisConfigured } from '../../shared/redis/index.js';
+import { appendErasureTombstone, destroyAuditKey } from '../audit/auditLedger.service.js';
 
 export interface AccountErasureOptions {
   deleteClerkAccount?: boolean;
@@ -48,7 +48,8 @@ export interface ErasureResult {
   userId: string;
   clerkId: string | null;
   deletedCounts: Record<string, number>;
-  anonymizedAuditLogs: number;
+  tombstoneAppended: boolean;
+  shreddedAuditKeys: number;
   clearedRedisKeys: number;
   clerkDeleted: boolean;
   completedAt: string;
@@ -56,7 +57,8 @@ export interface ErasureResult {
 
 /**
  * Executes cascading account deletion within a MongoDB transaction.
- * Permanently removes user records across collections, anonymizes audit logs,
+ * Permanently removes user records across collections, crypto-shreds audit encryption keys,
+ * appends an immutable ACCOUNT_ERASURE_TOMBSTONE to preserve the audit hash chain,
  * clears Redis cache keys, and removes the account from Clerk.
  */
 export async function executeAccountErasure(
@@ -75,7 +77,8 @@ export async function executeAccountErasure(
   const username = userDoc?.username ?? null;
 
   const deletedCounts: Record<string, number> = {};
-  let anonymizedAuditLogsCount = 0;
+  let tombstoneAppended = false;
+  let shreddedAuditKeys = 0;
 
   // 2. Perform transactional cascading deletion across database collections
   const cascadeOperations = async (session: ClientSession | null) => {
@@ -140,22 +143,20 @@ export async function executeAccountErasure(
 
     await Promise.all(delPromises);
 
-    // Anonymize ProfileAuditLog without breaking tamper-evident hash ledger
+    // Crypto-shred the user's audit encryption key and append an immutable
+    // ACCOUNT_ERASURE_TOMBSTONE record without mutating existing ProfileAuditLog rows.
     if (anonymizeAuditLogs && userObjectId) {
-      const auditRes = await ProfileAuditLog.updateMany(
-        { userId: userObjectId },
+      const { shreddedCount, subjectHash } = await destroyAuditKey(userObjectId, session);
+      shreddedAuditKeys = shreddedCount;
+      await appendErasureTombstone(
         {
-          $set: {
-            userId: null,
-            details: {
-              anonymized: true,
-              purgedAt: new Date().toISOString(),
-            },
-          },
+          userId: String(userId),
+          subjectRef: subjectHash,
+          keyDestroyed: shreddedCount > 0,
         },
-        sessionOpts
+        session
       );
-      anonymizedAuditLogsCount = auditRes.modifiedCount ?? 0;
+      tombstoneAppended = true;
     }
   };
 
@@ -243,7 +244,8 @@ export async function executeAccountErasure(
     userId,
     clerkId,
     deletedCounts,
-    anonymizedAuditLogs: anonymizedAuditLogsCount,
+    tombstoneAppended,
+    shreddedAuditKeys,
     clearedRedisKeys,
     clerkDeleted,
     completedAt: new Date().toISOString(),

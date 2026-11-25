@@ -5,9 +5,21 @@ import { ResumeExport } from '../../../db/models/resumeExport.model.js';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeSession } from '../../../db/models/resumeSession.model.js';
 import { DossierExportSchema, ExportResumeSchema } from '../dto/index.js';
+import { resetBrowserPool } from './browserPool.js';
 import { ResumeExportService } from './ResumeExportService.js';
 
-const mocks = vi.hoisted(() => ({ pdf: vi.fn(), setContent: vi.fn(), close: vi.fn(), pageClose: vi.fn(), javascript: vi.fn(), intercept: vi.fn(), on: vi.fn(), launch: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  pdf: vi.fn(),
+  setContent: vi.fn(),
+  close: vi.fn(),
+  contextClose: vi.fn(),
+  createBrowserContext: vi.fn(),
+  pageClose: vi.fn(),
+  javascript: vi.fn(),
+  intercept: vi.fn(),
+  on: vi.fn(),
+  launch: vi.fn(),
+}));
 vi.mock('puppeteer', () => ({ default: { launch: mocks.launch } }));
 
 const owner = new Types.ObjectId();
@@ -18,14 +30,35 @@ const report = {
   recommendations: [],
 };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await resetBrowserPool();
   vi.restoreAllMocks();
   vi.clearAllMocks();
   mocks.pdf.mockResolvedValue(Buffer.from('%PDF-1.4 synthetic'));
   mocks.setContent.mockResolvedValue(undefined);
   mocks.close.mockResolvedValue(undefined);
+  mocks.contextClose.mockResolvedValue(undefined);
   mocks.pageClose.mockResolvedValue(undefined);
-  mocks.launch.mockResolvedValue({ newPage: async () => ({ close: mocks.pageClose, setJavaScriptEnabled: mocks.javascript, setRequestInterception: mocks.intercept, on: mocks.on, setContent: mocks.setContent, pdf: mocks.pdf }), close: mocks.close });
+  const makePage = () => ({
+    close: mocks.pageClose,
+    setJavaScriptEnabled: mocks.javascript,
+    setRequestInterception: mocks.intercept,
+    on: mocks.on,
+    setContent: mocks.setContent,
+    pdf: mocks.pdf,
+  });
+  mocks.createBrowserContext.mockImplementation(async () => ({
+    newPage: async () => makePage(),
+    close: mocks.contextClose,
+  }));
+  mocks.launch.mockResolvedValue({
+    connected: true,
+    on: vi.fn(),
+    off: vi.fn(),
+    createBrowserContext: mocks.createBrowserContext,
+    newPage: async () => makePage(),
+    close: mocks.close,
+  });
 });
 
 describe('dossier PDF export', () => {
@@ -43,8 +76,10 @@ describe('dossier PDF export', () => {
     expect(html).toContain('&lt;script&gt;bad()&lt;/script&gt;');
     expect(html).toContain('&lt;img src=x&gt;');
     expect(mocks.intercept).toHaveBeenCalledWith(true);
+    expect(mocks.createBrowserContext).toHaveBeenCalledOnce();
     expect(mocks.pageClose).toHaveBeenCalledOnce();
-    expect(mocks.close).toHaveBeenCalledOnce();
+    expect(mocks.contextClose).toHaveBeenCalledOnce();
+    expect(mocks.close).not.toHaveBeenCalled();
   });
 
   it.each([null, { reportState: { generated: false } }, { reportState: { generated: true } }])('rejects unavailable or incomplete reports without rendering', async session => {
@@ -53,32 +88,34 @@ describe('dossier PDF export', () => {
     expect(mocks.launch).not.toHaveBeenCalled();
   });
 
-  it('limits concurrent renders and releases capacity after completion', async () => {
+  it('reuses the warm browser across concurrent renders using isolated contexts', async () => {
     vi.spyOn(ResumeSession, 'findOne').mockResolvedValue({ reportState: { generated: true, reportData: report } } as never);
     const service = new ResumeExportService();
     let complete!: (pdf: Buffer) => void;
     const pending = new Promise<Buffer>(resolve => { complete = resolve; });
-    mocks.pdf.mockReturnValue(pending);
+    mocks.pdf.mockReturnValueOnce(pending).mockReturnValueOnce(pending);
 
     const first = service.generateDossierPDF(owner, 'session-a');
     const second = service.generateDossierPDF(owner, 'session-b');
-    try {
-      await expect(service.generateDossierPDF(owner, 'session-c')).rejects.toMatchObject({ statusCode: 503 });
-      expect(mocks.launch).toHaveBeenCalledTimes(2);
-    } finally {
-      complete(Buffer.from('%PDF-1.4 synthetic'));
-      await Promise.all([first, second]);
-    }
+    await vi.waitFor(() => expect(mocks.createBrowserContext).toHaveBeenCalledTimes(2));
+    expect(mocks.launch).toHaveBeenCalledOnce();
+
+    complete(Buffer.from('%PDF-1.4 synthetic'));
+    await Promise.all([first, second]);
+    expect(mocks.contextClose).toHaveBeenCalledTimes(2);
 
     await expect(service.generateDossierPDF(owner, 'session-d')).resolves.toBeInstanceOf(Buffer);
+    expect(mocks.launch).toHaveBeenCalledOnce();
+    expect(mocks.createBrowserContext).toHaveBeenCalledTimes(3);
   });
 
-  it('propagates renderer failures and closes the browser', async () => {
+  it('propagates renderer failures and closes the page and context while keeping the warm browser alive', async () => {
     vi.spyOn(ResumeSession, 'findOne').mockResolvedValue({ reportState: { generated: true, reportData: report } } as never);
     mocks.pdf.mockRejectedValue(new Error('renderer failed'));
     await expect(new ResumeExportService().generateDossierPDF(owner, 'session-a')).rejects.toThrow('renderer failed');
     expect(mocks.pageClose).toHaveBeenCalledOnce();
-    expect(mocks.close).toHaveBeenCalledOnce();
+    expect(mocks.contextClose).toHaveBeenCalledOnce();
+    expect(mocks.close).not.toHaveBeenCalled();
   });
 });
 
@@ -136,7 +173,8 @@ describe('profile resume export', () => {
     await expect(service.export({ userId: owner, resumeProfileId: profileId, exportType: 'pdf' }))
       .rejects.toThrow('page load timed out');
     expect(mocks.pageClose).toHaveBeenCalledOnce();
-    expect(mocks.close).toHaveBeenCalledOnce();
+    expect(mocks.contextClose).toHaveBeenCalledOnce();
+    expect(mocks.close).not.toHaveBeenCalled();
     expect(fs.writeFile).not.toHaveBeenCalled();
     expect(ResumeExport.create).not.toHaveBeenCalled();
   });
