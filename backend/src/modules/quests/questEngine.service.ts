@@ -6,6 +6,8 @@ import { LeagueStanding, LEAGUE_DIVISIONS, type LeagueDivision } from '../../db/
 import { User } from '../../db/models/user.model.js';
 import { UserXp } from '../../db/models/userXp.model.js';
 import { runInTransaction } from '../../db/transaction.js';
+import { cacheManager } from '../../shared/cache/cacheManager.js';
+import { logger } from '../../shared/logger.js';
 import { weekKeyFor, weekRange, previousWeekKey } from '../leagues/weeks.js';
 
 export const questObjectId = z.string().regex(/^[a-fA-F0-9]{24}$/);
@@ -83,14 +85,18 @@ export async function generateUserQuests(userId: string, now = new Date(), caden
 }
 
 export async function listUserQuests(userId: string, now = new Date()) {
-  const rows = await generateUserQuests(userId, now);
+  const rows = (await generateUserQuests(userId, now)).filter(
+    row => row.status !== 'expired' && row.status !== 'archived'
+  );
   const wallet = await UserXp.findOne({ userId }).select('leagueTrophies').lean();
   return {
     serverTime: now.toISOString(), leagueTrophies: wallet?.leagueTrophies ?? 0,
     quests: rows.map(row => ({
       questId: row._id.toString(), definitionId: row.questId.toString(), periodKey: row.periodKey,
       cadence: row.cadence, division: row.division, kind: row.kind, title: row.title,
-      targetCount: row.targetCount, currentCount: row.currentCount, completed: row.completed,
+      targetCount: row.targetCount, currentCount: row.currentCount,
+      status: row.status ?? (row.completed ? 'completed' : 'in_progress'),
+      completed: row.completed,
       claimed: row.claimed, completedAt: row.completedAt, claimedAt: row.claimedAt,
       startsAt: row.startsAt, expiresAt: row.expiresAt, xpReward: row.xpReward, trophyReward: row.trophyReward,
     })),
@@ -104,4 +110,121 @@ export async function runQuestGenerationSweep(now = new Date()) {
     users++;
   }
   return { users };
+}
+
+export interface QuestExpirationSweepResult {
+  expiredCount: number;
+  archivedCount: number;
+  invalidatedUsers: number;
+}
+
+/**
+ * Transitions stale in-progress quests past their deadline to 'expired',
+ * invalidates affected user caches, and archives quest records older than archiveAfterDays.
+ */
+export async function expireStaleQuests(
+  batchSize = 200,
+  now = new Date(),
+  archiveAfterDays = 90
+): Promise<QuestExpirationSweepResult> {
+  const limit = Math.max(1, Math.floor(batchSize));
+  let expiredCount = 0;
+  let archivedCount = 0;
+  const affectedUsers = new Set<string>();
+
+  for (;;) {
+    const stale = await UserQuestProgress.find({
+      expiresAt: { $lt: now },
+      completed: false,
+      $or: [{ status: 'in_progress' }, { status: { $exists: false } }],
+    })
+      .select('_id userId currentCount targetCount')
+      .limit(limit)
+      .lean();
+
+    if (stale.length === 0) break;
+
+    const ops = stale.map(doc => {
+      const finalProgressPct =
+        doc.targetCount > 0
+          ? Math.min(100, Math.round((doc.currentCount / doc.targetCount) * 10000) / 100)
+          : 0;
+      return {
+        updateOne: {
+          filter: {
+            _id: doc._id,
+            completed: false,
+            expiresAt: { $lt: now },
+            status: { $nin: ['completed', 'expired', 'archived'] },
+          },
+          update: {
+            $set: {
+              status: 'expired' as const,
+              expiredAt: now,
+              finalProgressPct,
+            },
+          },
+        },
+      };
+    });
+
+    const writeResult = await UserQuestProgress.bulkWrite(ops, { ordered: false });
+    expiredCount += writeResult.modifiedCount ?? 0;
+
+    if ((writeResult.modifiedCount ?? 0) > 0) {
+      for (const doc of stale) {
+        affectedUsers.add(doc.userId.toString());
+      }
+    }
+
+    if (stale.length < limit) break;
+  }
+
+  if (affectedUsers.size > 0) {
+    const invalidations = await Promise.allSettled(
+      Array.from(affectedUsers, uid => cacheManager.invalidateAllUserCache(uid))
+    );
+    for (const outcome of invalidations) {
+      if (outcome.status === 'rejected') {
+        logger.warn('[quests] Failed to invalidate user cache after quest expiration', {
+          error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+        });
+      }
+    }
+  }
+
+  const archiveCutoff = new Date(now.getTime() - archiveAfterDays * 86_400_000);
+  for (;;) {
+    const archivable = await UserQuestProgress.find({
+      expiresAt: { $lt: archiveCutoff },
+      status: { $ne: 'archived' },
+    })
+      .select('_id')
+      .limit(limit)
+      .lean();
+
+    if (archivable.length === 0) break;
+
+    const ids = archivable.map(doc => doc._id);
+    const archiveResult = await UserQuestProgress.updateMany(
+      { _id: { $in: ids }, status: { $ne: 'archived' } },
+      { $set: { status: 'archived', archivedAt: now } }
+    );
+    archivedCount += archiveResult.modifiedCount ?? 0;
+
+    if (archivable.length < limit) break;
+  }
+
+  logger.info('[quests] Quest expiration sweep completed', {
+    event: 'quests_expiration_sweep',
+    expiredCount,
+    archivedCount,
+    invalidatedUsers: affectedUsers.size,
+  });
+
+  return {
+    expiredCount,
+    archivedCount,
+    invalidatedUsers: affectedUsers.size,
+  };
 }
