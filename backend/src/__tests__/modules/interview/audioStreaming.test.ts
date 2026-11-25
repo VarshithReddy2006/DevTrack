@@ -13,6 +13,7 @@ import {
   type StoredAudioChunk,
 } from '../../../modules/interview/audioStreaming.service.js';
 import { createInterviewRoutes } from '../../../modules/interview/interview.routes.js';
+import { TranscriptionQueue, type FinalTranscript } from '../../../modules/interview/transcriptionQueue.js';
 import { mountApiRoutes } from '../../../routes/mount.js';
 
 /**
@@ -606,5 +607,127 @@ describe('Interview Audio HTTP Routes Integration', () => {
     expect(res.status).toBe(200);
     expect(json.success).toBe(true);
     expect(mockService.cleanSessionAudio).toHaveBeenCalledWith('session-http-301');
+  });
+});
+
+describe('AudioStreamingService - Rate-limited live transcription queue', () => {
+  const fastQueueConfig = { requestsPerMinute: 60_000, burstCapacity: 100, baseBackoffMs: 1, maxBackoffMs: 5 };
+
+  async function waitFor(predicate: () => boolean, attempts = 200): Promise<void> {
+    for (let i = 0; i < attempts && !predicate(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(predicate()).toBe(true);
+  }
+
+  it('submits speech chunks in order, skips silence, and delivers a sequence-ordered final transcript', async () => {
+    const releases: Array<() => void> = [];
+    const provider = vi.fn((audioBase64: string, { chunkIndex }: { sessionId: string; chunkIndex: number }) =>
+      new Promise<string>((resolve) => {
+        releases[chunkIndex] = () => resolve(`word${chunkIndex}:${audioBase64.length > 0}`);
+      }),
+    );
+    const queue = new TranscriptionQueue(provider, { ...fastQueueConfig, maxSessionConcurrency: 3 });
+    const finals: FinalTranscript[] = [];
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+    const service = new AudioStreamingService({ defaultChunkDurationMs: 1000 }, null, enqueue, {
+      queue,
+      onFinalTranscript: (result) => {
+        finals.push(result);
+      },
+    });
+    const sessionId = 'live-ordered';
+
+    const r0 = await service.ingestChunk(sessionId, { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    const r1 = await service.ingestChunk(sessionId, { chunkIndex: 1, isLast: false }, createMockAudioChunk('silence', 512));
+    const r2 = await service.ingestChunk(sessionId, { chunkIndex: 2, isLast: false }, createMockAudioChunk('speech', 512));
+    const r3 = await service.ingestChunk(sessionId, { chunkIndex: 3, isLast: true }, createMockAudioChunk('speech', 512));
+
+    expect([r0, r1, r2, r3].map((r) => r.liveTranscriptionQueued)).toEqual([true, false, true, true]);
+    expect(r3.status).toBe('speech_completed');
+    expect(enqueue).toHaveBeenCalledOnce();
+    await waitFor(() => provider.mock.calls.length === 3);
+    expect(provider.mock.calls.map((call) => call[1].chunkIndex)).toEqual([0, 2, 3]);
+
+    // Responses arrive out of order; the final transcript must still follow chunkIndex order.
+    releases[3]();
+    releases[2]();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(finals).toHaveLength(0);
+    releases[0]();
+
+    await waitFor(() => finals.length === 1);
+    expect(finals[0]).toMatchObject({
+      sessionId,
+      transcript: 'word0:true word2:true word3:true',
+      failedChunks: [],
+      missingChunks: [],
+      complete: true,
+    });
+    queue.close();
+  });
+
+  it('retries throttled chunks without dropping them from the final transcript', async () => {
+    let throttled = 0;
+    const provider = vi.fn(async (_audio: string, { chunkIndex }: { sessionId: string; chunkIndex: number }) => {
+      if (chunkIndex === 0 && throttled < 2) {
+        throttled++;
+        throw Object.assign(new Error('Too Many Requests'), { status: 429 });
+      }
+      return `chunk${chunkIndex}`;
+    });
+    const queue = new TranscriptionQueue(provider, fastQueueConfig);
+    const finals: FinalTranscript[] = [];
+    const service = new AudioStreamingService({}, null, vi.fn().mockResolvedValue(undefined), {
+      queue,
+      onFinalTranscript: (result) => {
+        finals.push(result);
+      },
+    });
+
+    await service.ingestChunk('live-retry', { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    await service.ingestChunk('live-retry', { chunkIndex: 1, isLast: true }, createMockAudioChunk('speech', 512));
+
+    await waitFor(() => finals.length === 1);
+    expect(provider).toHaveBeenCalledTimes(4);
+    expect(finals[0]).toMatchObject({ transcript: 'chunk0 chunk1', complete: true });
+    queue.close();
+  });
+
+  it('exposes the partial live transcript in status and cancels queued work on disconnect', async () => {
+    const pending: Array<(text: string) => void> = [];
+    const provider = vi.fn(
+      (_audio: string, _ctx: { sessionId: string; chunkIndex: number }) =>
+        new Promise<string>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    const queue = new TranscriptionQueue(provider, fastQueueConfig);
+    const service = new AudioStreamingService({}, null, vi.fn().mockResolvedValue(undefined), { queue });
+    const sessionId = 'live-disconnect';
+
+    await service.ingestChunk(sessionId, { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    await service.ingestChunk(sessionId, { chunkIndex: 1, isLast: false }, createMockAudioChunk('speech', 512));
+    await waitFor(() => pending.length === 1);
+    pending[0]('hello');
+    await waitFor(() => pending.length === 2);
+
+    const status = await service.getStatus(sessionId);
+    expect(status.liveTranscript).toBe('hello');
+
+    await service.cleanSessionAudio(sessionId);
+    expect(queue.stats()).toMatchObject({ pending: 0, sessions: 0 });
+    pending[1]('ignored');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(queue.getTranscript(sessionId)).toBe('');
+    queue.close();
+  });
+
+  it('keeps the existing behaviour when no live transcription queue is configured', async () => {
+    const service = new AudioStreamingService({}, null, vi.fn().mockResolvedValue(undefined));
+    const result = await service.ingestChunk('no-live', { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    expect(result.liveTranscriptionQueued).toBe(false);
+    const status = await service.getStatus('no-live');
+    expect(status).not.toHaveProperty('liveTranscript');
   });
 });
