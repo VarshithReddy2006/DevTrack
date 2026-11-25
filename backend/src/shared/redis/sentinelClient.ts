@@ -15,6 +15,75 @@ let _masterClient: Redis | null = null;
 let _replicaClient: Redis | null = null;
 let _connecting = false;
 let _replicaConnecting = false;
+let _refreshPromise: Promise<Redis> | null = null;
+
+export const DEFAULT_FAILOVER_MAX_RETRIES = 3;
+export const DEFAULT_FAILOVER_BASE_DELAY_MS = 50;
+export const DEFAULT_FAILOVER_MAX_DELAY_MS = 1000;
+
+export interface FailoverRetryOptions {
+  maxRetries?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  onRetry?: (attempt: number, error: Error, delayMs: number) => void;
+}
+
+export type PipelineExecResult = Array<[Error | null, unknown]> | null;
+
+/**
+ * Error thrown when Sentinel master failover retries are exhausted after
+ * repeated READONLY errors.
+ */
+export class SentinelFailoverError extends Error {
+  readonly attempts: number;
+  override readonly cause: Error;
+
+  constructor(attempts: number, cause: Error) {
+    super(`Sentinel master failover failed after ${attempts} attempt(s): ${cause.message}`);
+    this.name = 'SentinelFailoverError';
+    this.attempts = attempts;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Returns true if an error represents a Redis READONLY replica error
+ * encountered during a master failover window.
+ */
+export function isReadonlyError(error: unknown): boolean {
+  if (!error) return false;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'object' && 'message' in error && typeof (error as { message: unknown }).message === 'string'
+        ? (error as { message: string }).message
+        : typeof error === 'string'
+          ? error
+          : '';
+  return /\bREADONLY\b/i.test(message);
+}
+
+/**
+ * Inspects ioredis pipeline/transaction exec() results for any command-level
+ * READONLY error and returns it as an Error if present.
+ */
+export function findReadonlyErrorInPipelineResults(
+  results: PipelineExecResult | undefined
+): Error | null {
+  if (!Array.isArray(results)) return null;
+  for (const entry of results) {
+    if (!Array.isArray(entry)) continue;
+    const [err] = entry;
+    if (err && isReadonlyError(err)) {
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  }
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Check whether a Redis client is active or in a valid transitional state
@@ -98,8 +167,7 @@ function createSentinelClient(role: 'master' | 'slave' = 'master'): Redis {
       return delay;
     },
     reconnectOnError(err: Error) {
-      const target = 'READONLY';
-      return err.message.includes(target) ? 1 : false;
+      return isReadonlyError(err) ? 2 : false;
     },
   };
 
@@ -319,8 +387,138 @@ export async function disconnectSentinel(): Promise<void> {
   _replicaClient = null;
   _connecting = false;
   _replicaConnecting = false;
+  _refreshPromise = null;
 
   logger.info('[redis-sentinel] Disconnected', { event: 'sentinel_disconnected' });
+}
+
+/**
+ * Force-recycle the cached Sentinel master (and replica) client so the next
+ * connection re-resolves the active primary from Sentinel. Concurrent callers
+ * share the same in-flight refresh.
+ */
+export async function refreshSentinelMaster(): Promise<Redis> {
+  if (_refreshPromise) {
+    return _refreshPromise;
+  }
+
+  _refreshPromise = (async () => {
+    const oldMaster = _masterClient;
+    const oldReplica = _replicaClient;
+
+    _masterClient = null;
+    _replicaClient = null;
+    _connecting = false;
+    _replicaConnecting = false;
+
+    if (oldMaster && typeof oldMaster.disconnect === 'function') {
+      try {
+        oldMaster.disconnect();
+      } catch (_) {}
+    }
+    if (oldReplica && typeof oldReplica.disconnect === 'function') {
+      try {
+        oldReplica.disconnect();
+      } catch (_) {}
+    }
+
+    return getRedisMaster();
+  })();
+
+  try {
+    return await _refreshPromise;
+  } finally {
+    _refreshPromise = null;
+  }
+}
+
+/**
+ * Execute an operation against the Sentinel master client, automatically
+ * refreshing Sentinel master topology and retrying with exponential backoff
+ * when a READONLY error indicates an in-flight master failover.
+ */
+export async function executeWithFailover<T>(
+  operation: (client: Redis) => Promise<T>,
+  options: FailoverRetryOptions = {}
+): Promise<T> {
+  const maxRetries = Math.max(0, Math.trunc(options.maxRetries ?? DEFAULT_FAILOVER_MAX_RETRIES));
+  const baseDelayMs = Math.max(0, options.baseDelayMs ?? DEFAULT_FAILOVER_BASE_DELAY_MS);
+  const maxDelayMs = Math.max(baseDelayMs, options.maxDelayMs ?? DEFAULT_FAILOVER_MAX_DELAY_MS);
+
+  for (let attempt = 0; ; attempt++) {
+    const client = getRedisMaster();
+    try {
+      return await operation(client);
+    } catch (error) {
+      if (!isReadonlyError(error)) {
+        throw error;
+      }
+
+      const readonlyErr = error instanceof Error ? error : new Error(String(error));
+      if (attempt >= maxRetries) {
+        logger.error('[redis-sentinel] Master failover retries exhausted', readonlyErr, {
+          event: 'sentinel_failover_exhausted',
+          attempts: attempt + 1,
+          masterName: getSentinelMasterName(),
+        });
+        throw new SentinelFailoverError(attempt + 1, readonlyErr);
+      }
+
+      const delayMs = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
+      logger.warn('[redis-sentinel] READONLY received during operation, refreshing master', {
+        event: 'sentinel_failover_retry',
+        attempt: attempt + 1,
+        maxRetries,
+        delayMs,
+        masterName: getSentinelMasterName(),
+      });
+      options.onRetry?.(attempt + 1, readonlyErr, delayMs);
+
+      if (delayMs > 0) {
+        await sleep(delayMs);
+      }
+      await refreshSentinelMaster();
+    }
+  }
+}
+
+async function executeBatchWithFailover(
+  mode: 'pipeline' | 'multi',
+  build: (batch: ReturnType<Redis['pipeline']>) => void,
+  options: FailoverRetryOptions = {}
+): Promise<PipelineExecResult> {
+  return executeWithFailover(async (client) => {
+    const batch = mode === 'multi' ? client.multi() : client.pipeline();
+    build(batch);
+    const results = (await batch.exec()) as PipelineExecResult;
+    const readonlyErr = findReadonlyErrorInPipelineResults(results);
+    if (readonlyErr) {
+      throw readonlyErr;
+    }
+    return results;
+  }, options);
+}
+
+/**
+ * Execute a multi-command Redis pipeline against the Sentinel master, retrying
+ * against a freshly resolved master if any command in the pipeline fails with READONLY.
+ */
+export function executePipelineWithFailover(
+  build: (pipeline: ReturnType<Redis['pipeline']>) => void,
+  options: FailoverRetryOptions = {}
+): Promise<PipelineExecResult> {
+  return executeBatchWithFailover('pipeline', build, options);
+}
+
+/**
+ * Execute a Redis MULTI/EXEC transaction against the Sentinel master, retrying
+ * against a freshly resolved master if execution fails with READONLY.
+ */
+export function executeTransactionWithFailover(
+  build: (multi: ReturnType<Redis['multi']>) => void,
+  options: FailoverRetryOptions = {}
+): Promise<PipelineExecResult> {
+  return executeBatchWithFailover('multi', build, options);
 }
 
 /**
@@ -331,4 +529,5 @@ export function resetSentinelClients(): void {
   _replicaClient = null;
   _connecting = false;
   _replicaConnecting = false;
+  _refreshPromise = null;
 }

@@ -2,10 +2,20 @@
 // Manages connection lifecycle, reconnection, and health visibility.
 // Integrates with Redis Sentinel for high availability when configured.
 
-import Redis from 'ioredis';
+import Redis, { type ChainableCommander } from 'ioredis';
 import { env } from '../../config/env.js';
 import { logger } from '../logger.js';
-import { isSentinelConfigured, getRedisMaster, getSentinelHealth } from './sentinelClient.js';
+import {
+  isSentinelConfigured,
+  getRedisMaster,
+  getSentinelHealth,
+  isReadonlyError,
+  executeWithFailover,
+  executePipelineWithFailover,
+  executeTransactionWithFailover,
+  type FailoverRetryOptions,
+  type PipelineExecResult,
+} from './sentinelClient.js';
 
 let _client: Redis | null = null;
 let _mockClient: Redis | null = null;
@@ -124,8 +134,7 @@ export function getRedisClient(): Redis {
           return delay;
         },
         reconnectOnError(err: Error) {
-          const target = 'READONLY';
-          return err.message.includes(target);
+          return isReadonlyError(err) ? 2 : false;
         },
       };
 
@@ -225,4 +234,56 @@ export function getRedisHealth(): RedisHealth {
     lastError: null,
     reconnectAttempts: 0,
   };
+}
+
+/**
+ * Execute an operation against the active Redis client, automatically
+ * handling Sentinel master failover and READONLY retries when Sentinel is configured.
+ */
+export async function executeRedisOperation<T>(
+  operation: (client: Redis) => Promise<T>,
+  options?: FailoverRetryOptions
+): Promise<T> {
+  if (isSentinelConfigured()) {
+    return executeWithFailover(operation, options);
+  }
+  return operation(getRedisClient());
+}
+
+async function executeRedisBatch(
+  mode: 'pipeline' | 'multi',
+  build: (batch: ChainableCommander) => void,
+  options?: FailoverRetryOptions
+): Promise<PipelineExecResult> {
+  if (isSentinelConfigured()) {
+    return mode === 'multi'
+      ? executeTransactionWithFailover(build, options)
+      : executePipelineWithFailover(build, options);
+  }
+  const client = getRedisClient();
+  const batch = mode === 'multi' ? client.multi() : client.pipeline();
+  build(batch);
+  return (await batch.exec()) as PipelineExecResult;
+}
+
+/**
+ * Execute a multi-command Redis pipeline with automatic Sentinel failover retry
+ * when Sentinel is configured.
+ */
+export function executeRedisPipeline(
+  build: (pipeline: ChainableCommander) => void,
+  options?: FailoverRetryOptions
+): Promise<PipelineExecResult> {
+  return executeRedisBatch('pipeline', build, options);
+}
+
+/**
+ * Execute a Redis MULTI/EXEC transaction with automatic Sentinel failover retry
+ * when Sentinel is configured.
+ */
+export function executeRedisTransaction(
+  build: (multi: ChainableCommander) => void,
+  options?: FailoverRetryOptions
+): Promise<PipelineExecResult> {
+  return executeRedisBatch('multi', build, options);
 }

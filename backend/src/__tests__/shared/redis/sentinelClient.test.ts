@@ -1,6 +1,46 @@
 // src/__tests__/shared/redis/sentinelClient.test.ts — Unit tests for Redis Sentinel client
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const redisTestState = vi.hoisted(() => ({
+  onCreate: null as ((instance: any) => void) | null,
+}));
+
+vi.mock('ioredis', () => {
+  class MockRedis {
+    status = 'ready';
+    options: Record<string, unknown>;
+    on = vi.fn().mockImplementation((event: string, callback: () => void) => {
+      if (event === 'connect' || event === 'ready') {
+        setTimeout(() => callback && callback(), 10);
+      }
+      return this;
+    });
+    connect = vi.fn().mockResolvedValue(undefined);
+    quit = vi.fn().mockResolvedValue(undefined);
+    disconnect = vi.fn();
+    pipeline = vi.fn().mockReturnValue({
+      del: vi.fn().mockReturnThis(),
+      set: vi.fn().mockReturnThis(),
+      get: vi.fn().mockReturnThis(),
+      incr: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    });
+    multi = vi.fn().mockReturnValue({
+      del: vi.fn().mockReturnThis(),
+      set: vi.fn().mockReturnThis(),
+      zadd: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    });
+
+    constructor(config: Record<string, unknown> = {}) {
+      this.options = config;
+      redisTestState.onCreate?.(this);
+    }
+  }
+  return { default: MockRedis, Redis: MockRedis };
+});
+
 import Redis from 'ioredis';
 import { 
   isSentinelConfigured, 
@@ -11,7 +51,18 @@ import {
   resetSentinelClients,
   parseSentinelHosts,
   isClientAlive,
+  isReadonlyError,
+  findReadonlyErrorInPipelineResults,
+  refreshSentinelMaster,
+  executeWithFailover,
+  executePipelineWithFailover,
+  executeTransactionWithFailover,
+  SentinelFailoverError,
 } from '../../../shared/redis/sentinelClient.js';
+import {
+  executeRedisPipeline,
+  executeRedisTransaction,
+} from '../../../shared/redis/client.js';
 
 // Mock environment variables
 const originalEnv = { ...process.env };
@@ -20,11 +71,13 @@ describe('sentinelClient', () => {
   beforeEach(() => {
     // Reset environment before each test
     process.env = { ...originalEnv };
+    redisTestState.onCreate = null;
     resetSentinelClients();
     vi.clearAllMocks();
   });
 
   afterEach(() => {
+    redisTestState.onCreate = null;
     resetSentinelClients();
     process.env = originalEnv;
   });
@@ -212,6 +265,219 @@ describe('sentinelClient', () => {
 
       const health = getSentinelHealth();
       expect(health.status).toBe('connecting');
+    });
+  });
+
+  describe('READONLY detection and Sentinel failover pipeline retry', () => {
+    it('detects READONLY errors across error objects, strings, and pipeline tuples', () => {
+      expect(isReadonlyError(new Error("READONLY You can't write against a read only replica."))).toBe(true);
+      expect(isReadonlyError('ERR readonly replica')).toBe(true);
+      expect(isReadonlyError(new Error('WRONGTYPE Operation against a key'))).toBe(false);
+      expect(isReadonlyError(null)).toBe(false);
+
+      const roErr = new Error("READONLY You can't write against a read only replica");
+      expect(findReadonlyErrorInPipelineResults([[null, 'OK'], [roErr, null]])).toBe(roErr);
+      expect(findReadonlyErrorInPipelineResults([[new Error('WRONGTYPE'), null]])).toBeNull();
+      expect(findReadonlyErrorInPipelineResults(null)).toBeNull();
+    });
+
+    it('refreshes master and replica clients cleanly and coalesces concurrent refreshes', async () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'sentinel1:26379,sentinel2:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      const oldMaster = getRedisMaster();
+      const oldReplica = getRedisReplica();
+      const oldMasterDisconnect = vi.fn();
+      const oldReplicaDisconnect = vi.fn();
+      (oldMaster as any).disconnect = oldMasterDisconnect;
+      (oldReplica as any).disconnect = oldReplicaDisconnect;
+
+      const [refreshed1, refreshed2] = await Promise.all([
+        refreshSentinelMaster(),
+        refreshSentinelMaster(),
+      ]);
+
+      expect(refreshed1).toBe(refreshed2);
+      expect(refreshed1).not.toBe(oldMaster);
+      expect(oldMasterDisconnect).toHaveBeenCalledTimes(1);
+      expect(oldReplicaDisconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('recovers a pipeline when READONLY is returned inside exec() tuple results during failover', async () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'sentinel1:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      let createdCount = 0;
+      const createdMasters: any[] = [];
+      redisTestState.onCreate = (instance) => {
+        createdCount++;
+        createdMasters.push(instance);
+        if (createdCount === 1) {
+          instance.pipeline = vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnThis(),
+            incr: vi.fn().mockReturnThis(),
+            exec: vi.fn().mockResolvedValue([
+              [null, 'OK'],
+              [new Error("READONLY You can't write against a read only replica."), null],
+            ]),
+          });
+        } else {
+          instance.pipeline = vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnThis(),
+            incr: vi.fn().mockReturnThis(),
+            exec: vi.fn().mockResolvedValue([
+              [null, 'OK'],
+              [null, 42],
+            ]),
+          });
+        }
+      };
+
+      const onRetry = vi.fn();
+      const results = await executePipelineWithFailover(
+        (pipe) => {
+          pipe.set('k', 'v').incr('counter');
+        },
+        { baseDelayMs: 1, maxDelayMs: 5, onRetry }
+      );
+
+      expect(createdMasters).toHaveLength(2);
+      expect(createdMasters[0].disconnect).toHaveBeenCalledTimes(1);
+      expect(onRetry).toHaveBeenCalledTimes(1);
+      expect(results).toEqual([
+        [null, 'OK'],
+        [null, 42],
+      ]);
+    });
+
+    it('recovers a MULTI/EXEC transaction when exec() rejects with READONLY during failover', async () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'sentinel1:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      let createdCount = 0;
+      redisTestState.onCreate = (instance) => {
+        createdCount++;
+        if (createdCount === 1) {
+          instance.multi = vi.fn().mockReturnValue({
+            del: vi.fn().mockReturnThis(),
+            zadd: vi.fn().mockReturnThis(),
+            exec: vi.fn().mockRejectedValue(
+              new Error("READONLY You can't write against a read only replica")
+            ),
+          });
+        } else {
+          instance.multi = vi.fn().mockReturnValue({
+            del: vi.fn().mockReturnThis(),
+            zadd: vi.fn().mockReturnThis(),
+            exec: vi.fn().mockResolvedValue([
+              [null, 1],
+              [null, 2],
+            ]),
+          });
+        }
+      };
+
+      const results = await executeTransactionWithFailover(
+        (multi) => {
+          multi.del('league:cohort').zadd('league:cohort', 100, 'user-1');
+        },
+        { baseDelayMs: 1, maxDelayMs: 5 }
+      );
+
+      expect(createdCount).toBe(2);
+      expect(results).toEqual([
+        [null, 1],
+        [null, 2],
+      ]);
+    });
+
+    it('retries up to maxRetries with exponential backoff and throws SentinelFailoverError when exhausted', async () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'sentinel1:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      const delays: number[] = [];
+      const operation = vi.fn().mockRejectedValue(
+        new Error("READONLY You can't write against a read only replica.")
+      );
+
+      let caught: unknown;
+      try {
+        await executeWithFailover(operation, {
+          maxRetries: 3,
+          baseDelayMs: 2,
+          maxDelayMs: 20,
+          onRetry: (_attempt, _err, delayMs) => delays.push(delayMs),
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(SentinelFailoverError);
+      expect((caught as SentinelFailoverError).attempts).toBe(4);
+      expect((caught as SentinelFailoverError).message).toContain('failed after 4 attempt(s)');
+      expect((caught as SentinelFailoverError).cause.message).toContain('READONLY');
+      expect(operation).toHaveBeenCalledTimes(4);
+      expect(delays).toEqual([2, 4, 8]);
+    });
+
+    it('does not retry or refresh master on non-READONLY errors', async () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'sentinel1:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      const master = getRedisMaster();
+      const disconnect = vi.fn();
+      (master as any).disconnect = disconnect;
+      (master as any).pipeline = vi.fn().mockReturnValue({
+        get: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([[new Error('WRONGTYPE Operation against a key'), null]]),
+      });
+
+      const res = await executePipelineWithFailover((p) => p.get('bad-key'), {
+        baseDelayMs: 1,
+      });
+      expect(res?.[0][0]).toBeInstanceOf(Error);
+      expect(disconnect).not.toHaveBeenCalled();
+
+      await expect(
+        executeWithFailover(async () => {
+          throw new Error('ERR syntax error');
+        }, { baseDelayMs: 1 })
+      ).rejects.toThrow('ERR syntax error');
+      expect(disconnect).not.toHaveBeenCalled();
+    });
+
+    it('routes client.ts pipeline and transaction helpers through Sentinel failover when configured', async () => {
+      process.env.REDIS_SENTINEL_HOSTS = 'sentinel1:26379';
+      process.env.REDIS_SENTINEL_MASTER_NAME = 'mymaster';
+
+      let createdCount = 0;
+      redisTestState.onCreate = (instance) => {
+        createdCount++;
+        if (createdCount === 1) {
+          instance.pipeline = vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnThis(),
+            exec: vi.fn().mockResolvedValue([[new Error('READONLY replica'), null]]),
+          });
+        } else {
+          instance.pipeline = vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnThis(),
+            exec: vi.fn().mockResolvedValue([[null, 'OK']]),
+          });
+          instance.multi = vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnThis(),
+            exec: vi.fn().mockResolvedValue([[null, 'OK']]),
+          });
+        }
+      };
+
+      const pipeRes = await executeRedisPipeline((p) => {
+        p.set('a', '1');
+      }, { baseDelayMs: 1, maxDelayMs: 5 });
+      expect(pipeRes).toEqual([[null, 'OK']]);
+
+      const txRes = await executeRedisTransaction((m) => m.set('b', '2'));
+      expect(txRes).toEqual([[null, 'OK']]);
+      expect(createdCount).toBe(2);
     });
   });
 });
