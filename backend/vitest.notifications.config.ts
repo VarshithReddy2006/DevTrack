@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    globalSetup: ['./src/__tests__/globalSetup.ts'],
     include: [
       'src/modules/notifications/notification.persistence.test.ts',
       'src/__tests__/integration/notification-acknowledgement.test.ts',
