@@ -418,7 +418,13 @@ export class UnifiedRuntimeStateService {
   }
 
   private isStateStale(state: IUnifiedRuntimeState): boolean {
-    return Date.now() - new Date(state.lastCalculatedAt).getTime() > 5 * 60 * 1000;
+    const lastCalculatedAt = new Date(state.lastCalculatedAt).getTime();
+    return !Number.isFinite(lastCalculatedAt)
+      || Date.now() - lastCalculatedAt > 5 * 60 * 1000
+      || typeof state.xp !== 'number'
+      || typeof state.level !== 'number'
+      || !state.sessionContext
+      || typeof state.sessionContext !== 'object';
   }
 }
 

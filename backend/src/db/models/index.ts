@@ -37,6 +37,7 @@ export { SyncJob, type ISyncJob } from './syncJob.model.js';
 export { UserXp, type IUserXp } from './userXp.model.js';
 export { XpTransaction, type IXpTransaction, type XpSourceType } from './xpTransaction.model.js';
 export { LeagueStanding, LEAGUE_DIVISIONS, type ILeagueStanding, type LeagueDivision, type LeagueOutcome, type LeagueStandingStatus } from './leagueStanding.model.js';
+export { LeagueCohort, type ILeagueCohort } from './leagueCohort.model.js';
 export {
   LeagueRolloverLog,
   SAGA_COHORT_STATUSES,

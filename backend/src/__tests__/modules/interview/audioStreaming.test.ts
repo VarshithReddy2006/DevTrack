@@ -454,8 +454,12 @@ describe('Interview Audio HTTP Routes Integration', () => {
   let server: Server;
   let baseUrl: string;
   let mockService: Partial<AudioStreamingService>;
+  let authenticatedUserId: string | undefined;
+  let sessionOwned: boolean;
 
   beforeEach(async () => {
+    authenticatedUserId = 'test-user-123';
+    sessionOwned = true;
     mockService = {
       ingestChunk: vi.fn().mockResolvedValue({
         sessionId: 'session-http-301',
@@ -495,9 +499,10 @@ describe('Interview Audio HTTP Routes Integration', () => {
     const interviewRoutes = createInterviewRoutes({
       audioService: mockService as AudioStreamingService,
       auth: (req, _res, next) => {
-        (req as any).user = { id: 'test-user-123' };
+        if (authenticatedUserId) (req as any).user = { id: authenticatedUserId };
         next();
       },
+      isSessionOwner: async () => sessionOwned,
     });
 
     const rootRouter = express.Router();
@@ -607,6 +612,49 @@ describe('Interview Audio HTTP Routes Integration', () => {
     expect(res.status).toBe(200);
     expect(json.success).toBe(true);
     expect(mockService.cleanSessionAudio).toHaveBeenCalledWith('session-http-301');
+  });
+
+  it('requires authentication for all audio endpoints', async () => {
+    authenticatedUserId = undefined;
+    const sessionUrl = `${baseUrl}/api/v2/interview/session-http-301`;
+    const responses = await Promise.all([
+      fetch(`${sessionUrl}/audio/chunk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      fetch(`${sessionUrl}/audio/status`),
+      fetch(`${sessionUrl}/audio`, { method: 'DELETE' }),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([401, 401, 401]);
+    expect(mockService.ingestChunk).not.toHaveBeenCalled();
+    expect(mockService.getStatus).not.toHaveBeenCalled();
+    expect(mockService.cleanSessionAudio).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-owner access to audio and signaling endpoints', async () => {
+    sessionOwned = false;
+    const sessionUrl = `${baseUrl}/api/v2/interview/session-http-301`;
+    const responses = await Promise.all([
+      fetch(`${sessionUrl}/audio/chunk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      fetch(`${sessionUrl}/audio/status`),
+      fetch(`${sessionUrl}/audio`, { method: 'DELETE' }),
+      fetch(`${sessionUrl}/webrtc/signal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'bye' }),
+      }),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
+    expect(mockService.ingestChunk).not.toHaveBeenCalled();
+    expect(mockService.getStatus).not.toHaveBeenCalled();
+    expect(mockService.cleanSessionAudio).not.toHaveBeenCalled();
   });
 });
 
