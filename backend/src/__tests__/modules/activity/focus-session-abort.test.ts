@@ -238,4 +238,76 @@ describe('FocusEngine.abortSession and UnifiedRuntimeState reconciliation', () =
       }),
     );
   });
+
+  it('pauseSession and resumeSession synchronize UnifiedRuntimeState, invalidate cache, and emit SSE patches', async () => {
+    const startedAt = new Date(Date.now() - 10 * 60 * 1000);
+    const session = await FocusSession.create({
+      userId: new Types.ObjectId(userId),
+      mode: 'pomodoro',
+      status: 'running',
+      isOpen: true,
+      startedAt,
+      lastResumedAt: startedAt,
+      lastHeartbeatAt: startedAt,
+      plannedDurationMinutes: 25,
+      activeDurationMs: 0,
+    });
+
+    await UnifiedRuntimeState.create({
+      userId: new Types.ObjectId(userId),
+      sessionContext: {
+        isActive: true,
+        sessionId: session._id.toString(),
+        status: 'running',
+        startedAt,
+        lastResumedAt: startedAt,
+        duration: 25,
+        mode: 'pomodoro',
+      },
+    });
+
+    const paused = await engine.pauseSession(session._id.toString(), userId);
+    expect(paused).not.toBeNull();
+    expect(paused!.lastResumedAt).toBeNull();
+
+    const pausedRuntime = await UnifiedRuntimeState.findOne({ userId: new Types.ObjectId(userId) });
+    expect(pausedRuntime!.sessionContext).toMatchObject({
+      isActive: true,
+      status: 'paused',
+      lastResumedAt: null,
+    });
+    expect(cacheManager.invalidateDashboard).toHaveBeenCalledWith(userId);
+    expect(eventBus.emitRuntimeStatePatch).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        sessionContext: expect.objectContaining({
+          isActive: true,
+          status: 'paused',
+        }),
+      }),
+    );
+
+    vi.clearAllMocks();
+
+    const resumed = await engine.resumeSession(session._id.toString(), userId);
+    expect(resumed).not.toBeNull();
+    expect(resumed!.lastResumedAt).toBeInstanceOf(Date);
+
+    const resumedRuntime = await UnifiedRuntimeState.findOne({ userId: new Types.ObjectId(userId) });
+    expect(resumedRuntime!.sessionContext).toMatchObject({
+      isActive: true,
+      status: 'running',
+    });
+    expect(resumedRuntime!.sessionContext.lastResumedAt).toBeInstanceOf(Date);
+    expect(cacheManager.invalidateDashboard).toHaveBeenCalledWith(userId);
+    expect(eventBus.emitRuntimeStatePatch).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        sessionContext: expect.objectContaining({
+          isActive: true,
+          status: 'running',
+        }),
+      }),
+    );
+  });
 });
