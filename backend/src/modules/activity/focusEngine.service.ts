@@ -264,7 +264,18 @@ export class FocusEngine {
       { $set: { status: 'paused', pauses, activeSec, activeDurationMs, lastResumedAt: null, lastHeartbeatAt: now } },
       { new: true }
     );
-    return paused ? { activeDurationMs, lastResumedAt: null } : null;
+    if (!paused) return null;
+
+    await this.syncRuntimeSessionTransition({
+      sessionId: String(paused._id),
+      userId,
+      status: 'paused',
+      isActive: true,
+      lastResumedAt: null,
+      activeDurationMs,
+      lastHeartbeat: now,
+    });
+    return { activeDurationMs, lastResumedAt: null };
   }
 
   async resumeSession(sessionId: string, userId: string): Promise<FocusTiming | null> {
@@ -288,7 +299,69 @@ export class FocusEngine {
       { $set: { status: 'running', pauses, activeSec, activeDurationMs, lastResumedAt: now, lastHeartbeatAt: now } },
       { new: true }
     );
-    return resumed ? { activeDurationMs: resumed.activeDurationMs ?? 0, lastResumedAt: now } : null;
+    if (!resumed) return null;
+
+    const resumedActiveMs = resumed.activeDurationMs ?? 0;
+    await this.syncRuntimeSessionTransition({
+      sessionId: String(resumed._id),
+      userId,
+      status: 'running',
+      isActive: true,
+      lastResumedAt: now,
+      activeDurationMs: resumedActiveMs,
+      lastHeartbeat: now,
+    });
+    return { activeDurationMs: resumedActiveMs, lastResumedAt: now };
+  }
+
+  /** Reconciles UnifiedRuntimeState, dashboard cache, and SSE subscribers on session lifecycle transitions. */
+  private async syncRuntimeSessionTransition(params: {
+    sessionId: string;
+    userId: string;
+    status: 'paused' | 'running' | 'abandoned';
+    isActive: boolean;
+    lastResumedAt: Date | null;
+    activeDurationMs: number;
+    lastHeartbeat?: Date;
+  }): Promise<void> {
+    const setFields: Record<string, unknown> = {
+      'sessionContext.isActive': params.isActive,
+      'sessionContext.status': params.status,
+      'sessionContext.lastResumedAt': params.lastResumedAt,
+      'sessionContext.activeDurationMs': params.activeDurationMs,
+    };
+    if (params.lastHeartbeat) {
+      setFields['sessionContext.lastHeartbeat'] = params.lastHeartbeat;
+    }
+
+    const runtime = await UnifiedRuntimeState.findOneAndUpdate(
+      { 'sessionContext.sessionId': params.sessionId, 'sessionContext.isActive': true },
+      { $set: setFields },
+      { new: true }
+    );
+
+    try {
+      const { cacheManager } = await import('../../shared/cache/cacheManager.js');
+      await cacheManager.invalidateDashboard(params.userId);
+    } catch (err) {
+      logger.warn('[focus] Failed to invalidate dashboard cache on session transition', {
+        userId: params.userId,
+        status: params.status,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (runtime) {
+      try {
+        await eventBus.emitRuntimeStatePatch(params.userId, { sessionContext: runtime.sessionContext });
+      } catch (err) {
+        logger.warn('[focus] Failed to emit runtime state patch on session transition', {
+          userId: params.userId,
+          status: params.status,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   /**
@@ -385,39 +458,14 @@ export class FocusEngine {
     );
 
     if (abandoned) {
-      const runtime = await UnifiedRuntimeState.findOneAndUpdate(
-        { 'sessionContext.sessionId': String(abandoned._id), 'sessionContext.isActive': true },
-        {
-          $set: {
-            'sessionContext.isActive': false,
-            'sessionContext.status': 'abandoned',
-            'sessionContext.lastResumedAt': null,
-            'sessionContext.activeDurationMs': activeDurationMs,
-          },
-        },
-        { new: true }
-      );
-
-      try {
-        const { cacheManager } = await import('../../shared/cache/cacheManager.js');
-        await cacheManager.invalidateDashboard(userId);
-      } catch (err) {
-        logger.warn('[focus] Failed to invalidate dashboard cache on abandon', {
-          userId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-
-      if (runtime) {
-        try {
-          await eventBus.emitRuntimeStatePatch(userId, { sessionContext: runtime.sessionContext });
-        } catch (err) {
-          logger.warn('[focus] Failed to emit runtime state patch on abandon', {
-            userId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      await this.syncRuntimeSessionTransition({
+        sessionId: String(abandoned._id),
+        userId,
+        status: 'abandoned',
+        isActive: false,
+        lastResumedAt: null,
+        activeDurationMs,
+      });
     }
 
     return abandoned;
