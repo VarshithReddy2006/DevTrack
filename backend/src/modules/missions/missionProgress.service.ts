@@ -4,9 +4,11 @@
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types } from 'mongoose';
 import { Mission } from '../../db/models/index.js';
+import { writeOutboxEvent } from '../../shared/events/outbox.js';
 import { logger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/sse/index.js';
-import { processMissionReward } from '../xp/processor.js';
+import { processMissionReward, type XpProcessingResult } from '../xp/processor.js';
+import { runInMissionCompletionContext } from './missionCompletionContext.js';
 
 export type ActivityType = 'dsa_solve' | 'dsa_contest' | 'sync' | 'streak_day' | 'project_task';
 
@@ -39,9 +41,9 @@ export async function updateMissionProgress(
         continue;
       }
 
-      // Atomically increment progress
+      // Atomically increment progress on non-completed active missions
       const updated = await Mission.findOneAndUpdate(
-        { _id: mission._id, status: { $ne: 'completed' } },
+        { _id: mission._id, status: { $in: ['pending', 'in_progress'] } },
         {
           $inc: { currentCount: 1 },
           $set: { status: 'in_progress' },
@@ -52,32 +54,78 @@ export async function updateMissionProgress(
       // If already completed or not found, skip
       if (!updated) continue;
 
-      // Atomically gate completion transition so only one thread executes completion
+      // Atomically commit completion status, XP reward, and outbox event in one transaction.
+      // If any step fails, MongoDB rolls back Mission.status to 'in_progress' so retries recover.
       let justCompleted = false;
-      if (updated.currentCount >= updated.targetCount) {
-        const completedDoc = await Mission.findOneAndUpdate(
-          {
-            _id: mission._id,
-            status: { $ne: 'completed' },
-            currentCount: { $gte: updated.targetCount },
-          },
-          {
-            $set: {
-              status: 'completed',
-              completedAt: new Date(),
-            },
-          },
-          { new: true }
-        );
+      let completionReward: XpProcessingResult | null = null;
+      let postCommitTasks: Array<() => Promise<void>> = [];
 
-        if (completedDoc) {
-          justCompleted = true;
+      if (updated.currentCount >= updated.targetCount) {
+        try {
+          const txResult = await Mission.db.transaction(async (session) => {
+            const { value, postCommit } = await runInMissionCompletionContext(session, async () => {
+              const completedDoc = await Mission.findOneAndUpdate(
+                {
+                  _id: mission._id,
+                  status: { $in: ['pending', 'in_progress'] },
+                  currentCount: { $gte: updated.targetCount },
+                },
+                {
+                  $set: {
+                    status: 'completed',
+                    completedAt: new Date(),
+                  },
+                },
+                { new: true, session }
+              );
+
+              if (!completedDoc) {
+                return { completedDoc: null, reward: null as XpProcessingResult | null };
+              }
+
+              const reward = await processMissionReward(userId, mission._id.toString());
+              if (reward.awarded) {
+                await writeOutboxEvent(session, {
+                  type: 'mission.completed',
+                  aggregateType: 'Mission',
+                  aggregateId: mission._id.toString(),
+                  userId,
+                  payload: {
+                    missionId: mission._id.toString(),
+                    title: completedDoc.title,
+                    xpAwarded: reward.xpAwarded,
+                    idempotencyKey: `mission:${mission._id.toString()}:completed`,
+                  },
+                });
+              }
+
+              return { completedDoc, reward };
+            });
+
+            return { ...value, postCommit };
+          }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+
+          if (txResult.completedDoc) {
+            justCompleted = true;
+            completionReward = txResult.reward;
+            postCommitTasks = txResult.postCommit;
+          }
+        } catch (error) {
+          logger.error('[missions] Failed to complete mission atomically', {
+            error,
+            userId,
+            missionId: mission._id.toString(),
+          });
         }
       }
 
       await cacheManager.invalidateDashboard(userId);
 
-      const isCompleted = justCompleted || updated.currentCount >= updated.targetCount;
+      for (const task of postCommitTasks) {
+        await task();
+      }
+
+      const isCompleted = justCompleted || updated.status === 'completed';
 
       // Emit SSE event for progress update
       eventBus.emitMissionProgress(userId, {
@@ -88,9 +136,9 @@ export async function updateMissionProgress(
         completed: isCompleted,
       });
 
-      // If completed on this atomic transition, award XP and emit completion event
-      if (justCompleted) {
-        await handleMissionCompletion(userId, mission);
+      // Only announce completion after the transaction commits and reward is awarded
+      if (justCompleted && completionReward?.awarded) {
+        await handleMissionCompletionNotification(userId, mission, completionReward);
       }
 
       logger.debug('[missions] Mission progress updated', {
@@ -109,11 +157,12 @@ export async function updateMissionProgress(
 
 // ─── Mission completion handler ──────────────────────────────────────────────
 
-async function handleMissionCompletion(userId: string, mission: { _id: Types.ObjectId; title: string }): Promise<void> {
+async function handleMissionCompletionNotification(
+  userId: string,
+  mission: { _id: Types.ObjectId; title: string },
+  result: XpProcessingResult,
+): Promise<void> {
   try {
-    const result = await processMissionReward(userId, mission._id.toString());
-    if (!result.awarded) return;
-
     // Emit SSE notification for mission completion
     eventBus.emitNotificationCreated(
       userId,
@@ -132,7 +181,7 @@ async function handleMissionCompletion(userId: string, mission: { _id: Types.Obj
       xpReward: result.xpAwarded,
     });
   } catch (error) {
-    logger.error('[missions] Failed to handle mission completion', {
+    logger.error('[missions] Failed to emit mission completion notification', {
       error,
       userId,
       missionId: mission._id.toString(),
