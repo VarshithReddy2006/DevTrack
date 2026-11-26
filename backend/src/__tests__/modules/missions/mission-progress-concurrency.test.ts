@@ -125,4 +125,39 @@ describe('Mission Progress Concurrency — Issue #85', () => {
     expect(finalDoc!.status).toBe('completed');
     expect(processMissionReward).toHaveBeenCalledTimes(1);
   });
+
+  it('rolls back mission completion to in_progress if reward granting fails and succeeds on retry', async () => {
+    const mission = await createMission({ targetCount: 1, currentCount: 0 });
+    vi.mocked(processMissionReward).mockRejectedValueOnce(new Error('XP ledger unavailable'));
+
+    await updateMissionProgress(userId, 'dsa_solve', { difficulty: 'medium' });
+
+    const afterFailure = await Mission.findById(mission._id).lean();
+    expect(afterFailure).toMatchObject({ status: 'in_progress', currentCount: 1, completedAt: null });
+    expect(eventBus.emitNotificationCreated).not.toHaveBeenCalled();
+
+    await updateMissionProgress(userId, 'dsa_solve', { difficulty: 'medium' });
+
+    const afterRetry = await Mission.findById(mission._id).lean();
+    expect(afterRetry).toMatchObject({ status: 'completed' });
+    expect(afterRetry!.completedAt).toBeInstanceOf(Date);
+    expect(processMissionReward).toHaveBeenCalledTimes(2);
+    expect(eventBus.emitNotificationCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it('executes completion exactly once across 10 parallel activity updates', async () => {
+    const mission = await createMission({ targetCount: 3, currentCount: 0 });
+
+    await Promise.all(
+      Array.from({ length: 10 }, () =>
+        updateMissionProgress(userId, 'dsa_solve', { difficulty: 'medium' })
+      )
+    );
+
+    const finalDoc = await Mission.findById(mission._id).lean();
+    expect(finalDoc!.status).toBe('completed');
+    expect(processMissionReward).toHaveBeenCalledTimes(1);
+    expect(processMissionReward).toHaveBeenCalledWith(userId, mission._id.toString());
+    expect(eventBus.emitNotificationCreated).toHaveBeenCalledTimes(1);
+  });
 });

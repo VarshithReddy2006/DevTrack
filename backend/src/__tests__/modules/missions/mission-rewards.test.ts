@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { User, UserXp, UserAnalytics, Mission, XpTransaction, type XpSourceType } from '../../../db/models/index.js';
+import { OutboxEvent } from '../../../db/models/outboxEvent.model.js';
 import { processXpEvent, processMissionReward, getUserXp } from '../../../modules/xp/processor.js';
 import { updateMissionProgress, getUserMissions } from '../../../modules/missions/missionProgress.service.js';
 import { generateDailyMissions, generateWeeklyMissions } from '../../../modules/missions/missionGenerator.service.js';
@@ -274,4 +275,46 @@ it('uses the existing unique ledger key when two trusted award calls overlap', a
     expect((await getUserXp(userId))!.totalXp).toBe(25);
     expect(eventBus.emitXpUpdated).toHaveBeenCalledTimes(1);
   } finally { cleanup(); }
+});
+
+it('rolls back mission completion when reward or outbox write fails and completes cleanly on retry', async () => {
+  const mission = await createMission({ targetCount: 1, xpReward: 25 });
+
+  vi.spyOn(OutboxEvent, 'create').mockRejectedValueOnce(new Error('outbox unavailable'));
+  await updateMissionProgress(userId, 'dsa_solve', { difficulty: 'easy' });
+
+  const rolledBack = await Mission.findById(mission._id).lean();
+  expect(rolledBack).toMatchObject({ status: 'in_progress', currentCount: 1, completedAt: null });
+  expect(await rewardFor(mission.id)).toBeNull();
+  expect((await getUserXp(userId))!.totalXp).toBe(0);
+  expect(await OutboxEvent.countDocuments({ type: 'mission.completed', aggregateId: mission.id })).toBe(0);
+  expect(eventBus.emitNotificationCreated).not.toHaveBeenCalled();
+
+  await updateMissionProgress(userId, 'dsa_solve', { difficulty: 'easy' });
+
+  const completed = await Mission.findById(mission._id).lean();
+  expect(completed).toMatchObject({ status: 'completed' });
+  expect(completed!.completedAt).toBeInstanceOf(Date);
+  expect((await rewardFor(mission.id))!.xpAwarded).toBe(25);
+  expect((await getUserXp(userId))!.totalXp).toBe(25);
+  expect(await OutboxEvent.countDocuments({ type: 'mission.completed', aggregateId: mission.id })).toBe(1);
+  expect(eventBus.emitNotificationCreated).toHaveBeenCalledTimes(1);
+});
+
+it('grants exactly one XP reward and outbox event across 10 concurrent progress updates', async () => {
+  const mission = await createMission({ targetCount: 5, currentCount: 0, xpReward: 30 });
+
+  await Promise.all(
+    Array.from({ length: 10 }, () =>
+      updateMissionProgress(userId, 'dsa_solve', { difficulty: 'easy' })
+    )
+  );
+
+  const finalDoc = await Mission.findById(mission._id).lean();
+  expect(finalDoc!.status).toBe('completed');
+  expect(finalDoc!.completedAt).toBeInstanceOf(Date);
+  expect(await XpTransaction.countDocuments({ userId, sourceType: 'manual', sourceId: `mission_${mission.id}` })).toBe(1);
+  expect((await getUserXp(userId))!.totalXp).toBe(30);
+  expect(await OutboxEvent.countDocuments({ type: 'mission.completed', aggregateId: mission.id })).toBe(1);
+  expect(eventBus.emitNotificationCreated).toHaveBeenCalledTimes(1);
 });
