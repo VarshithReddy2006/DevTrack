@@ -15,6 +15,9 @@ export interface TranscriptionQueueConfig {
   maxBackoffMs: number;
   finalizeTimeoutMs: number;
   sessionIdleTtlMs: number;
+  maxWindowSize: number;
+  maxBufferedBytesPerSession: number;
+  gapTimeoutMs: number;
 }
 
 export const DEFAULT_TRANSCRIPTION_QUEUE_CONFIG: TranscriptionQueueConfig = {
@@ -27,6 +30,9 @@ export const DEFAULT_TRANSCRIPTION_QUEUE_CONFIG: TranscriptionQueueConfig = {
   maxBackoffMs: 15_000,
   finalizeTimeoutMs: 30_000,
   sessionIdleTtlMs: 15 * 60 * 1000,
+  maxWindowSize: 10,
+  maxBufferedBytesPerSession: 16 * 1024 * 1024,
+  gapTimeoutMs: 5000,
 };
 
 export interface TranscriptionQueueDeps {
@@ -196,6 +202,9 @@ interface TranscriptStream {
   settled: Set<number>;
   failedChunks: Set<number>;
   finalIndex: number | null;
+  missingChunks: Set<number>;
+  gapExpectedIndex: number | null;
+  gapTimer: ReturnType<typeof setTimeout> | null;
   cancelled: boolean;
   onSettle: (() => void) | null;
 }
@@ -220,6 +229,15 @@ interface SessionState {
   activeStream: TranscriptStream;
   nextGeneration: number;
   lastActivityAt: number;
+}
+
+export class TranscriptionQueueOverflowError extends Error {
+  readonly statusCode = 429;
+
+  constructor(sessionId: string, chunkIndex: number, reason: string) {
+    super(`Transcription queue limit exceeded for session ${sessionId} chunk ${chunkIndex}: ${reason}`);
+    this.name = 'TranscriptionQueueOverflowError';
+  }
 }
 
 export class TranscriptionCancelledError extends Error {
@@ -250,6 +268,15 @@ export class TranscriptionQueue {
     if (this.config.maxGlobalConcurrency < 1 || this.config.maxSessionConcurrency < 1) {
       throw new Error('TranscriptionQueue concurrency limits must be >= 1');
     }
+    if (!Number.isInteger(this.config.maxWindowSize) || this.config.maxWindowSize < 1) {
+      throw new Error('TranscriptionQueue maxWindowSize must be a positive integer');
+    }
+    if (!Number.isInteger(this.config.maxBufferedBytesPerSession) || this.config.maxBufferedBytesPerSession < 1) {
+      throw new Error('TranscriptionQueue maxBufferedBytesPerSession must be a positive integer');
+    }
+    if (!Number.isFinite(this.config.gapTimeoutMs) || this.config.gapTimeoutMs < 0) {
+      throw new Error('TranscriptionQueue gapTimeoutMs must be a non-negative finite number');
+    }
     this.now = deps.now ?? Date.now;
     this.random = deps.random ?? Math.random;
     this.onSegment = deps.onSegment;
@@ -268,6 +295,19 @@ export class TranscriptionQueue {
     if (stream.submitted.has(chunkIndex) || stream.settled.has(chunkIndex)) {
       return Promise.reject(new Error(`Chunk ${chunkIndex} already submitted for session ${sessionId}`));
     }
+    const nextExpectedIndex = stream.buffer.nextExpectedIndex;
+    if (chunkIndex < nextExpectedIndex || chunkIndex >= nextExpectedIndex + this.config.maxWindowSize) {
+      this.maybeDropSession(session);
+      return Promise.reject(new TranscriptionQueueOverflowError(sessionId, chunkIndex, 'sequence window is full'));
+    }
+    const bufferedBytes = [...session.pending, ...session.dispatched].reduce(
+      (total, item) => total + Buffer.byteLength(item.audioBase64, 'utf8'),
+      0,
+    );
+    if (bufferedBytes + Buffer.byteLength(audioBase64, 'utf8') > this.config.maxBufferedBytesPerSession) {
+      this.maybeDropSession(session);
+      return Promise.reject(new TranscriptionQueueOverflowError(sessionId, chunkIndex, 'buffered byte limit reached'));
+    }
     stream.submitted.add(chunkIndex);
 
     return new Promise<TranscriptSegment>((resolve, reject) => {
@@ -282,6 +322,7 @@ export class TranscriptionQueue {
         resolve,
         reject,
       });
+      this.updateGapTimeout(stream, sessionId);
       this.pump();
     });
   }
@@ -290,7 +331,15 @@ export class TranscriptionQueue {
   skipChunk(sessionId: string, chunkIndex: number): void {
     this.assertChunkIndex(chunkIndex);
     const session = this.getOrCreateSession(sessionId);
-    this.settle(session.activeStream, sessionId, chunkIndex, null);
+    const stream = session.activeStream;
+    if (stream.settled.has(chunkIndex)) return;
+    const nextExpectedIndex = stream.buffer.nextExpectedIndex;
+    if (chunkIndex < nextExpectedIndex || chunkIndex >= nextExpectedIndex + this.config.maxWindowSize) {
+      throw new TranscriptionQueueOverflowError(sessionId, chunkIndex, 'sequence window is full');
+    }
+    stream.submitted.add(chunkIndex);
+    this.settle(stream, sessionId, chunkIndex, null);
+    this.pump();
   }
 
   getTranscript(sessionId: string): string {
@@ -313,11 +362,13 @@ export class TranscriptionQueue {
 
       const finish = (complete: boolean) => {
         if (timer) clearTimeout(timer);
+        this.clearGapTimeout(stream);
         stream.onSettle = null;
-        const missingChunks: number[] = [];
+        const missingChunkSet = new Set([...stream.missingChunks].filter((index) => index <= lastChunkIndex));
         for (let i = 0; i <= lastChunkIndex; i++) {
-          if (!stream.settled.has(i)) missingChunks.push(i);
+          if (!stream.settled.has(i)) missingChunkSet.add(i);
         }
+        const missingChunks = [...missingChunkSet].sort((a, b) => a - b);
         if (!complete) {
           stream.cancelled = true;
           this.rejectPending(session, (item) => item.stream === stream);
@@ -355,8 +406,15 @@ export class TranscriptionQueue {
   cancelSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    for (const item of session.pending) item.stream.cancelled = true;
-    session.activeStream.cancelled = true;
+    const streams = new Set([
+      session.activeStream,
+      ...session.pending.map((item) => item.stream),
+      ...[...session.dispatched].map((item) => item.stream),
+    ]);
+    for (const stream of streams) {
+      stream.cancelled = true;
+      this.clearGapTimeout(stream);
+    }
     this.rejectPending(session, () => true);
     this.rejectDispatched(session, () => true);
     this.sessions.delete(sessionId);
@@ -394,6 +452,9 @@ export class TranscriptionQueue {
       settled: new Set(),
       failedChunks: new Set(),
       finalIndex: null,
+      missingChunks: new Set(),
+      gapExpectedIndex: null,
+      gapTimer: null,
       cancelled: false,
       onSettle: null,
     };
@@ -589,6 +650,47 @@ export class TranscriptionQueue {
       }
     }
     stream.onSettle?.();
+    this.updateGapTimeout(stream, sessionId);
+  }
+
+  private updateGapTimeout(stream: TranscriptStream, sessionId: string): void {
+    const expectedIndex = stream.buffer.nextExpectedIndex;
+    const isWithinFinalIndex = stream.finalIndex === null || expectedIndex <= stream.finalIndex;
+    const hasLaterChunk = [...stream.submitted].some(
+      (index) => index > expectedIndex && (stream.finalIndex === null || index <= stream.finalIndex),
+    );
+    if (stream.cancelled || !isWithinFinalIndex || stream.submitted.has(expectedIndex) || !hasLaterChunk) {
+      this.clearGapTimeout(stream);
+      return;
+    }
+    if (stream.gapTimer && stream.gapExpectedIndex === expectedIndex) return;
+
+    this.clearGapTimeout(stream);
+    stream.gapExpectedIndex = expectedIndex;
+    stream.gapTimer = setTimeout(() => {
+      stream.gapTimer = null;
+      stream.gapExpectedIndex = null;
+      if (stream.cancelled || stream.buffer.nextExpectedIndex !== expectedIndex || stream.submitted.has(expectedIndex)) return;
+      const stillHasLaterChunk = [...stream.submitted].some(
+        (index) => index > expectedIndex && (stream.finalIndex === null || index <= stream.finalIndex),
+      );
+      if (!stillHasLaterChunk) return;
+
+      logger.warn('[transcription-queue] Missing chunk timed out; advancing sequence window', {
+        sessionId,
+        chunkIndex: expectedIndex,
+      });
+      stream.missingChunks.add(expectedIndex);
+      this.settle(stream, sessionId, expectedIndex, null);
+      this.pump();
+    }, this.config.gapTimeoutMs);
+    stream.gapTimer.unref?.();
+  }
+
+  private clearGapTimeout(stream: TranscriptStream): void {
+    if (stream.gapTimer) clearTimeout(stream.gapTimer);
+    stream.gapTimer = null;
+    stream.gapExpectedIndex = null;
   }
 
   private scheduleWake(delayMs: number): void {

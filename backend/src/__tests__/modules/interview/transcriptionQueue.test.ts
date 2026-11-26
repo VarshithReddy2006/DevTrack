@@ -415,6 +415,51 @@ describe('TranscriptionQueue', () => {
     expect(queue.getTranscript('answers')).toBe('second');
   });
 
+  it('advances through missing chunks after repeated sequence gap timeouts', async () => {
+    queue = new TranscriptionQueue(async () => 'later text', { ...unlimitedRate, gapTimeoutMs: 5000 });
+
+    await queue.submit('gap-timeout', 2, 'audio-2');
+    expect(queue.getTranscript('gap-timeout')).toBe('');
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(queue.getTranscript('gap-timeout')).toBe('');
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(queue.getTranscript('gap-timeout')).toBe('later text');
+    await expect(queue.finalizeSession('gap-timeout', 2)).resolves.toMatchObject({
+      transcript: 'later text',
+      missingChunks: [0, 1],
+      complete: false,
+    });
+  });
+
+  it('rejects chunks outside the per-session sequence window', async () => {
+    queue = new TranscriptionQueue(async (_audio, { chunkIndex }) => `text-${chunkIndex}`, {
+      ...unlimitedRate,
+      maxWindowSize: 10,
+    });
+
+    await Promise.all(Array.from({ length: 9 }, (_, index) => queue!.submit('window', index + 1, 'audio')));
+    await expect(queue.submit('window', 10, 'audio')).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it('rejects chunks that exceed the per-session buffered byte limit', async () => {
+    const p = controllableProvider();
+    queue = new TranscriptionQueue(p.provider, {
+      ...unlimitedRate,
+      maxBufferedBytesPerSession: 5,
+    });
+
+    const first = queue.submit('bytes', 0, '1234');
+    const overflow = queue.submit('bytes', 1, 'ab');
+    const firstCancelled = expect(first).rejects.toBeInstanceOf(TranscriptionCancelledError);
+    const overflowRejected = expect(overflow).rejects.toMatchObject({ statusCode: 429 });
+
+    queue.cancelSession('bytes');
+    await Promise.all([firstCancelled, overflowRejected]);
+  });
+
   it('finalizeSession reports missing chunks after the timeout and cancels their pending work', async () => {
     const p = controllableProvider();
     queue = new TranscriptionQueue(p.provider, unlimitedRate);
