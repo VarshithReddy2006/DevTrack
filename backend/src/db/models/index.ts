@@ -37,6 +37,7 @@ export { SyncJob, type ISyncJob } from './syncJob.model.js';
 export { UserXp, type IUserXp } from './userXp.model.js';
 export { XpTransaction, type IXpTransaction, type XpSourceType } from './xpTransaction.model.js';
 export { LeagueStanding, LEAGUE_DIVISIONS, type ILeagueStanding, type LeagueDivision, type LeagueOutcome, type LeagueStandingStatus } from './leagueStanding.model.js';
+export { LeagueCohort, type ILeagueCohort } from './leagueCohort.model.js';
 export {
   LeagueRolloverLog,
   SAGA_COHORT_STATUSES,
@@ -70,7 +71,13 @@ export { FocusSession, type IFocusSession } from './focusSession.model.js';
 export { PublicProfile, type IPublicProfile } from './publicProfile.model.js';
 export { UsernameReservation, type IUsernameReservation } from './usernameReservation.model.js';
 export { VerifiedProject, type IVerifiedProject } from './verifiedProject.model.js';
-export { ProfileAuditLog, type IProfileAuditLog } from './profileAuditLog.model.js';
+export {
+  ProfileAuditLog,
+  AuditEncryptionKey,
+  type IProfileAuditLog,
+  type IAuditEncryptionKey,
+  type ProfileAuditEventType,
+} from './profileAuditLog.model.js';
 export { ProfileView, type IProfileView } from './profileView.model.js';
 export { ProfileTimelineEvent, type IProfileTimelineEvent } from './profileTimelineEvent.model.js';
 export { AIConversation, type IAIConversation, type IConversationTurn } from './aiConversation.model.js';

@@ -16,7 +16,10 @@ vi.mock('../../shared/redis/client.js', () => ({
 }));
 
 vi.mock('../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({
-  unifiedRuntimeStateService: { getRuntimeState: vi.fn(async () => null) },
+  unifiedRuntimeStateService: {
+    getRuntimeState: vi.fn(async () => null),
+    getRuntimeStateFresh: vi.fn(async () => null),
+  },
 }));
 
 import { EventBus, type SseClient } from '../../shared/sse/eventBus.js';
@@ -171,6 +174,7 @@ describe('replayMissedEvents', () => {
     await replayMissedEvents('u', bad, ctl);
 
     expect(redis.xrange).not.toHaveBeenCalled();
-    expect(chunks).toHaveLength(0);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain('INITIAL_STATE_ERROR');
   });
 });

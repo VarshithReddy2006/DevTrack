@@ -554,4 +554,56 @@ describe('RolloverSagaOrchestrator — Adversarial Integration Tests', () => {
     expect(finalLog?.status).toBe('committed');
     expect(finalLog?.attempts).toBe(attemptsBefore + 1);
   });
+
+  it('compensation rollback: deletes seeded Redis cohort sorted sets and resets checkpoint logs when seeding fails midway', async () => {
+    await makeCohort('gold', 'c1', 10);
+    await makeCohort('silver', 'c1', 10);
+
+    const originalSeed = store.seed.bind(store);
+    const seededNextKeys: string[] = [];
+    let nextCallCount = 0;
+
+    vi.spyOn(store, 'seed').mockImplementation(async (key: string, memberIds: string[]) => {
+      if (key.includes(NEXT)) {
+        nextCallCount++;
+        if (nextCallCount === 1) {
+          seededNextKeys.push(key);
+          return originalSeed(key, memberIds);
+        }
+        throw new Error('Redis connection drop on second next-week cohort');
+      }
+      return originalSeed(key, memberIds);
+    });
+
+    await expect(runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT })).rejects.toThrow(
+      'Redis connection drop on second next-week cohort',
+    );
+
+    expect(seededNextKeys).toHaveLength(1);
+    const firstSeededKey = seededNextKeys[0];
+
+    // MongoDB next-week standings must be rolled back
+    expect(await LeagueStanding.find({ weekKey: NEXT })).toHaveLength(0);
+
+    // Already-seeded Redis sorted set must also be deleted by inverse compensation
+    expect(await store.exists(firstSeededKey)).toBe(false);
+    expect(await store.ranked(firstSeededKey, 0, -1)).toEqual([]);
+
+    // Checkpoint logs must be reset from 'seed_next_cohorts' back to 'persist_standings' with error context
+    const logs = await LeagueRolloverLog.find({ weekKey: WEEK }).lean();
+    expect(logs.length).toBeGreaterThan(0);
+    for (const log of logs) {
+      expect(log.status).toBe('committed');
+      expect(log.currentStep).toBe('persist_standings');
+      expect(log.error?.step).toBe('seed_next_cohorts');
+      expect(log.error?.message).toContain('Redis connection drop on second next-week cohort');
+    }
+
+    // Retry after Redis recovers succeeds cleanly
+    vi.restoreAllMocks();
+    const retryResult = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT });
+    expect(retryResult.assigned).toBe(20);
+    expect(await store.exists(firstSeededKey)).toBe(true);
+    expect(await LeagueStanding.find({ weekKey: NEXT })).toHaveLength(20);
+  });
 });

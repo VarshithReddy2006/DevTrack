@@ -59,9 +59,12 @@ async function main(): Promise<void> {
     },
     disconnect: async () => {
       const { unifiedRuntimeStateService } = await import('./modules/runtime-state/unifiedRuntimeState.service.js');
+      const { shutdownBrowserPool } = await import('./modules/resume/export/browserPool.js');
       try { await unifiedRuntimeStateService.flushPendingEvents(); } finally {
-        try { stopHealthMonitor?.(); } finally {
-          try { await disconnectDatabase?.(); } finally { await disconnectRedis?.(); }
+        try { await shutdownBrowserPool(); } finally {
+          try { stopHealthMonitor?.(); } finally {
+            try { await disconnectDatabase?.(); } finally { await disconnectRedis?.(); }
+          }
         }
       }
     },
