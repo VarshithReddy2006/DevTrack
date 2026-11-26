@@ -221,6 +221,7 @@ vi.mock('../modules/ai/provider/AIProviderAdapter.js', () => {
         })
       }),
       getAllProviderHealth: vi.fn().mockReturnValue([]),
+      getProviderHealth: vi.fn().mockReturnValue({ status: 'healthy', failureCount: 0 }),
       getTokenUsageStats: vi.fn().mockReturnValue({ totalTokens: 0 }),
       getCurrentProvider: vi.fn().mockReturnValue('gemini')
     }
