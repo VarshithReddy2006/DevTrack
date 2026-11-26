@@ -140,8 +140,63 @@ const BLOCKED_ENV_KEYS = new Set([
   'PYTHONUSERBASE',
   'PATH',
   'SYSTEMROOT',
+  'WINDIR',
   'COMSPEC',
 ]);
+
+/**
+ * Resolves an environment variable case-insensitively (needed on Windows where
+ * plain env objects may carry `SYSTEMROOT`, `systemroot`, or `SystemRoot`).
+ */
+export function getEnvCaseInsensitive(
+  env: NodeJS.ProcessEnv,
+  key: string
+): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(env, key) && env[key] !== undefined) {
+    return env[key];
+  }
+  const target = key.toLowerCase();
+  for (const [entryKey, value] of Object.entries(env)) {
+    if (entryKey.toLowerCase() === target && value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/** Normalizes a sandbox path using Windows or POSIX path semantics. */
+export function normalizeSandboxPath(
+  targetPath: string,
+  platform: NodeJS.Platform = process.platform
+): string {
+  return platform === 'win32'
+    ? path.win32.normalize(targetPath)
+    : path.posix.normalize(targetPath);
+}
+
+/** Joins and normalizes sandbox path segments for the target platform. */
+function joinSandboxPath(
+  platform: NodeJS.Platform,
+  ...segments: string[]
+): string {
+  return platform === 'win32'
+    ? path.win32.normalize(path.win32.join(...segments))
+    : path.posix.normalize(path.posix.join(...segments));
+}
+
+/**
+ * Normalizes a Windows path with `path.win32` and quotes/escapes it when
+ * spaces or Windows command-line metacharacters are present.
+ */
+export function escapeWindowsCommandPath(targetPath: string): string {
+  const normalized = path.win32.normalize(targetPath);
+  if (!/[\s"&|<>^()]/.test(normalized)) {
+    return normalized;
+  }
+  // Escape embedded quotes and double trailing backslashes per Windows command-line quoting rules.
+  const escaped = normalized.replace(/"/g, '\\"').replace(/(\\+)$/, '$1$1');
+  return `"${escaped}"`;
+}
 
 function filterUserEnv(extra?: Record<string, string>): Record<string, string> {
   const safeUserEnv: Record<string, string> = {};
@@ -154,17 +209,39 @@ function filterUserEnv(extra?: Record<string, string>): Record<string, string> {
   return safeUserEnv;
 }
 
-function buildSanitizedProcessEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
+/**
+ * Builds a minimal, sanitized child-process environment while preserving
+ * essential Windows system variables (`SystemRoot`, `WINDIR`, `COMSPEC`, `PATH`)
+ * regardless of host key casing.
+ */
+export function buildSanitizedProcessEnv(
+  extra?: Record<string, string>,
+  hostEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): NodeJS.ProcessEnv {
+  const resolvedPath =
+    platform === 'win32'
+      ? (getEnvCaseInsensitive(hostEnv, 'PATH') ?? '')
+      : (hostEnv.PATH || '');
   const clean: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH || '',
-    LANG: process.env.LANG || 'C.UTF-8',
-    LC_ALL: process.env.LC_ALL || 'C.UTF-8',
+    PATH: resolvedPath,
+    LANG: hostEnv.LANG || 'C.UTF-8',
+    LC_ALL: hostEnv.LC_ALL || 'C.UTF-8',
     NODE_OPTIONS: '',
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
   };
-  if (process.platform === 'win32' && process.env.SystemRoot) {
-    clean.SystemRoot = process.env.SystemRoot;
+  if (platform === 'win32') {
+    const windir = getEnvCaseInsensitive(hostEnv, 'WINDIR');
+    clean.SystemRoot =
+      getEnvCaseInsensitive(hostEnv, 'SystemRoot') || windir || 'C:\\Windows';
+    if (windir) {
+      clean.WINDIR = windir;
+    }
+    const comspec = getEnvCaseInsensitive(hostEnv, 'COMSPEC');
+    if (comspec) {
+      clean.COMSPEC = comspec;
+    }
   }
   return { ...clean, ...filterUserEnv(extra) };
 }
@@ -173,13 +250,15 @@ async function createTempSandboxFiles(
   prefix: string,
   files: Record<string, string>
 ): Promise<{ dir: string; paths: Record<string, string> }> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const baseTmp = normalizeSandboxPath(os.tmpdir());
+  const rawDir = await fs.mkdtemp(joinSandboxPath(process.platform, baseTmp, prefix));
+  const dir = normalizeSandboxPath(rawDir);
   const written: string[] = [];
   try {
     await fs.chmod(dir, 0o700).catch(() => {});
     const paths: Record<string, string> = {};
     for (const [name, content] of Object.entries(files)) {
-      const filePath = path.join(dir, name);
+      const filePath = joinSandboxPath(process.platform, dir, name);
       await fs.writeFile(filePath, content, { encoding: 'utf8', mode: 0o600 });
       await fs.chmod(filePath, 0o600).catch(() => {});
       paths[name] = filePath;
@@ -579,11 +658,17 @@ export class SandboxRunner {
       filePaths = Object.values(staged.paths);
       const args = params.buildArgs(staged.paths);
       const cleanEnv = buildSanitizedProcessEnv(params.env);
+      const command =
+        path.isAbsolute(params.command) ||
+        params.command.includes('/') ||
+        params.command.includes('\\')
+          ? normalizeSandboxPath(params.command)
+          : params.command;
 
       return await new Promise<ExecutionResult>((resolve) => {
         let child: ReturnType<typeof spawn>;
         try {
-          child = spawn(params.command, args, {
+          child = spawn(command, args, {
             cwd: tempDir!,
             env: cleanEnv,
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -878,9 +963,16 @@ export class SandboxRunner {
     });
 
     try {
-      workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'devtrack-cpp-'));
+      const baseTmp = normalizeSandboxPath(os.tmpdir());
+      workspace = normalizeSandboxPath(
+        await fs.mkdtemp(joinSandboxPath(process.platform, baseTmp, 'devtrack-cpp-'))
+      );
       await fs.chmod(workspace, 0o755);
-      await fs.writeFile(path.join(workspace, 'main.cpp'), sourceCode, { mode: 0o644 });
+      await fs.writeFile(
+        joinSandboxPath(process.platform, workspace, 'main.cpp'),
+        sourceCode,
+        { mode: 0o644 }
+      );
 
       const image = process.env.CPP_SANDBOX_IMAGE || 'gcc:14';
       const compileName = `devtrack-cpp-compile-${randomUUID()}`;

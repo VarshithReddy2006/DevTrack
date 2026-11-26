@@ -5,8 +5,15 @@ import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, it, expect } from 'vitest';
-import { sandboxRunner, executeCode } from '../../../modules/dsa/execution/sandboxRunner.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  sandboxRunner,
+  executeCode,
+  getEnvCaseInsensitive,
+  buildSanitizedProcessEnv,
+  normalizeSandboxPath,
+  escapeWindowsCommandPath,
+} from '../../../modules/dsa/execution/sandboxRunner.js';
 import { wasiEngine } from '../../../modules/dsa/execution/wasiEngine.js';
 import { evaluateSubmission } from '../../../workers/worker-dsa-eval.js';
 
@@ -534,6 +541,108 @@ print(json.dumps({"square": n * n, "gcd": math.gcd(n, 18)}))
 
       expect(evalResult.verdict).toBe('MEMORY_LIMIT_EXCEEDED');
       expect(evalResult.passedTestCases).toBe(0);
+    });
+  });
+
+  describe('Windows Environment Resolution & Path Escaping (#686)', () => {
+    it('resolves environment variables case-insensitively regardless of key casing', () => {
+      const env: NodeJS.ProcessEnv = {
+        SYSTEMROOT: 'C:\\Windows',
+        windir: 'D:\\WinDir',
+        ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+        Path: 'C:\\Windows\\System32',
+      };
+
+      expect(getEnvCaseInsensitive(env, 'SystemRoot')).toBe('C:\\Windows');
+      expect(getEnvCaseInsensitive(env, 'systemroot')).toBe('C:\\Windows');
+      expect(getEnvCaseInsensitive(env, 'WINDIR')).toBe('D:\\WinDir');
+      expect(getEnvCaseInsensitive(env, 'COMSPEC')).toBe('C:\\Windows\\System32\\cmd.exe');
+      expect(getEnvCaseInsensitive(env, 'PATH')).toBe('C:\\Windows\\System32');
+      expect(getEnvCaseInsensitive(env, 'NON_EXISTENT')).toBeUndefined();
+    });
+
+    it('populates SystemRoot, WINDIR, COMSPEC, and PATH case-insensitively on win32 and blocks user overrides', () => {
+      const sanitized = buildSanitizedProcessEnv(
+        {
+          systemroot: 'C:\\Malicious',
+          windir: 'C:\\Malicious',
+          comspec: 'C:\\Malicious\\cmd.exe',
+          SAFE_CUSTOM: 'allowed',
+        },
+        {
+          SYSTEMROOT: 'C:\\WinRoot',
+          windir: 'C:\\WinDir',
+          comspec: 'C:\\WinRoot\\System32\\cmd.exe',
+          Path: 'C:\\Tools',
+          SECRET_API_KEY: 'do-not-leak',
+        },
+        'win32'
+      );
+
+      expect(sanitized.SystemRoot).toBe('C:\\WinRoot');
+      expect(sanitized.WINDIR).toBe('C:\\WinDir');
+      expect(sanitized.COMSPEC).toBe('C:\\WinRoot\\System32\\cmd.exe');
+      expect(sanitized.PATH).toBe('C:\\Tools');
+      expect(sanitized.SAFE_CUSTOM).toBe('allowed');
+      expect(sanitized.SECRET_API_KEY).toBeUndefined();
+    });
+
+    it('always populates SystemRoot on win32 even when omitted from host environment', () => {
+      const fromWindir = buildSanitizedProcessEnv(undefined, { windir: 'D:\\Windows' }, 'win32');
+      expect(fromWindir.SystemRoot).toBe('D:\\Windows');
+      expect(fromWindir.WINDIR).toBe('D:\\Windows');
+
+      const fallback = buildSanitizedProcessEnv(undefined, {}, 'win32');
+      expect(fallback.SystemRoot).toBe('C:\\Windows');
+
+      const linuxEnv = buildSanitizedProcessEnv(
+        undefined,
+        { PATH: '/usr/bin', SYSTEMROOT: 'C:\\Windows' },
+        'linux'
+      );
+      expect(linuxEnv.PATH).toBe('/usr/bin');
+      expect(linuxEnv.SystemRoot).toBeUndefined();
+      expect(linuxEnv.WINDIR).toBeUndefined();
+      expect(linuxEnv.COMSPEC).toBeUndefined();
+    });
+
+    it('normalizes paths with path.win32 and quotes Windows paths containing spaces or metacharacters', () => {
+      expect(normalizeSandboxPath('C:/Users/User Name/temp/../sandbox/solution.js', 'win32')).toBe(
+        'C:\\Users\\User Name\\sandbox\\solution.js'
+      );
+      expect(normalizeSandboxPath('/tmp/devtrack/../sandbox/solution.js', 'linux')).toBe(
+        '/tmp/sandbox/solution.js'
+      );
+
+      expect(escapeWindowsCommandPath('C:/Users/User Name/AppData/Local/Temp/solution.js')).toBe(
+        '"C:\\Users\\User Name\\AppData\\Local\\Temp\\solution.js"'
+      );
+      expect(escapeWindowsCommandPath('C:\\Users\\User Name\\dir\\')).toBe(
+        '"C:\\Users\\User Name\\dir\\\\"'
+      );
+      expect(escapeWindowsCommandPath('C:\\sandbox\\solution.js')).toBe('C:\\sandbox\\solution.js');
+    });
+
+    it('executes JavaScript and Python inside temporary directories whose paths contain spaces', async () => {
+      const realTmp = os.tmpdir();
+      const spaceParent = await fs.mkdtemp(path.join(realTmp, 'devtrack space dir '));
+      const tmpSpy = vi.spyOn(os, 'tmpdir').mockReturnValue(spaceParent);
+
+      try {
+        const jsResult = await sandboxRunner.execute(`console.log('space-js-ok');`, 'javascript');
+        expect(jsResult.status).toBe('SUCCESS');
+        expect(jsResult.stdout.trim()).toBe('space-js-ok');
+
+        const pyResult = await sandboxRunner.execute(`print('space-py-ok')`, 'python');
+        expect(pyResult.status).toBe('SUCCESS');
+        expect(pyResult.stdout.trim()).toBe('space-py-ok');
+
+        const remaining = await fs.readdir(spaceParent);
+        expect(remaining).toEqual([]);
+      } finally {
+        tmpSpy.mockRestore();
+        await fs.rm(spaceParent, { recursive: true, force: true });
+      }
     });
   });
 });

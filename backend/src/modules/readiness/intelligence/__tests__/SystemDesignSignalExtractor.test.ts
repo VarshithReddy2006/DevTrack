@@ -183,7 +183,41 @@ spec:
     });
   });
 
-  it('ignores malformed and oversized Kubernetes manifests safely', () => {
+  it('resolves YAML anchors, aliases and merge keys and skips empty documents', () => {
+    const content = `# leading comment
+---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api }
+x-defaults: &defaults
+  requests: { cpu: 100m }
+  limits: { cpu: 500m }
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          resources:
+            <<: *defaults
+          readinessProbe: { httpGet: { path: /ready, port: 3000 } }
+---
+# only a comment
+---
+apiVersion: v1
+kind: Service
+metadata: { name: api }
+`;
+    expect(parseKubernetesManifest(content)).toEqual({
+      isKubernetesManifest: true,
+      hasResourceLimits: true,
+      hasResourceRequests: true,
+      hasHighAvailability: false,
+      hasHealthProbes: true,
+      hasAutoscaling: false,
+      hasIngressTLS: false,
+    });
+  });  it('ignores malformed and oversized Kubernetes manifests safely', () => {
     expect(() => parseKubernetesManifest('apiVersion: [\nkind: Deployment')).not.toThrow();
     expect(parseKubernetesManifest('apiVersion: [\nkind: Deployment')).toMatchObject({
       isKubernetesManifest: false,

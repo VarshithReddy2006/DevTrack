@@ -11,6 +11,7 @@ import { getOrCreateQueue } from '../shared/jobs/queueFactory.js';
 import { getRedisClient } from '../shared/redis/index.js';
 import { logger } from '../shared/logger.js';
 import {
+  TypstCompilerService,
   typstCompilerService,
   type TypstCompilerOptions,
   type TypstCompilationResult,
@@ -133,6 +134,7 @@ export async function stopResumeRenderWorker(): Promise<void> {
     worker = null;
     logger.info('[worker-render] Resume render worker stopped');
   }
+  await TypstCompilerService.shutdown();
 }
 
 // Aliases for unified render worker pool

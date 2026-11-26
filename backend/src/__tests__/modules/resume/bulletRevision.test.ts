@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { Types } from 'mongoose';
 import jsonPatch from 'fast-json-patch';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { checkKeywordCoverage, escapeRegExp, MAX_KEYWORD_COUNT, MAX_KEYWORD_LENGTH, sanitizeKeywords } from '@devtrack/ats-core';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { ResumeVariant, type IBulletEdit } from '../../../db/models/resumeVariant.model.js';
 import { ResumeBulletRevision } from '../../../db/models/resumeBulletRevision.model.js';
@@ -248,5 +249,77 @@ describe('revision HTTP routes', () => {
   it('leaves existing upload/session paths to their own authentication and budgets', async () => {
     expect((await request('/api/v1/resume/session/test')).status).toBe(200);
     expect(limits).toEqual({ reads: 0, writes: 0 });
+  });
+});
+
+describe('resume keyword ReDoS prevention and sanitization (issue #679)', () => {
+  it('escapes regex metacharacters and treats regex syntax in keywords and bullets literally', async () => {
+    expect(escapeRegExp('C++ (v2) [1]*?.$')).toBe('C\\+\\+ \\(v2\\) \\[1\\]\\*\\?\\.\\$');
+
+    // Regex injection like ".*" or "(a+)+" must not match arbitrary text, while literal C++ / .NET / Node.js match.
+    const text = 'Engineered C++ and .NET microservices with Node.js';
+    const coverage = checkKeywordCoverage(text, ['.*', '(a+)+', 'C++', '.NET', 'Node.js', 'a|b']);
+    expect(coverage.map(item => [item.keyword, item.found])).toEqual([
+      ['.*', false],
+      ['(a+)+', false],
+      ['C++', true],
+      ['.NET', true],
+      ['Node.js', true],
+      ['a|b', false],
+    ]);
+
+    const scored = scoreBulletEdits(bullets('Built aaa APIs'), {
+      targetRole: 'Backend',
+      keywords: ['(a+)+', 'a*', '.*'],
+    });
+    expect(scored.keywordsMatched).toBe(0);
+    expect(scored.keywordsTotal).toBe(3);
+  });
+
+  it('bounds keyword length to 64 chars and keyword count to 100', async () => {
+    const valid64 = 'k'.repeat(MAX_KEYWORD_LENGTH);
+    const tooLong65 = 'k'.repeat(MAX_KEYWORD_LENGTH + 1);
+    const rawKeywords = [valid64, tooLong65, '  ', ...Array.from({ length: 120 }, (_, i) => `skill-${i}`)];
+
+    const sanitized = sanitizeKeywords(rawKeywords);
+    expect(sanitized).toHaveLength(MAX_KEYWORD_COUNT);
+    expect(sanitized[0]).toBe(valid64);
+    expect(sanitized).not.toContain(tooLong65);
+
+    const directCoverage = checkKeywordCoverage(`${valid64} ${tooLong65}`, [valid64, tooLong65]);
+    expect(directCoverage[0].found).toBe(true);
+    expect(directCoverage[1].found).toBe(false);
+
+    // Persisting a bullet revision with oversized/excess prioritizedSkills ignores invalid entries safely.
+    await ResumeVariant.updateOne(
+      { _id: resumeId },
+      { $set: { prioritizedSkills: ['Node.js', tooLong65, ...Array.from({ length: 150 }, (_, i) => `skill-${i}`)] } },
+    );
+    const saved = await save('Built Node.js APIs with skill-0', 0);
+    expect(saved!.atsScore!.keywordsTotal).toBe(MAX_KEYWORD_COUNT);
+    expect(saved!.atsScore!.keywordsMatched).toBe(2);
+  });
+
+  it('completes adversarial ReDoS keyword and bullet payloads in under 5ms without blocking the event loop', async () => {
+    const evilBullet = `${'a'.repeat(900)}!`;
+    const evilKeywords = [
+      '(a+)+$',
+      '([a-zA-Z]+)*$',
+      '(a|aa)+$',
+      '^(a+){1,100}$',
+      'a'.repeat(500),
+      ...Array.from({ length: 120 }, (_, i) => `(x+)+${i}`),
+    ];
+
+    // Warm up JIT once before measuring execution budget.
+    scoreBulletEdits(bullets(evilBullet), { targetRole: 'Backend', keywords: evilKeywords });
+
+    const start = performance.now();
+    const result = scoreBulletEdits(bullets(evilBullet), { targetRole: 'Backend', keywords: evilKeywords });
+    const elapsedMs = performance.now() - start;
+
+    expect(elapsedMs).toBeLessThan(5);
+    expect(result.keywordsTotal).toBe(MAX_KEYWORD_COUNT);
+    expect(result.keywordsMatched).toBe(0);
   });
 });

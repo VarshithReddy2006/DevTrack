@@ -1,6 +1,6 @@
 import { calculateAtsScore, calculateExtractionConfidence } from './score.js';
 import { validateFormatting, validateParserSafety } from './formatting.js';
-import { checkKeywordCoverage } from './keywords.js';
+import { checkKeywordCoverage, sanitizeKeywords } from './keywords.js';
 import { validateSections } from './sections.js';
 
 export interface BulletEdit {
@@ -31,7 +31,7 @@ export function evaluateBulletEdits(edits: readonly BulletEdit[], context: Bulle
   const content = renderBulletEdits(edits);
   const parserWarnings = validateParserSafety(content);
   const formattingWarnings = validateFormatting(content);
-  const keywordCoverage = checkKeywordCoverage(content, [...(context.keywords ?? [])]);
+  const keywordCoverage = checkKeywordCoverage(content, sanitizeKeywords(context.keywords ?? []));
   const sectionIntegrity = validateSections(content);
   const extractionConfidence = calculateExtractionConfidence(parserWarnings, formattingWarnings, sectionIntegrity);
   return {
