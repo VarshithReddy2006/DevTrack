@@ -642,4 +642,76 @@ describe('Streak Service — getStreakHistory', () => {
     expect(status.isActiveToday).toBe(true);
     expect(status.currentStreak).toBe(1);
   });
+
+  it('preserves streak for user in negative timezone across UTC midnight boundary (#687)', async () => {
+    // Test case from issue #687: User in America/Los_Angeles (UTC-8 in November)
+    // solves a problem at 20:00 local time on Tuesday, which is 04:00 UTC on Wednesday.
+    // The system must credit this to Tuesday local calendar date.
+    await User.findByIdAndUpdate(userId, { timezone: 'America/Los_Angeles' });
+
+    // User active Tuesday local at 20:00 PST = Wednesday 04:00 UTC
+    const activityDate = new Date('2026-11-25T04:00:00.000Z');
+
+    await recordActivity({
+      userId,
+      streakType: 'dsa',
+      source: 'problem-tuesday',
+      activityDate,
+      timezone: 'America/Los_Angeles',
+    });
+
+    // Verify the log was normalized to Tuesday (2026-11-24) in user's timezone
+    const log = await UserStreakLog.findOne({ userId, sources: 'problem-tuesday' });
+    expect(log).toBeDefined();
+    // The dateKey should be 2026-11-24 (Tuesday local time), not 2026-11-25
+    expect(log?.dateKey).toBe('2026-11-24');
+  });
+
+  it('does not break streak when UTC day differs from user local day (#687)', async () => {
+    // Issue #687: When a user in a negative timezone (e.g., America/Los_Angeles)
+    // has activity late on their local Tuesday, it occurs in UTC Wednesday.
+    // The streak should not break because the user was active on their local Tuesday.
+    await User.findByIdAndUpdate(userId, { timezone: 'America/Los_Angeles' });
+
+    // User active on Tuesday local at 19:00 PST = Wednesday 03:00 UTC
+    await recordActivity({
+      userId,
+      streakType: 'dsa',
+      source: 'tue-activity',
+      activityDate: new Date('2026-11-25T03:00:00Z'),
+      timezone: 'America/Los_Angeles',
+    });
+
+    // Mock the current time to be Wednesday 03:30 UTC, which is still Tuesday 19:30 in LA
+    // This ensures "today" in user's timezone is Tuesday (2026-11-24)
+    vi.setSystemTime(new Date('2026-11-25T03:30:00Z'));
+
+    // Check the streak - user was active on Tuesday local time
+    const status = await getStreakStatus(userId, 'dsa');
+    expect(status.currentStreak).toBe(1);
+    expect(status.lastActiveDate).toEqual(new Date('2026-11-24T00:00:00.000Z'));
+  });
+
+  it('does not consume freeze erroneously for negative timezone user who was active previous day (#687)', async () => {
+    // Issue #687: Users in negative timezones had freezes consumed incorrectly
+    // when active late on the previous calendar day (local time)
+    await User.findByIdAndUpdate(userId, { timezone: 'America/Los_Angeles' });
+
+    // User active Tuesday 18:00 PST = Wednesday 02:00 UTC
+    await recordActivity({
+      userId,
+      streakType: 'dsa',
+      source: 'problem-tue',
+      activityDate: new Date('2026-11-25T02:00:00Z'),
+      timezone: 'America/Los_Angeles',
+    });
+
+    // Mock the current time to be Wednesday 02:30 UTC, which is still Tuesday 18:30 in LA
+    // This ensures "today" in user's timezone is Tuesday (2026-11-24)
+    vi.setSystemTime(new Date('2026-11-25T02:30:00Z'));
+
+    // Check the streak - user was active on Tuesday local time
+    const status = await getStreakStatus(userId, 'dsa');
+    expect(status.currentStreak).toBe(1);
+  });
 });
