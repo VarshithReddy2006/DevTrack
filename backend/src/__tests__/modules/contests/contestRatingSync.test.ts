@@ -5,7 +5,10 @@ import { DsaContestParticipation } from '../../../db/models/dsaContestParticipat
 import { UserSettings } from '../../../db/models/userSettings.model.js';
 import { eventBus } from '../../../shared/sse/eventBus.js';
 import * as sources from '../../../modules/contests/contestRatingSources.js';
-import { syncContestRatings } from '../../../modules/contests/contestRatingSync.service.js';
+import {
+  resetContestRatingCircuitBreakers,
+  syncContestRatings,
+} from '../../../modules/contests/contestRatingSync.service.js';
 import { enqueueContestRatingSyncs, processContestRatingJob, scheduleContestRatingSync, startContestRatingSyncWorker, stopContestRatingSyncWorker } from '../../../shared/jobs/contestRatingSyncWorker.js';
 
 const state = vi.hoisted(() => ({ add: vi.fn(), rateLimit: vi.fn(), close: vi.fn(), create: vi.fn() }));
@@ -34,6 +37,7 @@ async function user(handle = 'Alpha', platform: 'codeforces' | 'leetcode' = 'cod
 beforeAll(async () => { await Promise.all([DsaContest.init(), DsaContestParticipation.init(), UserSettings.init()]); });
 beforeEach(() => {
   vi.clearAllMocks();
+  resetContestRatingCircuitBreakers();
   state.add.mockResolvedValue({}); state.close.mockResolvedValue(undefined); state.rateLimit.mockResolvedValue(undefined);
   vi.spyOn(sources, 'fetchCodeforcesResults').mockResolvedValue(new Map([['alpha', result()]]));
   vi.spyOn(sources, 'fetchLeetcodeResult').mockResolvedValue(result(-12));
@@ -195,5 +199,205 @@ describe('sync pool scheduling and retry handling', () => {
     vi.mocked(sources.fetchCodeforcesResults).mockRejectedValueOnce(new Error('provider unavailable'));
     await expect(processContestRatingJob({ data: { task: 'sync', contestId: entry.id } })).rejects.toThrow('provider unavailable');
     expect(await processContestRatingJob({ data: { task: 'sync', contestId: entry.id } })).toEqual({ changed: 1, failed: 0 });
+  });
+});
+
+describe('batched throttling, exponential backoff, and circuit breaker resumption', () => {
+  it('batches user queries with bounded concurrency and enforces request-pacing delays', async () => {
+    const entry = await contest('leetcode');
+    for (const handle of ['User1', 'User2', 'User3', 'User4', 'User5']) {
+      await user(handle, 'leetcode');
+    }
+
+    let nowMs = Date.now();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const sleepCalls: number[] = [];
+    vi.mocked(sources.fetchLeetcodeResult).mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      inFlight--;
+      return result(15);
+    });
+
+    const res = await syncContestRatings(entry.id, {
+      batchSize: 2,
+      concurrency: 2,
+      requestDelayMs: 500,
+      now: () => nowMs,
+      sleep: async ms => {
+        sleepCalls.push(ms);
+        nowMs += ms;
+      },
+    });
+
+    expect(res).toEqual({ changed: 5, failed: 0 });
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(sleepCalls).toEqual([500, 500, 500, 500]);
+    expect(await DsaContestParticipation.countDocuments({ contestId: entry._id })).toBe(5);
+  });
+
+  it('retries transient 429 responses with exponential backoff instead of crashing the sync loop', async () => {
+    const entry = await contest('leetcode');
+    await user('Alpha', 'leetcode');
+    await user('Bravo', 'leetcode');
+
+    const sleepCalls: number[] = [];
+    vi.mocked(sources.fetchLeetcodeResult)
+      .mockRejectedValueOnce(new sources.ContestProviderRateLimit(400))
+      .mockRejectedValueOnce(new sources.ContestProviderRateLimit(400))
+      .mockResolvedValue(result(20));
+
+    const res = await syncContestRatings(entry.id, {
+      concurrency: 1,
+      requestDelayMs: 0,
+      backoffBaseMs: 1_000,
+      maxBackoffMs: 16_000,
+      maxRateLimitRetries: 2,
+      circuitFailureThreshold: 3,
+      sleep: async ms => {
+        sleepCalls.push(ms);
+      },
+    });
+
+    expect(res).toEqual({ changed: 2, failed: 0 });
+    expect(sleepCalls).toEqual([1_000, 2_000]);
+    expect(await DsaContestParticipation.countDocuments({ contestId: entry._id })).toBe(2);
+  });
+
+  it('opens circuit breaker on consecutive 429/503s, pauses and reschedules, and resumes from checkpoint', async () => {
+    const entry = await contest('leetcode');
+    const handles = ['User1', 'User2', 'User3', 'User4', 'User5'];
+    for (const handle of handles) {
+      await user(handle, 'leetcode');
+    }
+
+    let nowMs = Date.now();
+    const calledHandlesFirstRun: string[] = [];
+    vi.mocked(sources.fetchLeetcodeResult).mockImplementation(async handle => {
+      calledHandlesFirstRun.push(handle);
+      if (handle === 'User1' || handle === 'User2') {
+        return result(10);
+      }
+      throw new sources.ContestProviderHttpError(503);
+    });
+
+    const first = await syncContestRatings(entry.id, {
+      batchSize: 2,
+      concurrency: 1,
+      requestDelayMs: 0,
+      backoffBaseMs: 100,
+      maxRateLimitRetries: 2,
+      circuitFailureThreshold: 3,
+      circuitResetTimeoutMs: 30_000,
+      now: () => nowMs,
+      sleep: async ms => {
+        nowMs += ms;
+      },
+    });
+
+    expect(first).toEqual({ changed: 2, failed: 0, paused: true, retryAfterMs: 30_000 });
+    // User4 and User5 must not be queried once User3 trips the circuit.
+    expect(calledHandlesFirstRun).toEqual(['User1', 'User2', 'User3', 'User3', 'User3']);
+    expect(await DsaContestParticipation.countDocuments({ contestId: entry._id })).toBe(2);
+
+    const persisted = await DsaContest.findById(entry._id).lean();
+    expect(persisted?.ratingSyncCheckpoint?.lastUserSettingsId).toBeTruthy();
+
+    expect(state.add).toHaveBeenCalledWith(
+      'contest-rating-sync',
+      { task: 'sync', contestId: entry.id },
+      expect.objectContaining({ delay: 30_000 })
+    );
+
+    // Calling while circuit is still open short-circuits with zero provider calls.
+    const callCountBeforeOpenCheck = vi.mocked(sources.fetchLeetcodeResult).mock.calls.length;
+    const whileOpen = await syncContestRatings(entry.id, {
+      requestDelayMs: 0,
+      circuitResetTimeoutMs: 30_000,
+      now: () => nowMs,
+    });
+    expect(whileOpen.paused).toBe(true);
+    expect(whileOpen.retryAfterMs).toBeGreaterThan(0);
+    expect(vi.mocked(sources.fetchLeetcodeResult).mock.calls.length).toBe(callCountBeforeOpenCheck);
+
+    // Advance past cooldown; resume must skip User1 and User2 and finish User3..User5.
+    nowMs += 31_000;
+    const calledHandlesResume: string[] = [];
+    vi.mocked(sources.fetchLeetcodeResult).mockImplementation(async handle => {
+      calledHandlesResume.push(handle);
+      return result(30);
+    });
+
+    const resumed = await syncContestRatings(entry.id, {
+      batchSize: 2,
+      concurrency: 1,
+      requestDelayMs: 0,
+      circuitResetTimeoutMs: 30_000,
+      now: () => nowMs,
+    });
+
+    expect(resumed).toEqual({ changed: 3, failed: 0 });
+    expect(calledHandlesResume).toEqual(['User3', 'User4', 'User5']);
+    expect(await DsaContestParticipation.countDocuments({ contestId: entry._id })).toBe(5);
+
+    const afterCompletion = await DsaContest.findById(entry._id).lean();
+    expect(afterCompletion?.ratingSyncCheckpoint).toBeNull();
+  });
+
+  it('doubles circuit cooldown exponentially when half-open probe hits 429/503 again', async () => {
+    const entry = await contest('leetcode');
+    await user('User1', 'leetcode');
+    await user('User2', 'leetcode');
+
+    let nowMs = Date.now();
+    vi.mocked(sources.fetchLeetcodeResult).mockRejectedValue(new sources.ContestProviderRateLimit(1_000));
+
+    const firstTrip = await syncContestRatings(entry.id, {
+      concurrency: 1,
+      requestDelayMs: 0,
+      backoffBaseMs: 50,
+      maxRateLimitRetries: 2,
+      circuitFailureThreshold: 3,
+      circuitResetTimeoutMs: 10_000,
+      maxCircuitCooldownMs: 120_000,
+      now: () => nowMs,
+      sleep: async ms => {
+        nowMs += ms;
+      },
+    });
+    expect(firstTrip).toEqual({ changed: 0, failed: 0, paused: true, retryAfterMs: 10_000 });
+
+    nowMs += 10_500;
+    const secondTrip = await syncContestRatings(entry.id, {
+      concurrency: 1,
+      requestDelayMs: 0,
+      backoffBaseMs: 50,
+      maxRateLimitRetries: 2,
+      circuitFailureThreshold: 3,
+      circuitResetTimeoutMs: 10_000,
+      maxCircuitCooldownMs: 120_000,
+      now: () => nowMs,
+      sleep: async ms => {
+        nowMs += ms;
+      },
+    });
+    expect(secondTrip).toEqual({ changed: 0, failed: 0, paused: true, retryAfterMs: 20_000 });
+  });
+
+  it('pauses BullMQ worker when LeetCode circuit breaker trips during processContestRatingJob', async () => {
+    const entry = await contest('leetcode');
+    await user('Alpha', 'leetcode');
+    startContestRatingSyncWorker();
+    vi.mocked(sources.fetchLeetcodeResult).mockRejectedValue(
+      new sources.ContestProviderRateLimit(45_000, true)
+    );
+
+    await expect(
+      processContestRatingJob({ data: { task: 'sync', contestId: entry.id } })
+    ).rejects.toThrow('bullmq:rateLimitExceeded');
+    expect(state.rateLimit).toHaveBeenCalledWith(45_000);
+    expect(state.add).not.toHaveBeenCalled();
   });
 });

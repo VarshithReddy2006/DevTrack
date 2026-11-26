@@ -31,7 +31,15 @@ export async function enqueueContestRatingSyncs(target: Pick<Queue, 'add'> = que
 
 export async function processContestRatingJob(job: Pick<Job<ContestRatingJob>, 'data'>) {
   try {
-    return job.data.task === 'sweep' ? await enqueueContestRatingSyncs() : await syncContestRatings(job.data.contestId);
+    if (job.data.task === 'sweep') return await enqueueContestRatingSyncs();
+    const result = await syncContestRatings(job.data.contestId, {
+      rescheduleOnPause: !worker,
+    });
+    if (result.paused && worker) {
+      await worker.rateLimit(result.retryAfterMs ?? 60_000);
+      throw Worker.RateLimitError();
+    }
+    return result;
   } catch (error) {
     if (error instanceof ContestProviderRateLimit && worker) {
       await worker.rateLimit(error.retryAfterMs);
