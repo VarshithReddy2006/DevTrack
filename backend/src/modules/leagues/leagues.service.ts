@@ -235,7 +235,12 @@ async function divisionForNextWeek(userObjId: Types.ObjectId): Promise<LeagueDiv
  * an existing row for the week is returned untouched (the unique week+user index
  * settles concurrent calls).
  */
-export async function joinCurrentWeek(userId: string, now: Date, store: LeagueScoreStore): Promise<StandingRow> {
+export async function joinCurrentWeek(
+  userId: string,
+  now: Date,
+  store: LeagueScoreStore,
+  joinedAt: Date = now,
+): Promise<StandingRow> {
   const userObjId = new Types.ObjectId(userId);
   const weekKey = weekKeyFor(now);
 
@@ -256,7 +261,7 @@ export async function joinCurrentWeek(userId: string, now: Date, store: LeagueSc
     let row: StandingRow;
     try {
       const created = await LeagueStanding.create({
-        weekKey, userId: userObjId, division, cohortId, status: 'active', joinedAt: now,
+        weekKey, userId: userObjId, division, cohortId, status: 'active', joinedAt,
       });
       row = created.toObject() as StandingRow;
     } catch (error) {
@@ -266,7 +271,7 @@ export async function joinCurrentWeek(userId: string, now: Date, store: LeagueSc
         });
       });
       if (!isDuplicateKey(error)) throw error;
-      return (await LeagueStanding.findOne({ weekKey, userId: userObjId }).lean<StandingRow>())!;
+      row = (await LeagueStanding.findOne({ weekKey, userId: userObjId }).lean<StandingRow>())!;
     }
     await store.seed(cohortKey(weekKey, row.division, row.cohortId), [userId]);
     return row;
@@ -323,7 +328,8 @@ export async function recordXpAward(input: XpAwardInput, store: LeagueScoreStore
     if (weekKey !== weekKeyFor(now) || !(await isParticipating(input.userId))) {
       return { applied: false, reason: 'not_participating' };
     }
-    row = await joinCurrentWeek(input.userId, now, store);
+    const effectiveJoinedAt = input.occurredAt < now ? input.occurredAt : now;
+    row = await joinCurrentWeek(input.userId, now, store, effectiveJoinedAt);
   }
   if (row.status !== 'active') return { applied: false, reason: 'week_closed' };
   if (input.occurredAt < row.joinedAt) return { applied: false, reason: 'before_join' };
