@@ -55,6 +55,9 @@ export function spectralEntropy(series: number[]): number {
   const mu = meanOf(series);
   const x = series.map((v) => v - mu);
   const bins = Math.floor(n / 2);
+  // bins >= 2 when n >= 4, so Math.log2(bins) >= 1 and is always positive.
+  // Guard defensively in case of future callers passing edge-case lengths.
+  if (bins < 2) return 0;
   const power: number[] = [];
   for (let k = 1; k <= bins; k++) {
     let re = 0;
@@ -75,7 +78,9 @@ export function spectralEntropy(series: number[]): number {
     const q = p / total;
     h -= q * Math.log2(q);
   }
-  return h / Math.log2(bins);
+  // Clamp to [0, 1]: mathematically h / log2(bins) is in [0, 1] but guard
+  // against floating-point rounding producing values just outside the range.
+  return Math.max(0, Math.min(1, h / Math.log2(bins)));
 }
 
 export function repeatRateOf(keys: string[]): number {

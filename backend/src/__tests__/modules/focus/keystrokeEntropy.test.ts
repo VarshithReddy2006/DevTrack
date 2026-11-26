@@ -97,3 +97,62 @@ describe('helpers', () => {
     expect(spectralEntropy(noise)).toBeGreaterThan(0.8);
   });
 });
+
+describe('NaN / numerical-stability guards (issue #676)', () => {
+  it('analyzeKeystrokeEntropy returns 0 entropy for empty input and never NaN', () => {
+    const r = analyzeKeystrokeEntropy([]);
+    expect(r.spectralEntropy).toBe(0);
+    expect(Number.isFinite(r.spectralEntropy)).toBe(true);
+    expect(r.verdict).toBe('insufficient_data');
+    expect(r.awardXp).toBe(true);
+  });
+
+  it('analyzeKeystrokeEntropy returns finite values for a single-gap input', () => {
+    const r = analyzeKeystrokeEntropy([150]);
+    expect(Number.isFinite(r.spectralEntropy)).toBe(true);
+    expect(Number.isNaN(r.spectralEntropy)).toBe(false);
+    expect(r.spectralEntropy).toBe(0);
+    expect(r.verdict).toBe('insufficient_data');
+  });
+
+  it('analyzeKeystrokeEntropy returns 0 spectralEntropy when all gaps are identical (K=1 bucket)', () => {
+    // 20 identical gaps: power spectrum total < threshold → returns 0 without dividing by log2(bins).
+    const r = analyzeKeystrokeEntropy(Array(20).fill(500));
+    expect(r.spectralEntropy).toBe(0);
+    expect(Number.isNaN(r.spectralEntropy)).toBe(false);
+  });
+
+  it('spectralEntropy returns 0 for arrays shorter than 4 (edge lengths 0, 1, 2, 3)', () => {
+    expect(spectralEntropy([])).toBe(0);
+    expect(spectralEntropy([100])).toBe(0);
+    expect(spectralEntropy([100, 200])).toBe(0);
+    expect(spectralEntropy([100, 200, 300])).toBe(0);
+  });
+
+  it('spectralEntropy result is always in [0, 1] for well-formed inputs', () => {
+    const r = rng(42);
+    for (let len = 4; len <= 64; len++) {
+      const series = Array.from({ length: len }, () => r() * 1000);
+      const e = spectralEntropy(series);
+      expect(Number.isNaN(e)).toBe(false);
+      expect(e).toBeGreaterThanOrEqual(0);
+      expect(e).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('analyzeKeystrokeEntropy spectralEntropy is never NaN or Infinity for adversarial inputs', () => {
+    const cases: number[][] = [
+      [],
+      [0],
+      [0, 0],
+      Array(20).fill(0),
+      [Number.MAX_SAFE_INTEGER],
+      Array(20).fill(Number.MAX_SAFE_INTEGER),
+    ];
+    for (const gaps of cases) {
+      const r = analyzeKeystrokeEntropy(gaps);
+      expect(Number.isNaN(r.spectralEntropy)).toBe(false);
+      expect(Number.isFinite(r.spectralEntropy)).toBe(true);
+    }
+  });
+});
