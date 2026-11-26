@@ -126,6 +126,45 @@ describe('OutboxRelay', () => {
     expect(row?.status).toBe('dead');
     expect(row?.attempts).toBe(3);
   });
+
+  it('prevents a stale relay whose lease expired from clobbering a reclaiming relay active lease', async () => {
+    await seed(1);
+    const t0 = Date.now() + 1_000;
+    const leaseMs = 5_000;
+
+    // Relay A claims the event at t0 (leaseExpiresAt = t0 + 5000)
+    const relayA = new OutboxRelay({
+      resolveQueues: () => ['q'],
+      enqueue: async () => { throw new Error('slow timeout after lease expired'); },
+      leaseMs,
+      now: () => new Date(t0),
+    });
+    const [claimedByA] = await relayA.claimBatch();
+    expect(claimedByA).toBeDefined();
+
+    // Lease expires; Relay B reclaims the same event at t0 + 6000 (leaseExpiresAt = t0 + 11000)
+    const relayB = new OutboxRelay({
+      resolveQueues: () => ['q'],
+      enqueue: async () => {},
+      leaseMs,
+      now: () => new Date(t0 + 6_000),
+    });
+    const [claimedByB] = await relayB.claimBatch();
+    expect(claimedByB).toBeDefined();
+    expect(claimedByB.leaseExpiresAt!.getTime()).toBe(t0 + 6_000 + leaseMs);
+
+    // Relay A finishes/fails late: its stale publish() must NOT overwrite Relay B's processing lease
+    await relayA.publish(claimedByA);
+    const afterStaleFail = await OutboxEvent.findById(claimedByA._id).lean();
+    expect(afterStaleFail?.status).toBe('processing');
+    expect(afterStaleFail?.leaseExpiresAt?.getTime()).toBe(t0 + 6_000 + leaseMs);
+    expect(afterStaleFail?.attempts).toBe(0);
+
+    // Relay B completes normally and marks it published
+    await relayB.publish(claimedByB);
+    const finalRow = await OutboxEvent.findById(claimedByA._id).lean();
+    expect(finalRow?.status).toBe('published');
+  });
 });
 
 describe('backoffMs', () => {

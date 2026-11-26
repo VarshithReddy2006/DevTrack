@@ -96,7 +96,7 @@ export class OutboxRelay {
         for (const queue of queues) await this.opts.enqueue(queue, event.eventId, envelope);
       });
       await OutboxEvent.updateOne(
-        { _id: event._id, status: 'processing' },
+        { _id: event._id, status: 'processing', leaseExpiresAt: event.leaseExpiresAt },
         { $set: { status: 'published', publishedAt: this.now(), leaseExpiresAt: null, lastError: null } },
       );
       return 'published';
@@ -105,7 +105,7 @@ export class OutboxRelay {
       const attempts = event.attempts + 1;
       const dead = attempts >= this.maxAttempts;
       await OutboxEvent.updateOne(
-        { _id: event._id, status: 'processing' },
+        { _id: event._id, status: 'processing', leaseExpiresAt: event.leaseExpiresAt },
         {
           $set: {
             status: dead ? 'dead' : 'pending',
