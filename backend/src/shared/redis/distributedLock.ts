@@ -38,6 +38,16 @@ export interface DistributedLockOptions {
   fallbackOnRedisUnavailable?: boolean;
 }
 
+export interface DistributedLockRetryOptions extends DistributedLockOptions {
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  maxDelayMs?: number;
+  backoffFactor?: number;
+  jitter?: number;
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
+}
+
 export interface DistributedLockHandle {
   readonly lockKey: string;
   readonly ownerToken: string;
@@ -52,7 +62,7 @@ export interface DistributedLockHandle {
 export interface DistributedLockResult<T> {
   executed: boolean;
   result?: T;
-  reason?: 'lock_held' | 'redis_unavailable' | 'redis_error';
+  reason?: 'lock_held' | 'redis_unavailable' | 'redis_error' | 'timeout' | 'aborted';
 }
 
 export type DistributedLockUnavailableReason =
@@ -486,6 +496,125 @@ export async function extendDistributedLock(
   return handle.extend(additionalTtlMs);
 }
 
+const DEFAULT_RETRY_MAX_ATTEMPTS = 5;
+const DEFAULT_RETRY_DELAY_MS = 50;
+const DEFAULT_RETRY_MAX_DELAY_MS = 5_000;
+const DEFAULT_RETRY_BACKOFF_FACTOR = 1.5;
+const DEFAULT_RETRY_JITTER_MS = 25;
+
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  if (ms <= 0) return Promise.resolve(true);
+
+  return new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
+
+function normalizeRetryOptions(
+  ttlMsOrOptions?: number | DistributedLockRetryOptions,
+  maybeOptions?: DistributedLockRetryOptions
+): DistributedLockRetryOptions {
+  if (typeof ttlMsOrOptions === 'number') {
+    return { ...maybeOptions, ttlMs: ttlMsOrOptions };
+  }
+  return { ...(ttlMsOrOptions ?? maybeOptions ?? {}) };
+}
+
+/**
+ * Attempts to acquire a distributed lock with exponential backoff, randomized jitter,
+ * overall timeout enforcement, and AbortSignal cancellation.
+ */
+export async function acquireWithRetry(
+  jobNameOrKey: string,
+  ttlMsOrOptions?: number | DistributedLockRetryOptions,
+  maybeOptions?: DistributedLockRetryOptions
+): Promise<DistributedLockHandle | null> {
+  const options = normalizeRetryOptions(ttlMsOrOptions, maybeOptions);
+  const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? DEFAULT_RETRY_MAX_ATTEMPTS));
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
+  const maxDelayMs = Math.max(retryDelayMs, options.maxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS);
+  const backoffFactor =
+    options.backoffFactor !== undefined && options.backoffFactor > 0
+      ? options.backoffFactor
+      : DEFAULT_RETRY_BACKOFF_FACTOR;
+  const jitter = Math.max(0, options.jitter ?? DEFAULT_RETRY_JITTER_MS);
+  const timeoutMs =
+    options.timeoutMs !== undefined && options.timeoutMs >= 0 ? options.timeoutMs : undefined;
+  const abortSignal = options.abortSignal;
+
+  if (abortSignal?.aborted) {
+    return null;
+  }
+
+  const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : Infinity;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (abortSignal?.aborted || Date.now() >= deadline) {
+      return null;
+    }
+
+    const lock = await acquireDistributedLock(jobNameOrKey, options);
+    if (lock) {
+      if (abortSignal?.aborted) {
+        await lock.release().catch(() => false);
+        return null;
+      }
+      return lock;
+    }
+
+    if (attempt === maxAttempts - 1) {
+      break;
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return null;
+    }
+
+    const backoffMs = Math.min(maxDelayMs, retryDelayMs * (backoffFactor ** attempt));
+    const sleepMs = backoffMs + Math.random() * jitter;
+    const waitMs = Number.isFinite(remainingMs) ? Math.min(sleepMs, remainingMs) : sleepMs;
+
+    const completed = await sleepWithAbort(waitMs, abortSignal);
+    if (!completed || Date.now() >= deadline) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+async function executeWithLockHandle<T>(
+  jobNameOrKey: string,
+  lock: DistributedLockHandle,
+  task: (lock: DistributedLockHandle) => Promise<T>
+): Promise<DistributedLockResult<T>> {
+  try {
+    const result = await task(lock);
+    return { executed: true, result };
+  } finally {
+    try {
+      await lock.release();
+    } catch (releaseErr) {
+      logger.warn('[distributedLock] Error releasing lock in finally block', {
+        job: jobNameOrKey,
+        error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+      });
+    }
+  }
+}
+
 /**
  * High-level wrapper executing a task with distributed lock protection.
  * Fails closed when Redis is unavailable or lock acquisition errors, and skips when lock is held.
@@ -529,17 +658,35 @@ export async function withDistributedLock<T>(
     return { executed: false, reason: 'lock_held' };
   }
 
-  try {
-    const result = await task(lock);
-    return { executed: true, result };
-  } finally {
-    try {
-      await lock.release();
-    } catch (releaseErr) {
-      logger.warn('[distributedLock] Error releasing lock in finally block', {
-        job: jobNameOrKey,
-        error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
-      });
+  return executeWithLockHandle(jobNameOrKey, lock, task);
+}
+
+/**
+ * High-level wrapper executing a task with distributed lock retry protection.
+ * Uses exponential backoff with jitter, timeoutMs, and optional AbortSignal.
+ */
+export async function withDistributedLockRetry<T>(
+  jobNameOrKey: string,
+  task: (lock: DistributedLockHandle) => Promise<T>,
+  options: DistributedLockRetryOptions = {}
+): Promise<DistributedLockResult<T>> {
+  const startMs = Date.now();
+  const lock = await acquireWithRetry(jobNameOrKey, options);
+  if (!lock) {
+    let reason: DistributedLockResult<T>['reason'] = 'lock_held';
+    if (options.abortSignal?.aborted) {
+      reason = 'aborted';
+    } else if (options.timeoutMs !== undefined && Date.now() - startMs >= options.timeoutMs) {
+      reason = 'timeout';
     }
+
+    logger.info('[distributedLock] Skipping job execution after retries: lock not acquired', {
+      job: jobNameOrKey,
+      lockKey: options.lockKey || formatJobLockKey(jobNameOrKey),
+      reason,
+    });
+    return { executed: false, reason };
   }
+
+  return executeWithLockHandle(jobNameOrKey, lock, task);
 }

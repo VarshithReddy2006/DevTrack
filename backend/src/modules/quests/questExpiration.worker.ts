@@ -48,7 +48,10 @@ export async function runQuestExpirationWorkerSweep(
   if (!lockResult.executed || !lockResult.result) {
     return {
       executed: false,
-      reason: lockResult.reason ?? 'lock_held',
+      reason:
+        lockResult.reason === 'redis_unavailable' || lockResult.reason === 'redis_error'
+          ? lockResult.reason
+          : 'lock_held',
       expiredCount: 0,
       archivedCount: 0,
       invalidatedUsers: 0,
