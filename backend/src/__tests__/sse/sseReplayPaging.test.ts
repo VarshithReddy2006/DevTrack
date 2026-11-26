@@ -11,7 +11,9 @@ const fixture = vi.hoisted(() => ({
   order: [] as string[],
   clients: [] as { controller: { enqueue(chunk: Uint8Array): void } }[],
   onRead: null as null | (() => void),
-  state: { toObject: () => ({ level: 7 }) } as { toObject: () => unknown } | null,
+  state: null as unknown,
+  freshState: null as unknown,
+  readError: null as unknown,
 }));
 
 vi.mock('../../shared/redis/client.js', () => ({
@@ -45,9 +47,16 @@ vi.mock('../../shared/sse/eventBus.js', () => ({
   },
 }));
 vi.mock('../../modules/runtime-state/unifiedRuntimeState.service.js', () => ({
-  unifiedRuntimeStateService: { getRuntimeState: vi.fn(async () => fixture.state) },
+  unifiedRuntimeStateService: {
+    getRuntimeState: vi.fn(async () => {
+      if (fixture.readError) throw fixture.readError;
+      return fixture.state;
+    }),
+    getRuntimeStateFresh: vi.fn(async () => fixture.freshState),
+  },
 }));
 
+import { unifiedRuntimeStateService } from '../../modules/runtime-state/unifiedRuntimeState.service.js';
 import { createSseStream, MAX_REPLAY_EVENTS, replayMissedEvents } from '../../shared/sse/sseHandler.js';
 
 const id = (n: number) => `1000-${n}`;
@@ -66,14 +75,23 @@ function controller() {
 }
 const ids = (chunks: string[]) => chunks.map((c) => /^id: (.*)$/m.exec(c)![1]);
 const fullStateSent = (chunks: string[]) => chunks.some((c) => c.includes('"type":"runtime_state_full"'));
+const initializedState = (level = 7) => ({
+  xp: 0,
+  level,
+  sessionContext: { isActive: false },
+  lastCalculatedAt: new Date('2026-11-16T00:00:00Z'),
+});
 
 beforeEach(() => {
+  vi.clearAllMocks();
   fixture.stream = [];
   fixture.xrangeCalls = [];
   fixture.order = [];
   fixture.clients = [];
   fixture.onRead = null;
-  fixture.state = { toObject: () => ({ level: 7 }) };
+  fixture.state = { ...initializedState(), toObject: () => ({ level: 7 }) };
+  fixture.freshState = initializedState();
+  fixture.readError = null;
 });
 
 describe('replayMissedEvents paging', () => {
@@ -157,6 +175,29 @@ describe('replayMissedEvents paging', () => {
     expect(chunks).toHaveLength(1);
   });
 
+  it('rebuilds missing and incomplete state before sending full state', async () => {
+    for (const state of [null, { level: 1 }]) {
+      fixture.state = state;
+      fixture.freshState = initializedState(9);
+      const { ctl, chunks } = controller();
+
+      await replayMissedEvents('u1', id(0), ctl);
+
+      expect(unifiedRuntimeStateService.getRuntimeStateFresh).toHaveBeenCalledWith('u1');
+      expect(chunks[0]).toContain('"state":{"xp":0,"level":9');
+      vi.clearAllMocks();
+    }
+  });
+
+  it('serializes cached POJO state without requiring toObject', async () => {
+    fixture.state = initializedState(8);
+    const { ctl, chunks } = controller();
+
+    await replayMissedEvents('u1', id(0), ctl);
+
+    expect(chunks[0]).toContain('"state":{"xp":0,"level":8');
+  });
+
   it('still sends full state for a malformed Last-Event-ID without querying Redis', async () => {
     seedStream(5);
     const { ctl, chunks } = controller();
@@ -227,15 +268,27 @@ describe('createSseStream reconnect', () => {
     await reader.cancel();
   });
 
-  it('connects without Last-Event-ID the same as before: no read, live events pass through', async () => {
+  it('sends initial full state before live events when there is no Last-Event-ID', async () => {
     const stream = createSseStream('u1', 'c1', 'r1');
     const reader = stream.getReader();
-    // start() has not necessarily finished; a live write must reach the reader either way.
     await vi.waitFor(() => expect(fixture.clients).toHaveLength(1));
-    publishLive('1000-1');
+    expect(text((await reader.read()).value)).toContain('"type":"runtime_state_full"');
 
+    publishLive('1000-1');
     expect(text((await reader.read()).value)).toContain('id: 1000-1');
     expect(fixture.xrangeCalls).toHaveLength(0);
+    await reader.cancel();
+  });
+
+  it('emits an initial-state error and keeps the stream open after lookup failure', async () => {
+    fixture.readError = new Error('database unavailable');
+    const stream = createSseStream('u1', 'c1', 'r1');
+    const reader = stream.getReader();
+    await vi.waitFor(() => expect(fixture.clients).toHaveLength(1));
+    expect(text((await reader.read()).value)).toContain('"type":"INITIAL_STATE_ERROR"');
+
+    publishLive('1000-1');
+    expect(text((await reader.read()).value)).toContain('id: 1000-1');
     await reader.cancel();
   });
 });
