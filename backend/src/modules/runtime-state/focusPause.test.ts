@@ -1,12 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Types } from 'mongoose';
-import { FocusSession, UnifiedRuntimeState } from '../../db/models/index.js';
+import { FocusSession, UnifiedRuntimeState, type IUnifiedRuntimeState } from '../../db/models/index.js';
 import { FocusEngine } from '../activity/focusEngine.service.js';
 import { UnifiedRuntimeStateService } from './unifiedRuntimeState.service.js';
 
 vi.mock('../../shared/sse/index.js', () => ({ eventBus: { emitRuntimeStatePatch: vi.fn() } }));
 
 afterEach(() => vi.useRealTimers());
+
+describe('runtime state freshness', () => {
+  it('rebuilds incomplete state even when its timestamp is recent', async () => {
+    const userId = new Types.ObjectId().toString();
+    const incomplete = { xp: 0, level: 1, lastCalculatedAt: new Date() } as unknown as IUnifiedRuntimeState;
+    const rebuilt = { ...incomplete, sessionContext: { isActive: false } } as IUnifiedRuntimeState;
+    const service = new UnifiedRuntimeStateService();
+    vi.spyOn(service, 'getRuntimeState').mockResolvedValue(incomplete);
+    const rebuild = vi.spyOn(service, 'rebuildRuntimeState').mockResolvedValue(rebuilt);
+
+    await expect(service.getRuntimeStateFresh(userId)).resolves.toBe(rebuilt);
+    expect(rebuild).toHaveBeenCalledWith(userId);
+  });
+});
 
 describe('focus pause persistence', () => {
   it('excludes paused wall time from completion duration and survives a database read', async () => {
