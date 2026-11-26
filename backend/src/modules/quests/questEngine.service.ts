@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type Redis from 'ioredis';
 import { Types, type ClientSession } from 'mongoose';
 import { z } from 'zod';
 import { Quest, type IQuest } from '../../db/models/quest.model.js';
@@ -158,13 +159,266 @@ export async function listUserQuests(userId: string, now = new Date()) {
   };
 }
 
-export async function runQuestGenerationSweep(now = new Date()) {
-  let users = 0;
-  for await (const user of User.find().select('_id').lean().cursor({ batchSize: 100 })) {
-    await generateUserQuests(user._id.toString(), now);
-    users++;
+export const QUEST_SWEEP_BATCH_SIZE = 250;
+export const QUEST_SWEEP_CONCURRENCY = 10;
+export const QUEST_SWEEP_CHECKPOINT_TTL_SECONDS = 24 * 60 * 60;
+export const QUEST_SWEEP_CHECKPOINT_PREFIX = 'quests:generation:sweep:checkpoint';
+
+export type SweepRedisClient = Pick<Redis, 'status' | 'get' | 'set' | 'del'>;
+
+export interface QuestGenerationSweepOptions {
+  batchSize?: number;
+  concurrency?: number;
+  checkpointKey?: string;
+  checkpointTtlSeconds?: number;
+  runId?: string;
+  redisClient?: SweepRedisClient;
+  shouldContinue?: () => boolean;
+  processUser?: (userId: string, now: Date) => Promise<unknown>;
+}
+
+export interface QuestGenerationSweepReport {
+  runId: string;
+  users: number;
+  failed: number;
+  batches: number;
+  resumedFromUserId: string | null;
+  completed: boolean;
+}
+
+interface QuestSweepCheckpoint {
+  runId: string;
+  periodKey: string;
+  lastUserId: string;
+  updatedAt: string;
+}
+
+function resolveSweepRedis(redisClient?: SweepRedisClient): SweepRedisClient | null {
+  try {
+    const client = redisClient ?? getRedisClient();
+    if (
+      client &&
+      client.status === 'ready' &&
+      typeof client.get === 'function' &&
+      typeof client.set === 'function' &&
+      typeof client.del === 'function'
+    ) {
+      return client;
+    }
+  } catch (err) {
+    logger.warn('[quests] Redis unavailable for sweep checkpointing', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
-  return { users };
+  return null;
+}
+
+async function readSweepCheckpoint(
+  redis: SweepRedisClient | null,
+  checkpointKey: string,
+  expectedPeriodKey: string
+): Promise<QuestSweepCheckpoint | null> {
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(checkpointKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<QuestSweepCheckpoint> | null;
+    if (
+      !parsed ||
+      parsed.periodKey !== expectedPeriodKey ||
+      typeof parsed.runId !== 'string' ||
+      typeof parsed.lastUserId !== 'string' ||
+      !Types.ObjectId.isValid(parsed.lastUserId)
+    ) {
+      logger.warn('[quests] Ignoring invalid or stale sweep checkpoint', { checkpointKey });
+      return null;
+    }
+    return {
+      runId: parsed.runId,
+      periodKey: parsed.periodKey,
+      lastUserId: parsed.lastUserId,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.warn('[quests] Failed to read quest sweep checkpoint from Redis', {
+      checkpointKey,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+async function writeSweepCheckpoint(
+  redis: SweepRedisClient | null,
+  checkpointKey: string,
+  checkpoint: QuestSweepCheckpoint,
+  ttlSeconds: number
+): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.set(checkpointKey, JSON.stringify(checkpoint), 'EX', ttlSeconds);
+  } catch (err) {
+    logger.warn('[quests] Failed to persist quest sweep checkpoint to Redis', {
+      checkpointKey,
+      lastUserId: checkpoint.lastUserId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function clearSweepCheckpoint(
+  redis: SweepRedisClient | null,
+  checkpointKey: string
+): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.del(checkpointKey);
+  } catch (err) {
+    logger.warn('[quests] Failed to clear quest sweep checkpoint from Redis', {
+      checkpointKey,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function runWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++;
+        try {
+          const value = await worker(items[index]);
+          results[index] = { status: 'fulfilled', value };
+        } catch (reason) {
+          results[index] = { status: 'rejected', reason };
+        }
+      }
+    })
+  );
+
+  return results;
+}
+
+/**
+ * Generates current-period quests for all users using keyset cursor pagination,
+ * bounded per-batch concurrency with isolated user error handling, and Redis checkpoint resumption.
+ */
+export async function executeQuestGenerationSweep(
+  now = new Date(),
+  options: QuestGenerationSweepOptions = {}
+): Promise<QuestGenerationSweepReport> {
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? QUEST_SWEEP_BATCH_SIZE));
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? QUEST_SWEEP_CONCURRENCY));
+  const ttlSeconds = Math.max(1, Math.floor(options.checkpointTtlSeconds ?? QUEST_SWEEP_CHECKPOINT_TTL_SECONDS));
+  const processUser = options.processUser ?? generateUserQuests;
+  const dailyPeriodKey = questPeriods(now).daily.periodKey;
+  const checkpointKey = options.checkpointKey ?? `${QUEST_SWEEP_CHECKPOINT_PREFIX}:${dailyPeriodKey}`;
+  const redis = resolveSweepRedis(options.redisClient);
+
+  const existingCheckpoint = await readSweepCheckpoint(redis, checkpointKey, dailyPeriodKey);
+  let lastSeenId: Types.ObjectId | null = existingCheckpoint
+    ? new Types.ObjectId(existingCheckpoint.lastUserId)
+    : null;
+  const resumedFromUserId = existingCheckpoint?.lastUserId ?? null;
+  const runId = options.runId ?? existingCheckpoint?.runId ?? randomUUID();
+
+  let users = 0;
+  let failed = 0;
+  let batches = 0;
+  let completed = true;
+
+  for (;;) {
+    if (options.shouldContinue && !options.shouldContinue()) {
+      completed = false;
+      logger.warn('[quests] Quest generation sweep interrupted before completion', {
+        runId,
+        lastSeenId: lastSeenId?.toString() ?? null,
+      });
+      break;
+    }
+
+    const filter = lastSeenId ? { _id: { $gt: lastSeenId } } : {};
+    const batch = await User.find(filter)
+      .sort({ _id: 1 })
+      .limit(batchSize)
+      .select('_id')
+      .lean();
+
+    if (batch.length === 0) break;
+
+    batches++;
+    const settled = await runWithConcurrency(batch, concurrency, (user) =>
+      processUser(user._id.toString(), now)
+    );
+
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i];
+      if (outcome.status === 'fulfilled') {
+        users++;
+      } else {
+        failed++;
+        logger.error('[quests] Failed to generate quests for user during sweep', {
+          runId,
+          userId: batch[i]._id.toString(),
+          error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+        });
+      }
+    }
+
+    lastSeenId = batch[batch.length - 1]._id as Types.ObjectId;
+    await writeSweepCheckpoint(
+      redis,
+      checkpointKey,
+      {
+        runId,
+        periodKey: dailyPeriodKey,
+        lastUserId: lastSeenId.toString(),
+        updatedAt: new Date().toISOString(),
+      },
+      ttlSeconds
+    );
+
+    if (batch.length < batchSize) break;
+  }
+
+  if (completed) {
+    await clearSweepCheckpoint(redis, checkpointKey);
+  }
+
+  logger.info('[quests] Quest generation sweep finished', {
+    event: 'quests_generation_sweep',
+    runId,
+    users,
+    failed,
+    batches,
+    resumedFromUserId,
+    completed,
+  });
+
+  return {
+    runId,
+    users,
+    failed,
+    batches,
+    resumedFromUserId,
+    completed,
+  };
+}
+
+export async function runQuestGenerationSweep(
+  now = new Date(),
+  options: QuestGenerationSweepOptions = {}
+): Promise<{ users: number }> {
+  const report = await executeQuestGenerationSweep(now, options);
+  return { users: report.users };
 }
 
 export interface QuestExpirationSweepResult {
@@ -224,15 +478,16 @@ export async function expireStaleQuests(
     });
 
     const writeResult = await UserQuestProgress.bulkWrite(ops, { ordered: false });
-    expiredCount += writeResult.modifiedCount ?? 0;
+    const modifiedCount = writeResult.modifiedCount ?? 0;
+    expiredCount += modifiedCount;
 
-    if ((writeResult.modifiedCount ?? 0) > 0) {
+    if (modifiedCount > 0) {
       for (const doc of stale) {
         affectedUsers.add(doc.userId.toString());
       }
     }
 
-    if (stale.length < limit) break;
+    if (modifiedCount === 0 || stale.length < limit) break;
   }
 
   if (affectedUsers.size > 0) {
@@ -265,9 +520,10 @@ export async function expireStaleQuests(
       { _id: { $in: ids }, status: { $ne: 'archived' } },
       { $set: { status: 'archived', archivedAt: now } }
     );
-    archivedCount += archiveResult.modifiedCount ?? 0;
+    const modifiedCount = archiveResult.modifiedCount ?? 0;
+    archivedCount += modifiedCount;
 
-    if (archivable.length < limit) break;
+    if (modifiedCount === 0 || archivable.length < limit) break;
   }
 
   logger.info('[quests] Quest expiration sweep completed', {

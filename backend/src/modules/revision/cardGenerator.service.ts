@@ -32,20 +32,21 @@ export async function enqueueSubmissionEvaluation(userId: string, submissionId: 
 export async function generateStruggleCard(userId: string, input: unknown) {
   const { submissionId } = submissionEvaluationSchema.parse(input);
   objectId.parse(userId);
+  const userObjId = new Types.ObjectId(userId);
   const now = new Date();
   await RevisionCard.init();
   for (let attempt = 0; ; attempt++) {
     try {
       return await mongoose.connection.transaction(async session => {
-        const submission = await DsaSubmission.findOne({ _id: submissionId, userId }).session(session).lean();
+        const submission = await DsaSubmission.findOne({ _id: submissionId, userId: userObjId }).session(session).lean();
         if (!submission) return { created: false, cardId: null };
-        const problem = await DsaProblem.findOne({ _id: submission.problemId, userId, platform: submission.platform }).session(session).lean();
+        const problem = await DsaProblem.findOne({ _id: submission.problemId, userId: userObjId, platform: submission.platform }).session(session).lean();
         if (!problem) return { created: false, cardId: null };
         const previousAcceptance = await DsaSubmission.findOne({
-          userId, problemId: problem._id, platform: submission.platform, status: 'accepted', submittedAt: { $lt: submission.submittedAt },
+          userId: userObjId, problemId: problem._id, platform: submission.platform, status: 'accepted', submittedAt: { $lt: submission.submittedAt },
         }).sort({ submittedAt: -1 }).session(session).lean();
         const failures = await DsaSubmission.countDocuments({
-          userId, problemId: problem._id, platform: submission.platform, status: { $ne: 'accepted' },
+          userId: userObjId, problemId: problem._id, platform: submission.platform, status: { $ne: 'accepted' },
           submittedAt: { $lte: submission.submittedAt, ...(previousAcceptance ? { $gt: previousAcceptance.submittedAt } : {}) },
         }).session(session);
         const reasons: z.infer<typeof revisionCardCreatedSchema>['reasons'] = [];
@@ -57,12 +58,12 @@ export async function generateStruggleCard(userId: string, input: unknown) {
 
         const canonical = problem.problemKey || dsaProblemIdentity(problem).key || `${problem.platform}:${problem.externalId.trim() || problem._id}`;
         const aliases = [...new Set([canonical, `${problem.platform}:${problem.externalId.trim()}`, `${problem.platform}:${problem._id}`])];
-        const existing = await RevisionCard.findOne({ userId, problemKey: { $in: aliases } }).session(session).lean();
+        const existing = await RevisionCard.findOne({ userId: userObjId, problemKey: { $in: aliases } }).session(session).lean();
         const problemKey = existing?.problemKey ?? canonical;
         const cardId = new Types.ObjectId();
         const tags = [...new Set([...(problem.tags ?? []), ...(submission.topicTags ?? []), 'struggle_topic'])];
-        const before = await RevisionCard.findOneAndUpdate({ userId, problemKey }, {
-          $setOnInsert: { _id: cardId, userId, problemKey, title: problem.title, difficulty: problem.difficulty,
+        const before = await RevisionCard.findOneAndUpdate({ userId: userObjId, problemKey }, {
+          $setOnInsert: { _id: cardId, userId: userObjId, problemKey, title: problem.title, difficulty: problem.difficulty,
             reviewSeq: 0, repetitions: 0, easeFactor: INITIAL_EASE_FACTOR, intervalDays: 1,
             dueAt: new Date(now.getTime() + DAY_IN_MS), snoozedUntil: null, lastReviewedAt: null, notes: '' },
           $addToSet: { tags: { $each: tags } }, $max: { tagWeight: 2 },

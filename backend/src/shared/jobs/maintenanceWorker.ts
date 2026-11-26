@@ -287,9 +287,11 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
 
       switch (task) {
         case 'generate_quests':
-          await withDistributedLock('generate_quests', async () => {
-            await (await import('../../modules/quests/questEngine.service.js')).runQuestGenerationSweep();
-          }, { ttlMs: 10 * 60 * 1000 });
+          await withDistributedLock('generate_quests', async (lock) => {
+            await (await import('../../modules/quests/questEngine.service.js')).runQuestGenerationSweep(new Date(), {
+              shouldContinue: () => lock.isHeld,
+            });
+          }, { ttlMs: 60_000, autoRenew: true, renewIntervalMs: 30_000 });
           break;
         case 'expire_quests':
           await (await import('../../modules/quests/questExpiration.worker.js')).runQuestExpirationWorkerSweep();

@@ -142,7 +142,7 @@ describe('Revision Radar Integration & Optimistic Concurrency', () => {
       expect(updated.repetitions).toBe(1);
       expect(updated.easeFactor).toBe(2.6);
       expect(updated.intervalDays).toBe(1);
-      expect(updated.dueAt).toEqual(new Date(now.getTime() + 1 * 86_400_000));
+      expect(updated.dueAt).toEqual(new Date('2026-06-02T00:00:00.000Z'));
     });
 
     it('rejects stale review submission with RevisionCardStaleError (HTTP 409 pattern)', async () => {

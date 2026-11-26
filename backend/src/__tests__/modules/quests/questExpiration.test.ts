@@ -206,6 +206,52 @@ describe('quest expiration and archival worker', () => {
     expect(mocks.invalidateAllUserCache).toHaveBeenCalledWith(userId2);
   });
 
+  it('stops expiration and archival batches when no records are modified', async () => {
+    const now = new Date('2026-11-23T00:05:00.000Z');
+    const recentExpiry = new Date(now.getTime() - 86_400_000);
+    const oldExpiry = new Date(now.getTime() - 91 * 86_400_000);
+    const baseProgress = {
+      userId: userId1,
+      questId,
+      slot: 'daily:dsa_solve',
+      cadence: 'daily' as const,
+      division: 'bronze' as const,
+      kind: 'dsa_solve' as const,
+      title: 'Solve 2 distinct problems',
+      targetCount: 2,
+      xpReward: 20,
+      trophyReward: 1,
+      startsAt: new Date('2026-11-01T00:00:00.000Z'),
+      currentCount: 1,
+      completed: false,
+    };
+
+    await UserQuestProgress.create([
+      { ...baseProgress, periodKey: 'daily:stale-1', expiresAt: recentExpiry, status: 'in_progress' },
+      { ...baseProgress, periodKey: 'daily:stale-2', expiresAt: recentExpiry, status: 'in_progress' },
+      { ...baseProgress, periodKey: 'daily:old-1', expiresAt: oldExpiry, status: 'expired' },
+      { ...baseProgress, periodKey: 'daily:old-2', expiresAt: oldExpiry, status: 'expired' },
+    ]);
+
+    const bulkWriteSpy = vi
+      .spyOn(UserQuestProgress, 'bulkWrite')
+      .mockResolvedValue({ modifiedCount: 0 } as never);
+    const updateManySpy = vi
+      .spyOn(UserQuestProgress, 'updateMany')
+      .mockResolvedValue({ modifiedCount: 0 } as never);
+
+    try {
+      const result = await expireStaleQuests(2, now, 90);
+
+      expect(result).toEqual({ expiredCount: 0, archivedCount: 0, invalidatedUsers: 0 });
+      expect(bulkWriteSpy).toHaveBeenCalledTimes(1);
+      expect(updateManySpy).toHaveBeenCalledTimes(1);
+    } finally {
+      bulkWriteSpy.mockRestore();
+      updateManySpy.mockRestore();
+    }
+  });
+
   it('archives records older than 90 days without touching recent expired records', async () => {
     const now = new Date('2026-11-23T00:05:00.000Z');
     const oldExpiry = new Date(now.getTime() - 95 * 86_400_000);
