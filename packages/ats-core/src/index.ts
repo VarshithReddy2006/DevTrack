@@ -3,7 +3,13 @@ export { evaluateBulletEdits, renderBulletEdits, type BulletEdit, type BulletSco
 export { scoreDifferential, type ScoreDifferentialInput, type ScoreDifferentialResult } from './scoring/scoreDifferential.js';
 export { validateFormatting, validateParserSafety } from './formatting.js';
 export { analyzeQuantifiedImpact } from './impact.js';
-export { checkKeywordCoverage } from './keywords.js';
+export {
+  checkKeywordCoverage,
+  escapeRegExp,
+  sanitizeKeywords,
+  MAX_KEYWORD_COUNT,
+  MAX_KEYWORD_LENGTH,
+} from './keywords.js';
 export { countResumeWords } from './length.js';
 export { calculateAtsScore, calculateExtractionConfidence, generateRecommendations, type AtsSubscores } from './score.js';
 export { validateSections } from './sections.js';

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { analyzeActionVerbs, extractRequirements, scoreDifferential } from '@devtrack/ats-core';
+import { analyzeActionVerbs, extractRequirements, sanitizeKeywords, scoreDifferential } from '@devtrack/ats-core';
 import {
   BulletRewriteRequestSchema, BulletRewriteModelSchema, BulletRewriteResponseSchema,
   type BulletRewriteRequest, type BulletRewriteModel, type BulletRewriteResponse,
@@ -63,7 +63,7 @@ function response(model: BulletRewriteModel, input: BulletRewriteRequest, mode: 
     rewrites: model.rewrites.map(item => {
       const text = `${item.action} ${item.context}; ${item.result}`;
       return { ...item, text, atsScoreGain: mode === 'template' ? 0 : scoreDifferential({
-        originalBullets: [input.bullet], revisedBullets: [text], targetKeywords: input.skillsToHighlight ?? [],
+        originalBullets: [input.bullet], revisedBullets: [text], targetKeywords: sanitizeKeywords(input.skillsToHighlight ?? []),
       }).delta };
     }),
   });

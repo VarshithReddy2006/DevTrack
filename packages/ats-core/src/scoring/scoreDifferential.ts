@@ -1,5 +1,5 @@
 import { validateFormatting, validateParserSafety } from '../formatting.js';
-import { checkKeywordCoverage } from '../keywords.js';
+import { checkKeywordCoverage, sanitizeKeywords } from '../keywords.js';
 import { calculateAtsScore, calculateExtractionConfidence } from '../score.js';
 
 export interface ScoreDifferentialInput {
@@ -46,10 +46,9 @@ function analyze(bullets: readonly string[], keywords: readonly string[]) {
 export function scoreDifferential(input: ScoreDifferentialInput): ScoreDifferentialResult {
   const keywords: string[] = [];
   const seen = new Set<string>();
-  for (const keyword of input.targetKeywords) {
-    const label = keyword.trim();
+  for (const label of sanitizeKeywords(input.targetKeywords)) {
     const key = label.toLowerCase();
-    if (label && !seen.has(key)) { keywords.push(label); seen.add(key); }
+    if (!seen.has(key)) { keywords.push(label); seen.add(key); }
   }
   const original = analyze(input.originalBullets, keywords);
   const revised = analyze(input.revisedBullets, keywords);
