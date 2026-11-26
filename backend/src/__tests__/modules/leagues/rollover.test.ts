@@ -193,6 +193,43 @@ describe('score increments from XP awards', () => {
     expect(await processLeagueScoreJob(data, store, MID_WEEK)).toMatchObject({ applied: true, score: 12 });
     await expect(processLeagueScoreJob({ ...data, occurredAt: 'not a date' }, store, MID_WEEK)).rejects.toThrow(/invalid occurredAt/);
   });
+
+  it('credits late-joiner XP when async worker runs after occurredAt without dropping as before_join', async () => {
+    const [userId] = await makeUsers(1);
+    const occurredAt = new Date(MID_WEEK.getTime() - 15_000);
+    const result = await recordXpAward(
+      { userId, sourceType: 'dsa_accepted', sourceId: 'async-first-xp', xpAwarded: 40, occurredAt },
+      store,
+      MID_WEEK,
+    );
+    expect(result).toMatchObject({ applied: true, weekKey: WEEK, score: 40 });
+    const standing = await row(userId, WEEK);
+    expect(standing).not.toBeNull();
+    expect(standing!.joinedAt.getTime()).toBe(occurredAt.getTime());
+  });
+
+  it('ensures store.seed runs on E11000 duplicate-key recovery in joinCurrentWeek', async () => {
+    const [userId] = await makeUsers(1);
+    const seedSpy = vi.spyOn(store, 'seed');
+
+    // Pre-insert standing without seeding Redis, then simulate E11000 on create
+    const existingRow = await LeagueStanding.create({
+      weekKey: WEEK,
+      userId: new Types.ObjectId(userId),
+      division: 'bronze',
+      cohortId: 'c1',
+      status: 'active',
+      joinedAt: MID_WEEK,
+    });
+    const findSpy = vi.spyOn(LeagueStanding, 'findOne');
+    // Return null on pre-check and double-check so joinCurrentWeek attempts create, hits E11000, then recovers
+    findSpy.mockReturnValueOnce({ lean: async () => null } as any);
+    findSpy.mockReturnValueOnce({ lean: async () => null } as any);
+
+    const joined = await joinCurrentWeek(userId, MID_WEEK, store);
+    expect(joined.cohortId).toBe(existingRow.cohortId);
+    expect(seedSpy).toHaveBeenCalledWith(cohortKey(WEEK, 'bronze', 'c1'), [userId]);
+  });
 });
 
 describe('computeCohortOutcomes', () => {
