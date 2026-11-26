@@ -5,9 +5,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {
+  DEFAULT_TYPST_COMPILE_TIMEOUT_MS,
+  TypstCompilationError,
   typstCompilerService,
   TypstCompilerService,
 } from '../../../modules/resume/export/typstCompiler.service.js';
+import { errorHandler } from '../../../middleware/error.js';
 import {
   generateTypstTemplate,
   generateLatexTemplate,
@@ -405,6 +408,113 @@ describe('TypstCompilerService & LaTeX Resume Engine', () => {
       expect(fileStat.size).toBeGreaterThan(1000);
       const fileHeader = await fs.readFile(exportPath);
       expect(fileHeader.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    });
+  });
+
+  // 9. Timeout & Runaway Worker Termination (#680)
+  describe('Timeout & Runaway Worker Termination (#680)', () => {
+    const createMockResponse = () => ({
+      statusCode: 0,
+      body: null as any,
+      status(code: number) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload: any) {
+        this.body = payload;
+        return this;
+      },
+    });
+
+    afterAll(async () => {
+      await TypstCompilerService.shutdown();
+    });
+
+    it('defaults compilation timeout to 5000ms', () => {
+      expect(DEFAULT_TYPST_COMPILE_TIMEOUT_MS).toBe(5000);
+    });
+
+    it('terminates runaway Typst compilation on timeout without blocking host event loop and recovers cleanly', async () => {
+      const runawayTypst = '#for i in range(10000000) { [runaway ] }';
+      let hostTimerTicks = 0;
+      const ticker = setInterval(() => {
+        hostTimerTicks += 1;
+      }, 50);
+
+      const startedAt = performance.now();
+      let caughtError: unknown;
+      try {
+        await typstCompilerService.compileRawTypst(runawayTypst, { timeoutMs: 300 });
+      } catch (err) {
+        caughtError = err;
+      } finally {
+        clearInterval(ticker);
+      }
+
+      const elapsedMs = performance.now() - startedAt;
+      expect(caughtError).toBeInstanceOf(TypstCompilationError);
+      expect(caughtError).toMatchObject({
+        statusCode: 408,
+        code: 'TYPST_COMPILATION_TIMEOUT',
+      });
+      expect(elapsedMs).toBeLessThan(2000);
+      expect(hostTimerTicks).toBeGreaterThanOrEqual(2);
+
+      // Fresh worker must recover and compile subsequent valid resumes cleanly
+      const recovered = await typstCompilerService.compileToPdf(sampleResume, {
+        template: 'modern-tech',
+        targetPages: 1,
+      });
+      expect(recovered.pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    });
+
+    it('throws 422 TypstCompilationError with compiler details for invalid Typst syntax and maps cleanly via errorHandler', async () => {
+      let caughtError: unknown;
+      try {
+        await typstCompilerService.compileRawTypst('#unknown_typst_symbol()');
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeInstanceOf(TypstCompilationError);
+      expect(caughtError).toMatchObject({
+        statusCode: 422,
+        code: 'TYPST_COMPILATION_FAILED',
+      });
+
+      const statusMock = createMockResponse();
+
+      errorHandler(
+        caughtError as Error,
+        { path: '/compile', method: 'POST', correlationId: 'test-corr-id' } as any,
+        statusMock as any,
+        (() => {}) as any
+      );
+      expect(statusMock.statusCode).toBe(422);
+      expect(statusMock.body?.code).toBe('TYPST_COMPILATION_FAILED');
+
+      // Warm worker remains usable after a syntax error
+      const pdf = await typstCompilerService.compileRawTypst('= Valid Heading\nStill works.');
+      expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    });
+
+    it('maps timeout errors to 408 Request Timeout through errorHandler', async () => {
+      const timeoutErr = new TypstCompilationError(
+        'Typst compilation timed out after 5000ms',
+        408,
+        'TYPST_COMPILATION_TIMEOUT',
+        { timeoutMs: ['5000'] }
+      );
+      const resMock = createMockResponse();
+
+      errorHandler(
+        timeoutErr,
+        { path: '/compile', method: 'POST', correlationId: 'test-timeout-id' } as any,
+        resMock as any,
+        (() => {}) as any
+      );
+      expect(resMock.statusCode).toBe(408);
+      expect(resMock.body?.code).toBe('TYPST_COMPILATION_TIMEOUT');
     });
   });
 });
