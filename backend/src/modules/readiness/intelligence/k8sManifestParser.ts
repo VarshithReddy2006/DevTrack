@@ -86,7 +86,7 @@ export function parseKubernetesManifest(content: unknown): KubernetesManifestSig
 
   const signals = { ...EMPTY_SIGNALS };
   try {
-    const documents = parseAllDocuments(content);
+    const documents = parseAllDocuments(content, { merge: true });
     for (const document of documents) {
       if (document.errors.length > 0) continue;
       const value = document.toJS({ maxAliasCount: 100 });
