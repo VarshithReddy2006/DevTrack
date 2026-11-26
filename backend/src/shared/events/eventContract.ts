@@ -70,6 +70,7 @@ export type DomainEventType =
   | 'dsa.submission.evaluated'
   | 'revision.card_created'
   | 'revision.reviewed'
+  | 'revision.card_reviewed'
   | 'jobtarget.submitted'
   | 'quest.completed'
   | 'quest.claimed'
@@ -156,6 +157,17 @@ export interface RevisionReviewedPayload {
   rating: 'failed' | 'hard' | 'easy';
   /** ISO-8601; falls back to the envelope timestamp when absent. */
   reviewedAt?: string;
+  timezone?: string;
+}
+
+export interface DsaProblemSolvedPayload {
+  problemId?: string;
+  submissionId?: string;
+  platform?: string;
+  title?: string;
+  difficulty?: 'easy' | 'medium' | 'hard';
+  solvedAt?: string | Date;
+  timezone?: string;
 }
 
 export interface JobTargetSubmittedPayload {

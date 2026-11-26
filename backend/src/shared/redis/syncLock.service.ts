@@ -25,7 +25,7 @@ export async function acquireSchedulerLock(ttlMs: number = SCHEDULER_LOCK_TIMEOU
     const handle = await acquireDistributedLock('platform_sync_scheduler', {
       lockKey: SCHEDULER_LOCK_KEY,
       ttlMs,
-      fallbackOnRedisUnavailable: true,
+      fallbackOnRedisUnavailable: false,
     });
     if (handle) {
       activeSchedulerLockHandle = handle;

@@ -42,18 +42,18 @@ export async function runSubmissionArchive(options: {
     let batchMigrated = 0;
     try {
       batchMigrated = await session.withTransaction(async () => {
-        // Cursor pagination: oldest eligible first, stable ordering by createdAt then _id.
+        // Cursor pagination: oldest eligible first, stable ordering by submittedAt then _id.
         const candidates = await DsaSubmission.find({
-          createdAt: { $lt: cutoff },
+          submittedAt: { $lt: cutoff },
         })
-          .sort({ createdAt: 1, _id: 1 })
+          .sort({ submittedAt: 1, _id: 1 })
           .limit(batchSize)
           .session(session)
           .lean();
 
         if (!candidates.length) return 0;
 
-        const archiveDocs = candidates.map((doc) => {
+        const archiveDocs = candidates.map((doc: any) => {
           const plain = doc.toObject ? doc.toObject() : doc;
           return {
             ...plain,
@@ -62,8 +62,23 @@ export async function runSubmissionArchive(options: {
           };
         });
 
-        // Cold insert first. If this fails the transaction aborts and the hot delete never runs.
-        await DsaSubmissionArchive.insertMany(archiveDocs, { session, ordered: false });
+        // Cold upsert first via bulkWrite to handle duplicate key conflicts idempotently.
+        // If a document was already archived, $setOnInsert is a no-op, avoiding E11000 duplicate key aborts.
+        const bulkOps = archiveDocs.map((doc: any) => ({
+          updateOne: {
+            filter: {
+              userId: doc.userId,
+              platform: doc.platform,
+              externalId: doc.externalId,
+            },
+            update: {
+              $setOnInsert: doc,
+            },
+            upsert: true,
+          },
+        }));
+
+        await DsaSubmissionArchive.bulkWrite(bulkOps, { session, ordered: false });
 
         const ids = candidates.map((doc) => doc._id);
         const deleteResult = await DsaSubmission.deleteMany(

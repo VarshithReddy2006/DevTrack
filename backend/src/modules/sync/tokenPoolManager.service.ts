@@ -193,14 +193,6 @@ export class TokenPoolManager {
     const now = Date.now();
     const tokenList = Array.from(pool.values());
 
-    // Auto-restore expired reset locks
-    tokenList.forEach((token) => {
-      if (token.resetEpochMs > 0 && now >= token.resetEpochMs) {
-        token.remaining = token.limit;
-        token.resetEpochMs = 0;
-      }
-    });
-
     // Try distributed Redis sync if configured
     if (isRedisConfigured()) {
       try {
@@ -224,6 +216,30 @@ export class TokenPoolManager {
           platform,
           error: err instanceof Error ? err.message : String(err),
         });
+      }
+    }
+
+    // Auto-restore expired reset locks after Redis sync so stale Redis state does not cause false exhaustion
+    for (const token of tokenList) {
+      if (token.resetEpochMs > 0 && now >= token.resetEpochMs) {
+        token.remaining = token.limit;
+        token.resetEpochMs = 0;
+        if (isRedisConfigured()) {
+          try {
+            const redis = getRedisClient();
+            const redisKey = `token_pool:${platform}:${token.id}`;
+            await redis.hmset(redisKey, {
+              remaining: String(token.limit),
+              resetEpochMs: '0',
+            });
+          } catch (err) {
+            logger.warn('[token-pool] Failed to persist restored token quota to Redis', {
+              platform,
+              tokenId: token.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
       }
     }
 

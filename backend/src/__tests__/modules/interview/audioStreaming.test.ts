@@ -13,6 +13,7 @@ import {
   type StoredAudioChunk,
 } from '../../../modules/interview/audioStreaming.service.js';
 import { createInterviewRoutes } from '../../../modules/interview/interview.routes.js';
+import { TranscriptionQueue, type FinalTranscript } from '../../../modules/interview/transcriptionQueue.js';
 import { mountApiRoutes } from '../../../routes/mount.js';
 
 /**
@@ -324,6 +325,8 @@ describe('AudioStreamingService - Redis Storage & TTL Verification', () => {
     const delMock = vi.fn().mockResolvedValue(1);
     const hgetallMock = vi.fn().mockResolvedValue({});
     const hgetMock = vi.fn().mockResolvedValue(null);
+    const hkeysMock = vi.fn().mockResolvedValue(['chunk:0']);
+    const hsetnxMock = vi.fn().mockResolvedValue(1);
 
     const mockRedis = {
       hset: hsetMock,
@@ -332,6 +335,8 @@ describe('AudioStreamingService - Redis Storage & TTL Verification', () => {
       del: delMock,
       hget: hgetMock,
       hgetall: hgetallMock,
+      hkeys: hkeysMock,
+      hsetnx: hsetnxMock,
     } as any;
 
     const service = new AudioStreamingService(
@@ -361,13 +366,100 @@ describe('AudioStreamingService - Redis Storage & TTL Verification', () => {
   });
 });
 
+describe('AudioStreamingService - Concurrency & Atomic Lock Verification', () => {
+  it('handles concurrent chunk uploads without dropping chunk indices or reporting false missing chunks', async () => {
+    const memoryStore: Record<string, Record<string, string>> = {};
+    const mockRedis = {
+      hexists: vi.fn(async (key: string, field: string) => (memoryStore[key]?.[field] ? 1 : 0)),
+      hset: vi.fn(async (key: string, fields: Record<string, string>) => {
+        if (!memoryStore[key]) memoryStore[key] = {};
+        Object.assign(memoryStore[key], fields);
+        return Object.keys(fields).length;
+      }),
+      hget: vi.fn(async (key: string, field: string) => memoryStore[key]?.[field] ?? null),
+      hkeys: vi.fn(async (key: string) => Object.keys(memoryStore[key] ?? {})),
+      hgetall: vi.fn(async (key: string) => memoryStore[key] ?? {}),
+      hsetnx: vi.fn(async (key: string, field: string, val: string) => {
+        if (!memoryStore[key]) memoryStore[key] = {};
+        if (memoryStore[key][field] !== undefined) return 0;
+        memoryStore[key][field] = val;
+        return 1;
+      }),
+      expire: vi.fn().mockResolvedValue(1),
+      del: vi.fn(async (key: string) => {
+        delete memoryStore[key];
+        return 1;
+      }),
+    } as any;
+
+    const mockEnqueue = vi.fn().mockResolvedValue(undefined);
+    const service = new AudioStreamingService({}, mockRedis, mockEnqueue);
+    const sessionId = 'session-concurrent-test';
+
+    // Ingest chunks 0, 1, 2, 3 concurrently
+    const chunkBuffers = [0, 1, 2, 3].map(() => createMockAudioChunk('speech', 512));
+    await Promise.all(
+      chunkBuffers.map((buf, idx) =>
+        service.ingestChunk(sessionId, { chunkIndex: idx, isLast: idx === 3 }, buf)
+      )
+    );
+
+    // Verify all chunks were registered and assembly succeeded with 1 enqueue
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('guarantees only one transcription job is enqueued under concurrent assembly triggers', async () => {
+    let assemblingFlag = 0;
+    const mockRedis = {
+      hexists: vi.fn().mockResolvedValue(0),
+      hset: vi.fn().mockResolvedValue(1),
+      hget: vi.fn().mockResolvedValue(null),
+      hkeys: vi.fn().mockResolvedValue(['chunk:0', 'chunk:1']),
+      hgetall: vi.fn().mockResolvedValue({
+        'chunk:0': createMockAudioChunk('speech', 512).toString('base64'),
+        'chunkMeta:0': JSON.stringify({ chunkIndex: 0, energy: 0.1, isSilent: false, durationMs: 1500, receivedAt: 100 }),
+        'chunk:1': createMockAudioChunk('speech', 512).toString('base64'),
+        'chunkMeta:1': JSON.stringify({ chunkIndex: 1, energy: 0.1, isSilent: false, durationMs: 1500, receivedAt: 200 }),
+      }),
+      hsetnx: vi.fn(async (_key: string, _field: string, _val: string) => {
+        if (assemblingFlag === 1) return 0;
+        assemblingFlag = 1;
+        return 1;
+      }),
+      expire: vi.fn().mockResolvedValue(1),
+      del: vi.fn().mockResolvedValue(1),
+    } as any;
+
+    const mockEnqueue = vi.fn().mockResolvedValue(undefined);
+    const service = new AudioStreamingService({}, mockRedis, mockEnqueue);
+    const sessionId = 'session-race-assembly';
+
+    // Two concurrent calls attempting to assemble
+    const chunk0 = createMockAudioChunk('speech', 512);
+    const chunk1 = createMockAudioChunk('speech', 512);
+    const [res0, res1] = await Promise.all([
+      service.ingestChunk(sessionId, { chunkIndex: 0, isLast: true }, chunk0),
+      service.ingestChunk(sessionId, { chunkIndex: 1, isLast: true }, chunk1),
+    ]);
+
+    // Exactly one call should have enqueued the transcription job
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    const enqueuedCount = [res0.transcriptionEnqueued, res1.transcriptionEnqueued].filter(Boolean).length;
+    expect(enqueuedCount).toBe(1);
+  });
+});
+
 describe('Interview Audio HTTP Routes Integration', () => {
   let app: express.Express;
   let server: Server;
   let baseUrl: string;
   let mockService: Partial<AudioStreamingService>;
+  let authenticatedUserId: string | undefined;
+  let sessionOwned: boolean;
 
   beforeEach(async () => {
+    authenticatedUserId = 'test-user-123';
+    sessionOwned = true;
     mockService = {
       ingestChunk: vi.fn().mockResolvedValue({
         sessionId: 'session-http-301',
@@ -407,9 +499,10 @@ describe('Interview Audio HTTP Routes Integration', () => {
     const interviewRoutes = createInterviewRoutes({
       audioService: mockService as AudioStreamingService,
       auth: (req, _res, next) => {
-        (req as any).user = { id: 'test-user-123' };
+        if (authenticatedUserId) (req as any).user = { id: authenticatedUserId };
         next();
       },
+      isSessionOwner: async () => sessionOwned,
     });
 
     const rootRouter = express.Router();
@@ -519,5 +612,170 @@ describe('Interview Audio HTTP Routes Integration', () => {
     expect(res.status).toBe(200);
     expect(json.success).toBe(true);
     expect(mockService.cleanSessionAudio).toHaveBeenCalledWith('session-http-301');
+  });
+
+  it('requires authentication for all audio endpoints', async () => {
+    authenticatedUserId = undefined;
+    const sessionUrl = `${baseUrl}/api/v2/interview/session-http-301`;
+    const responses = await Promise.all([
+      fetch(`${sessionUrl}/audio/chunk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      fetch(`${sessionUrl}/audio/status`),
+      fetch(`${sessionUrl}/audio`, { method: 'DELETE' }),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([401, 401, 401]);
+    expect(mockService.ingestChunk).not.toHaveBeenCalled();
+    expect(mockService.getStatus).not.toHaveBeenCalled();
+    expect(mockService.cleanSessionAudio).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-owner access to audio and signaling endpoints', async () => {
+    sessionOwned = false;
+    const sessionUrl = `${baseUrl}/api/v2/interview/session-http-301`;
+    const responses = await Promise.all([
+      fetch(`${sessionUrl}/audio/chunk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      fetch(`${sessionUrl}/audio/status`),
+      fetch(`${sessionUrl}/audio`, { method: 'DELETE' }),
+      fetch(`${sessionUrl}/webrtc/signal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'bye' }),
+      }),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
+    expect(mockService.ingestChunk).not.toHaveBeenCalled();
+    expect(mockService.getStatus).not.toHaveBeenCalled();
+    expect(mockService.cleanSessionAudio).not.toHaveBeenCalled();
+  });
+});
+
+describe('AudioStreamingService - Rate-limited live transcription queue', () => {
+  const fastQueueConfig = { requestsPerMinute: 60_000, burstCapacity: 100, baseBackoffMs: 1, maxBackoffMs: 5 };
+
+  async function waitFor(predicate: () => boolean, attempts = 200): Promise<void> {
+    for (let i = 0; i < attempts && !predicate(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(predicate()).toBe(true);
+  }
+
+  it('submits speech chunks in order, skips silence, and delivers a sequence-ordered final transcript', async () => {
+    const releases: Array<() => void> = [];
+    const provider = vi.fn((audioBase64: string, { chunkIndex }: { sessionId: string; chunkIndex: number }) =>
+      new Promise<string>((resolve) => {
+        releases[chunkIndex] = () => resolve(`word${chunkIndex}:${audioBase64.length > 0}`);
+      }),
+    );
+    const queue = new TranscriptionQueue(provider, { ...fastQueueConfig, maxSessionConcurrency: 3 });
+    const finals: FinalTranscript[] = [];
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+    const service = new AudioStreamingService({ defaultChunkDurationMs: 1000 }, null, enqueue, {
+      queue,
+      onFinalTranscript: (result) => {
+        finals.push(result);
+      },
+    });
+    const sessionId = 'live-ordered';
+
+    const r0 = await service.ingestChunk(sessionId, { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    const r1 = await service.ingestChunk(sessionId, { chunkIndex: 1, isLast: false }, createMockAudioChunk('silence', 512));
+    const r2 = await service.ingestChunk(sessionId, { chunkIndex: 2, isLast: false }, createMockAudioChunk('speech', 512));
+    const r3 = await service.ingestChunk(sessionId, { chunkIndex: 3, isLast: true }, createMockAudioChunk('speech', 512));
+
+    expect([r0, r1, r2, r3].map((r) => r.liveTranscriptionQueued)).toEqual([true, false, true, true]);
+    expect(r3.status).toBe('speech_completed');
+    expect(enqueue).toHaveBeenCalledOnce();
+    await waitFor(() => provider.mock.calls.length === 3);
+    expect(provider.mock.calls.map((call) => call[1].chunkIndex)).toEqual([0, 2, 3]);
+
+    // Responses arrive out of order; the final transcript must still follow chunkIndex order.
+    releases[3]();
+    releases[2]();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(finals).toHaveLength(0);
+    releases[0]();
+
+    await waitFor(() => finals.length === 1);
+    expect(finals[0]).toMatchObject({
+      sessionId,
+      transcript: 'word0:true word2:true word3:true',
+      failedChunks: [],
+      missingChunks: [],
+      complete: true,
+    });
+    queue.close();
+  });
+
+  it('retries throttled chunks without dropping them from the final transcript', async () => {
+    let throttled = 0;
+    const provider = vi.fn(async (_audio: string, { chunkIndex }: { sessionId: string; chunkIndex: number }) => {
+      if (chunkIndex === 0 && throttled < 2) {
+        throttled++;
+        throw Object.assign(new Error('Too Many Requests'), { status: 429 });
+      }
+      return `chunk${chunkIndex}`;
+    });
+    const queue = new TranscriptionQueue(provider, fastQueueConfig);
+    const finals: FinalTranscript[] = [];
+    const service = new AudioStreamingService({}, null, vi.fn().mockResolvedValue(undefined), {
+      queue,
+      onFinalTranscript: (result) => {
+        finals.push(result);
+      },
+    });
+
+    await service.ingestChunk('live-retry', { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    await service.ingestChunk('live-retry', { chunkIndex: 1, isLast: true }, createMockAudioChunk('speech', 512));
+
+    await waitFor(() => finals.length === 1);
+    expect(provider).toHaveBeenCalledTimes(4);
+    expect(finals[0]).toMatchObject({ transcript: 'chunk0 chunk1', complete: true });
+    queue.close();
+  });
+
+  it('exposes the partial live transcript in status and cancels queued work on disconnect', async () => {
+    const pending: Array<(text: string) => void> = [];
+    const provider = vi.fn(
+      (_audio: string, _ctx: { sessionId: string; chunkIndex: number }) =>
+        new Promise<string>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    const queue = new TranscriptionQueue(provider, fastQueueConfig);
+    const service = new AudioStreamingService({}, null, vi.fn().mockResolvedValue(undefined), { queue });
+    const sessionId = 'live-disconnect';
+
+    await service.ingestChunk(sessionId, { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    await service.ingestChunk(sessionId, { chunkIndex: 1, isLast: false }, createMockAudioChunk('speech', 512));
+    await waitFor(() => pending.length === 1);
+    pending[0]('hello');
+    await waitFor(() => pending.length === 2);
+
+    const status = await service.getStatus(sessionId);
+    expect(status.liveTranscript).toBe('hello');
+
+    await service.cleanSessionAudio(sessionId);
+    expect(queue.stats()).toMatchObject({ pending: 0, sessions: 0 });
+    pending[1]('ignored');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(queue.getTranscript(sessionId)).toBe('');
+    queue.close();
+  });
+
+  it('keeps the existing behaviour when no live transcription queue is configured', async () => {
+    const service = new AudioStreamingService({}, null, vi.fn().mockResolvedValue(undefined));
+    const result = await service.ingestChunk('no-live', { chunkIndex: 0, isLast: false }, createMockAudioChunk('speech', 512));
+    expect(result.liveTranscriptionQueued).toBe(false);
+    const status = await service.getStatus('no-live');
+    expect(status).not.toHaveProperty('liveTranscript');
   });
 });

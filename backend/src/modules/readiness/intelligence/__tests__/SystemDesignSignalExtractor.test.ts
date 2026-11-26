@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { SystemDesignSignalExtractor } from '../SystemDesignSignalExtractor.js';
+import { parseDockerfile } from '../dockerfileParser.js';
+import { parseKubernetesManifest } from '../k8sManifestParser.js';
+import { ProjectIntelligenceEngine } from '../ProjectIntelligenceEngine.js';
 import {
   parseCargoToml,
   parseComposeTopology,
@@ -10,6 +13,136 @@ import {
 } from '../manifestParsers.js';
 
 const extract = (repo: Record<string, unknown>) => SystemDesignSignalExtractor.extractSignals([repo]);
+
+describe('Dockerfile and Kubernetes manifest parsing', () => {
+  it('extracts multi-stage, non-root, healthcheck and minimal-image Docker practices', () => {
+    const content = [
+      'FROM --platform=$BUILDPLATFORM node:20-alpine AS build',
+      'RUN npm ci',
+      'FROM gcr.io/distroless/nodejs20-debian12',
+      'USER 10001:10001',
+      'HEALTHCHECK --interval=30s CMD node healthcheck.js',
+    ].join('\n');
+
+    expect(parseDockerfile(content)).toEqual({
+      hasMultiStageBuild: true,
+      hasNonRootUser: true,
+      hasHealthcheck: true,
+      usesMinimalBaseImage: true,
+    });
+  });
+
+  it('does not count a root user or disabled healthcheck as hardened practices', () => {
+    expect(parseDockerfile('FROM node:20-alpine\nUSER 0\nHEALTHCHECK NONE')).toEqual({
+      hasMultiStageBuild: false,
+      hasNonRootUser: false,
+      hasHealthcheck: false,
+      usesMinimalBaseImage: true,
+    });
+  });
+
+  it('parses multi-document Kubernetes YAML for scaling, reliability and TLS', () => {
+    const content = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  replicas: 3
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution: []
+      containers:
+        - name: api
+          image: example/api:1
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          livenessProbe: { httpGet: { path: /health, port: 3000 } }
+          readinessProbe: { httpGet: { path: /ready, port: 3000 } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+spec:
+  minReplicas: 2
+  maxReplicas: 8
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+spec:
+  tls:
+    - hosts: [api.example.com]
+      secretName: api-tls
+`;
+
+    expect(parseKubernetesManifest(content)).toEqual({
+      isKubernetesManifest: true,
+      hasResourceLimits: true,
+      hasResourceRequests: true,
+      hasHighAvailability: true,
+      hasHealthProbes: true,
+      hasAutoscaling: true,
+      hasIngressTLS: true,
+    });
+  });
+
+  it('ignores malformed and oversized Kubernetes manifests safely', () => {
+    expect(() => parseKubernetesManifest('apiVersion: [\nkind: Deployment')).not.toThrow();
+    expect(parseKubernetesManifest('apiVersion: [\nkind: Deployment')).toMatchObject({
+      isKubernetesManifest: false,
+    });
+    expect(parseKubernetesManifest(`kind: Pod\n${' '.repeat(512 * 1024)}`).isKubernetesManifest).toBe(false);
+  });
+
+  it('integrates parsed container signals into the extractor and scoring matrix', () => {
+    const signals = extract({
+      files: ['Dockerfile', 'infra/app.yml'],
+      fileContents: {
+        Dockerfile: 'FROM node:20-alpine AS build\nFROM gcr.io/distroless/nodejs20\nUSER app\nHEALTHCHECK CMD node health.js',
+        'infra/app.yml': `apiVersion: apps/v1
+kind: Deployment
+metadata: { name: app }
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: app
+          image: example/app:1
+          resources:
+            requests: { cpu: 100m }
+            limits: { cpu: 500m }
+          readinessProbe: { tcpSocket: { port: 3000 } }
+`,
+      },
+    });
+
+    expect(signals.hasDocker).toBe(true);
+    expect(signals.hasKubernetes).toBe(true);
+    expect(signals.hasMultiStageDockerBuild).toBe(true);
+    expect(signals.hasNonRootDockerUser).toBe(true);
+    expect(signals.hasDockerHealthcheck).toBe(true);
+    expect(signals.usesMinimalDockerBaseImage).toBe(true);
+    expect(signals.hasKubernetesResourceLimits).toBe(true);
+    expect(signals.hasKubernetesResourceRequests).toBe(true);
+    expect(signals.hasKubernetesHighAvailability).toBe(true);
+    expect(signals.hasKubernetesHealthProbes).toBe(true);
+
+    expect(ProjectIntelligenceEngine.calculateDeploymentEvidence({
+      hasDocker: true,
+      hasNonRootDockerUser: true,
+    })).toBe(45);
+    expect(ProjectIntelligenceEngine.calculateInfrastructureSophistication({
+      hasKubernetes: true,
+      hasKubernetesAutoscaling: true,
+    })).toBe(25);
+  });
+});
 
 const MULTI_SERVICE_COMPOSE = `
 # local stack

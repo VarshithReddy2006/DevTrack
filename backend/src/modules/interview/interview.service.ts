@@ -15,7 +15,9 @@ import { InterviewGuardError, InterviewGuardService } from './interviewGuard.ser
 import { createMongoInterviewSessionPort } from './interviewSession.port.js';
 import { selectQuestionsForInterview, type InterviewRole } from './questionBank/index.js';
 import {
+  IllegalTransitionError,
   InterviewError,
+  StateVersionConflictError,
   assertOpen,
   assertStateVersion,
   canTransition,
@@ -265,7 +267,7 @@ export class InterviewService {
       },
       { new: true },
     ).lean();
-    if (!updated) throw await this.explainLostRace(id, userId, 'REQUEST_HINT', input.stateVersion);
+    if (!updated) throw await this.explainLostRace(id, userId, 'REQUEST_HINT', input.stateVersion, input.turnIndex);
     return toSessionView(updated);
   }
 
@@ -365,18 +367,34 @@ export class InterviewService {
   }
 
   /** The compare-and-set matched nothing: read the row again and say why. */
-  private async explainLostRace(id: string, userId: string, event: InterviewEvent, expectedVersion: number): Promise<InterviewError> {
+  private async explainLostRace(
+    id: string,
+    userId: string,
+    event: InterviewEvent,
+    expectedVersion: number,
+    expectedTurnIndex?: number,
+  ): Promise<InterviewError> {
     const latest = await this.model.findOne({ _id: id, userId }).lean();
     if (!latest) return sessionNotFound();
     try {
       assertOpen(latest.status);
+      if (expectedTurnIndex !== undefined && latest.currentTurnIndex !== expectedTurnIndex) {
+        this.assertCurrentTurn(latest, expectedTurnIndex);
+      }
       assertStateVersion(expectedVersion, latest.stateVersion);
       if (!canTransition(latest.state, event)) transition(latest.state, event);
     } catch (error) {
+      if (error instanceof StateVersionConflictError) return error;
+      if (error instanceof IllegalTransitionError) {
+        if (latest.stateVersion !== expectedVersion) {
+          return new StateVersionConflictError(expectedVersion, latest.stateVersion);
+        }
+        return error;
+      }
       if (error instanceof InterviewError) return error;
       throw error;
     }
-    return new InterviewError('state_version_conflict', 409, 'The interview changed while the request was processed. Reload and try again.');
+    return new StateVersionConflictError(expectedVersion, latest.stateVersion);
   }
 }
 

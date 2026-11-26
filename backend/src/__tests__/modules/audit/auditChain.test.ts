@@ -1,10 +1,18 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  ACCOUNT_ERASURE_TOMBSTONE,
   GENESIS_HASH,
   canonicalize,
+  chainErasureTombstone,
   chainNext,
+  decryptAuditPayload,
+  encryptAuditPayload,
   hashPayload,
+  inspectAuditChain,
+  isTombstoneEvent,
   merkleRoot,
+  pseudonymizeAuditSubject,
   verifyAuditChain,
   type AuditChainFields,
 } from '../../../modules/audit/auditChain.service.js';
@@ -119,5 +127,55 @@ describe('merkleRoot', () => {
     expect(merkleRoot([])).toBe(GENESIS_HASH);
     const one = buildChain(1)[0].recordHash;
     expect(merkleRoot([one])).toBe(one);
+  });
+});
+
+describe('crypto-shredding and erasure tombstones', () => {
+  it('encrypts and decrypts audit payloads with a per-user 256-bit key and fails with wrong key', () => {
+    const keyHex = randomBytes(32).toString('hex');
+    const wrongKeyHex = randomBytes(32).toString('hex');
+    const details = { ipAddress: '192.0.2.10', email: 'alice@example.com', score: 92 };
+
+    const encrypted = encryptAuditPayload(details, keyHex);
+    expect(encrypted.algorithm).toBe('aes-256-gcm');
+    expect(encrypted.ciphertext).not.toContain('alice@example.com');
+    expect(decryptAuditPayload(encrypted, keyHex)).toEqual(details);
+    expect(() => decryptAuditPayload(encrypted, wrongKeyHex)).toThrow();
+  });
+
+  it('verifies hash continuity across encrypted blocks and ACCOUNT_ERASURE_TOMBSTONE events', () => {
+    const aliceKey = randomBytes(32).toString('hex');
+    const aliceSalt = randomBytes(32).toString('hex');
+    const aliceRef = pseudonymizeAuditSubject('user-alice', aliceSalt);
+
+    const chain: AuditChainFields[] = [];
+    for (let i = 0; i < 4; i++) {
+      const payload = encryptAuditPayload({ ip: `10.0.0.${i}`, action: 'login' }, aliceKey);
+      chain.push(
+        chainNext(chain[chain.length - 1] ?? null, {
+          timestamp: new Date(Date.UTC(2026, 10, 20, 12, i)),
+          userId: aliceRef,
+          eventType: 'profile_computed',
+          payload,
+        })
+      );
+    }
+
+    const tombstone = chainErasureTombstone(chain[chain.length - 1], {
+      timestamp: new Date(Date.UTC(2026, 10, 20, 12, 10)),
+      subjectRef: aliceRef,
+      keyDestroyed: true,
+    });
+    chain.push(tombstone);
+
+    expect(isTombstoneEvent(tombstone.eventType)).toBe(true);
+    expect(tombstone.eventType).toBe(ACCOUNT_ERASURE_TOMBSTONE);
+    expect(verifyAuditChain(chain)).toEqual({ ok: true, checked: 5 });
+    expect(inspectAuditChain(chain)).toEqual({
+      ok: true,
+      checked: 5,
+      tombstoneCount: 1,
+      erasedSubjects: [aliceRef],
+    });
   });
 });

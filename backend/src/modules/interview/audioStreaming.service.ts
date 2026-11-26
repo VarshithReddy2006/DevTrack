@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import { getRedisClient } from '../../shared/redis/index.js';
 import { logger } from '../../shared/logger.js';
 import { enqueueInterviewTranscriptionJob } from './workers/interviewTranscription.worker.js';
+import type { FinalTranscript, TranscriptionQueue } from './transcriptionQueue.js';
 
 export interface AudioChunkMetadata {
   chunkIndex: number;
@@ -51,6 +52,12 @@ export interface IngestChunkResult {
   totalDurationMs?: number;
   leadingTrimmedCount?: number;
   trailingTrimmedCount?: number;
+  liveTranscriptionQueued?: boolean;
+}
+
+export interface LiveTranscriptionOptions {
+  queue: TranscriptionQueue;
+  onFinalTranscript?: (result: FinalTranscript) => void | Promise<void>;
 }
 
 export interface AudioStreamingConfig {
@@ -183,16 +190,65 @@ export class AudioStreamingService {
   // In-memory state store used as fallback when Redis is absent or in local unit test harnesses
   private inMemorySessions: Map<string, { meta: SessionAudioMeta; chunks: Map<number, StoredAudioChunk> }> = new Map();
   private enqueueJob: typeof enqueueInterviewTranscriptionJob;
+  private liveTranscription: LiveTranscriptionOptions | null;
 
   constructor(
     options?: Partial<AudioStreamingConfig>,
     customRedis?: Redis | null,
-    enqueueFn?: typeof enqueueInterviewTranscriptionJob
+    enqueueFn?: typeof enqueueInterviewTranscriptionJob,
+    liveTranscription?: LiveTranscriptionOptions | null
   ) {
     this.config = { ...DEFAULT_AUDIO_CONFIG, ...options };
     this.explicitRedis = customRedis !== undefined;
     this.redisClient = customRedis !== undefined ? customRedis : null;
     this.enqueueJob = enqueueFn ?? enqueueInterviewTranscriptionJob;
+    this.liveTranscription = liveTranscription ?? null;
+  }
+
+  /**
+   * Routes a newly stored chunk through the rate-limited transcription queue. Silent chunks are
+   * marked as empty so they never hold back later segments of the ordered transcript.
+   */
+  private queueLiveTranscription(sessionId: string, chunkIndex: number, buffer: Buffer, isSilent: boolean): boolean {
+    const live = this.liveTranscription;
+    if (!live) return false;
+    try {
+      if (isSilent) {
+        live.queue.skipChunk(sessionId, chunkIndex);
+        return false;
+      }
+      live.queue.submit(sessionId, chunkIndex, buffer.toString('base64')).catch((err: unknown) => {
+        logger.warn('[audio-streaming] Live chunk transcription did not complete', {
+          sessionId,
+          chunkIndex,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      return true;
+    } catch (err) {
+      logger.warn('[audio-streaming] Failed to queue live chunk transcription', { sessionId, chunkIndex, err });
+      return false;
+    }
+  }
+
+  private finalizeLiveTranscription(sessionId: string, lastChunkIndex: number): void {
+    const live = this.liveTranscription;
+    if (!live) return;
+    void live.queue
+      .finalizeSession(sessionId, lastChunkIndex)
+      .then(async (result) => {
+        if (!result.complete) {
+          logger.warn('[audio-streaming] Live transcript finalized with gaps', {
+            sessionId,
+            failedChunks: result.failedChunks,
+            missingChunks: result.missingChunks,
+          });
+        }
+        await live.onFinalTranscript?.(result);
+      })
+      .catch((err: unknown) => {
+        logger.error('[audio-streaming] Failed to finalize live transcript', { sessionId, err });
+      });
   }
 
   private getRedis(): Redis | null {
@@ -237,21 +293,58 @@ export class AudioStreamingService {
     if (redis) {
       const key = this.redisSessionKey(sessionId);
       const rawMeta = await redis.hget(key, 'meta');
+      let meta: SessionAudioMeta | null = null;
       if (rawMeta) {
         try {
-          return JSON.parse(rawMeta);
+          meta = JSON.parse(rawMeta);
         } catch {
           // corrupted json, reinitialize
         }
+      }
+
+      // Sync receivedIndices from actual stored chunk keys in Redis hash to prevent index loss from concurrent writes
+      if (typeof redis.hkeys === 'function') {
+        const allKeys = await redis.hkeys(key);
+        const storedIndices = allKeys
+          .filter((k) => k.startsWith('chunk:') && !k.startsWith('chunkMeta:'))
+          .map((k) => Number(k.replace('chunk:', '')))
+          .filter((n) => !isNaN(n));
+
+        if (meta) {
+          if (storedIndices.length > 0) {
+            const indexSet = new Set([...meta.receivedIndices, ...storedIndices]);
+            meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+            meta.highestIndex = Math.max(meta.highestIndex, ...meta.receivedIndices);
+          }
+          return meta;
+        } else if (storedIndices.length > 0) {
+          const initial = this.createInitialMeta(sessionId);
+          initial.receivedIndices = storedIndices.sort((a, b) => a - b);
+          initial.highestIndex = Math.max(...initial.receivedIndices);
+          return initial;
+        }
+      } else if (meta) {
+        return meta;
       }
     }
 
     const inMem = this.inMemorySessions.get(sessionId);
     if (inMem) {
+      // Sync receivedIndices from in-memory chunks map
+      const storedIndices = Array.from(inMem.chunks.keys()).sort((a, b) => a - b);
+      if (storedIndices.length > 0) {
+        const indexSet = new Set([...inMem.meta.receivedIndices, ...storedIndices]);
+        inMem.meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+        inMem.meta.highestIndex = Math.max(inMem.meta.highestIndex, ...inMem.meta.receivedIndices);
+      }
       return inMem.meta;
     }
 
-    const initial: SessionAudioMeta = {
+    return this.createInitialMeta(sessionId);
+  }
+
+  private createInitialMeta(sessionId: string): SessionAudioMeta {
+    return {
       sessionId,
       status: 'recording',
       receivedIndices: [],
@@ -264,8 +357,6 @@ export class AudioStreamingService {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-
-    return initial;
   }
 
   /**
@@ -385,6 +476,22 @@ export class AudioStreamingService {
           durationMs,
           receivedAt: storedChunk.receivedAt,
         }),
+      });
+
+      // Query actual stored chunk keys to guarantee complete index set despite any concurrent writes
+      if (typeof redis.hkeys === 'function') {
+        const allKeys = await redis.hkeys(redisKey);
+        const storedIndices = allKeys
+          .filter((k) => k.startsWith('chunk:') && !k.startsWith('chunkMeta:'))
+          .map((k) => Number(k.replace('chunk:', '')))
+          .filter((n) => !isNaN(n));
+
+        const indexSet = new Set([...meta.receivedIndices, ...storedIndices, chunkIndex]);
+        meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+        meta.highestIndex = Math.max(meta.highestIndex, ...meta.receivedIndices);
+      }
+
+      await redis.hset(redisKey, {
         meta: JSON.stringify(meta),
       });
       // Refresh session TTL for auto-clean of orphaned recordings
@@ -395,9 +502,15 @@ export class AudioStreamingService {
         session = { meta, chunks: new Map() };
         this.inMemorySessions.set(sessionId, session);
       }
-      session.meta = meta;
       session.chunks.set(chunkIndex, storedChunk);
+      const storedIndices = Array.from(session.chunks.keys()).sort((a, b) => a - b);
+      const indexSet = new Set([...meta.receivedIndices, ...storedIndices, chunkIndex]);
+      meta.receivedIndices = Array.from(indexSet).sort((a, b) => a - b);
+      meta.highestIndex = Math.max(meta.highestIndex, ...meta.receivedIndices);
+      session.meta = meta;
     }
+
+    const liveTranscriptionQueued = this.queueLiveTranscription(sessionId, chunkIndex, buffer, isSilent);
 
     // Evaluate speech completion triggers:
     // Trigger 1: Explicit isLast = true or isLast received previously
@@ -416,6 +529,7 @@ export class AudioStreamingService {
         consecutiveSilenceMs: meta.consecutiveSilenceMs,
         assembled: false,
         transcriptionEnqueued: false,
+        liveTranscriptionQueued,
       };
     }
 
@@ -443,6 +557,7 @@ export class AudioStreamingService {
         assembled: false,
         transcriptionEnqueued: false,
         missingChunks,
+        liveTranscriptionQueued,
       };
     }
 
@@ -463,6 +578,7 @@ export class AudioStreamingService {
       totalDurationMs: assemblyResult.totalDurationMs,
       leadingTrimmedCount: assemblyResult.leadingTrimmedCount,
       trailingTrimmedCount: assemblyResult.trailingTrimmedCount,
+      liveTranscriptionQueued,
     };
   }
 
@@ -483,6 +599,38 @@ export class AudioStreamingService {
     const chunksMap = new Map<number, StoredAudioChunk>();
     const redis = this.getRedis();
     const redisKey = this.redisSessionKey(sessionId);
+
+    // Atomic locking: guarantee only one worker/chunk initiates assembly and transcription enqueue
+    if (redis) {
+      if (typeof redis.hsetnx === 'function') {
+        const lockAcquired = await redis.hsetnx(redisKey, 'status:assembling', '1');
+        if (lockAcquired !== 1) {
+          logger.info('[audio-streaming] Assembly already in progress or completed; skipping duplicate assembly', { sessionId });
+          return {
+            assembledBuffer: Buffer.alloc(0),
+            totalDurationMs: 0,
+            leadingTrimmedCount: 0,
+            trailingTrimmedCount: 0,
+            transcriptionEnqueued: false,
+          };
+        }
+      }
+    } else {
+      const session = this.inMemorySessions.get(sessionId);
+      if (session) {
+        if ((session as any).isAssembling || session.meta.status === 'assembled' || session.meta.status === 'transcribing') {
+          logger.info('[audio-streaming] Assembly already in progress (in-memory); skipping duplicate assembly', { sessionId });
+          return {
+            assembledBuffer: Buffer.alloc(0),
+            totalDurationMs: 0,
+            leadingTrimmedCount: 0,
+            trailingTrimmedCount: 0,
+            transcriptionEnqueued: false,
+          };
+        }
+        (session as any).isAssembling = true;
+      }
+    }
 
     if (redis) {
       const allFields = await redis.hgetall(redisKey);
@@ -515,6 +663,7 @@ export class AudioStreamingService {
       trimAndAssembleChunks(chunksMap, totalExpectedChunks);
 
     meta.status = 'assembled';
+    this.finalizeLiveTranscription(sessionId, totalExpectedChunks - 1);
 
     // Enqueue transcription job if speech is present
     let transcriptionEnqueued = false;
@@ -540,7 +689,7 @@ export class AudioStreamingService {
     }
 
     // Clean up temporary chunks from Redis as requested in acceptance criteria
-    await this.cleanSessionAudio(sessionId);
+    await this.clearAudioBuffers(sessionId);
 
     return {
       assembledBuffer,
@@ -555,6 +704,11 @@ export class AudioStreamingService {
    * Explicitly cleans temporary audio buffers (used on session disconnect or after transcription).
    */
   async cleanSessionAudio(sessionId: string): Promise<void> {
+    this.liveTranscription?.queue.cancelSession(sessionId);
+    await this.clearAudioBuffers(sessionId);
+  }
+
+  private async clearAudioBuffers(sessionId: string): Promise<void> {
     const redis = this.getRedis();
     if (redis) {
       await redis.del(this.redisSessionKey(sessionId));
@@ -570,6 +724,7 @@ export class AudioStreamingService {
     sessionId: string;
     meta: SessionAudioMeta;
     missingChunks: number[];
+    liveTranscript?: string;
   }> {
     const meta = await this.getSessionMeta(sessionId);
     const expected = meta.highestIndex >= 0 ? meta.highestIndex + 1 : 0;
@@ -579,6 +734,7 @@ export class AudioStreamingService {
       sessionId,
       meta,
       missingChunks,
+      ...(this.liveTranscription ? { liveTranscript: this.liveTranscription.queue.getTranscript(sessionId) } : {}),
     };
   }
 }

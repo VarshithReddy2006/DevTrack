@@ -87,7 +87,14 @@ export function getRedisClient(): Redis {
     return mockClient;
   }
 
-  if (_client && (_client.status === 'ready' || _client.status === 'connecting' || _client.status === 'wait')) {
+  if (
+    _client &&
+    (_client.status === 'ready' ||
+      _client.status === 'connecting' ||
+      _client.status === 'connect' ||
+      _client.status === 'wait' ||
+      _client.status === 'reconnecting')
+  ) {
     return _client;
   }
 
@@ -205,6 +212,9 @@ export function getRedisHealth(): RedisHealth {
   const statusMap: Record<string, 'connected' | 'connecting' | 'disconnected'> = {
     ready: 'connected',
     wait: 'connecting',
+    connect: 'connecting',
+    connecting: 'connecting',
+    reconnecting: 'connecting',
     close: 'disconnected',
     end: 'disconnected',
   };

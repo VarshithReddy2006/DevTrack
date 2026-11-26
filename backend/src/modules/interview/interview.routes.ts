@@ -1,8 +1,11 @@
 // src/modules/interview/interview.routes.ts
 // Express routes for Mock Interview Studio API and audio streaming chunk ingestion.
+// Includes WebRTC signaling route (Milestone 7) for zero-latency audio signaling.
 
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
+import { InterviewSession } from '../../db/models/interviewSession.model.js';
 import { authMiddleware, type AuthenticatedRequest } from '../../middleware/auth.js';
 import { rateLimiters } from '../../middleware/rateLimitAdvanced.js';
 import { asyncHandler } from '../../middleware/error.js';
@@ -13,6 +16,7 @@ import {
   type AudioChunkMetadata,
 } from './audioStreaming.service.js';
 import { createInterviewController } from './interview.controller.js';
+import { webrtcSignalingGateway, type SignalResponse } from './webrtcSignaling.gateway.js';
 
 const chunkMetadataSchema = z.object({
   chunkIndex: z.coerce.number().int().min(0),
@@ -84,15 +88,32 @@ export function parseMultipartFormData(buffer: Buffer, boundary: string): {
 export interface InterviewRouteDeps {
   audioService: AudioStreamingService;
   auth: (req: Request, res: Response, next: NextFunction) => void;
+  isSessionOwner: (sessionId: string, userId: string) => Promise<boolean>;
 }
 
 export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Router {
   const router = Router();
   const service = deps?.audioService ?? audioStreamingService;
   const auth = deps?.auth ?? authMiddleware;
+  const isSessionOwner = deps?.isSessionOwner ?? (async (sessionId, userId) => {
+    if (!mongoose.isValidObjectId(sessionId)) return false;
+    return Boolean(await InterviewSession.exists({ _id: sessionId, userId }));
+  });
   const controller = createInterviewController();
   const audioLimiter = rateLimiters?.interviewAudio ?? ((_req: Request, _res: Response, next: NextFunction) => next());
   const aiLimiter = rateLimiters?.ai ?? ((_req: Request, _res: Response, next: NextFunction) => next());
+  const requireSessionOwner = async (req: Request, res: Response, sessionId: string): Promise<string | null> => {
+    const userId = (req as AuthenticatedRequest).user?.id;
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized', code: 'UNAUTHORIZED' });
+      return null;
+    }
+    if (!(await isSessionOwner(sessionId, userId))) {
+      res.status(403).json({ success: false, message: 'Forbidden', code: 'FORBIDDEN' });
+      return null;
+    }
+    return userId;
+  };
 
   // Middleware collecting raw binary buffer for multipart and raw audio streams
   const rawBodyParser = express.raw({
@@ -110,6 +131,7 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
    */
   router.post(
     '/:sessionId/audio/chunk',
+    auth,
     audioLimiter,
     rawBodyParser,
     asyncHandler(async (req: Request, res: Response) => {
@@ -120,6 +142,8 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
           error: { code: 'BAD_REQUEST', message: 'sessionId is required in URL parameter' },
         });
       }
+      const userId = await requireSessionOwner(req, res, sessionId);
+      if (!userId) return;
 
       let chunkBuffer: Buffer | null = null;
       let rawMetadata: Record<string, any> = {
@@ -182,7 +206,6 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
         });
       }
 
-      const userId = (req as AuthenticatedRequest).user?.id;
       const metadata: AudioChunkMetadata = {
         chunkIndex: parsedMeta.data.chunkIndex,
         isLast: parsedMeta.data.isLast,
@@ -200,11 +223,13 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
    */
   router.get(
     '/:sessionId/audio/status',
+    auth,
     asyncHandler(async (req: Request, res: Response) => {
       const sessionId = Array.isArray(req.params.sessionId) ? req.params.sessionId[0] : req.params.sessionId;
       if (!sessionId || typeof sessionId !== 'string') {
         return res.status(400).json({ success: false, error: { message: 'sessionId is required' } });
       }
+      if (!(await requireSessionOwner(req, res, sessionId))) return;
 
       const status = await service.getStatus(sessionId);
       return successResponse(res, status);
@@ -217,15 +242,62 @@ export function createInterviewRoutes(deps?: Partial<InterviewRouteDeps>): Route
    */
   router.delete(
     '/:sessionId/audio',
+    auth,
     asyncHandler(async (req: Request, res: Response) => {
       const sessionId = Array.isArray(req.params.sessionId) ? req.params.sessionId[0] : req.params.sessionId;
       if (!sessionId || typeof sessionId !== 'string') {
         return res.status(400).json({ success: false, error: { message: 'sessionId is required' } });
       }
+      if (!(await requireSessionOwner(req, res, sessionId))) return;
 
       await service.cleanSessionAudio(sessionId);
       return successResponse(res, { message: 'Audio buffer cleaned successfully' });
     })
+  );
+
+  /**
+   * POST /api/v2/interview/:sessionId/webrtc/signal
+   *
+   * Exchanges WebRTC signaling messages for the interview audio session:
+   *   - Client sends offer SDP  -> server returns answer SDP + TURN credentials
+   *   - Client sends ICE candidate -> server echoes back a server candidate
+   *   - Client sends bye          -> tears down the signaling session
+   *
+   * ICE negotiation that stalls past 10s falls back to HTTP audio chunk ingestion.
+   */
+  router.post(
+    '/:sessionId/webrtc/signal',
+    auth,
+    asyncHandler(async (req: AuthenticatedRequest, res) => {
+      const { sessionId } = z.object({ sessionId: z.string().min(1) }).parse(req.params);
+      const userId = await requireSessionOwner(req, res, sessionId);
+      if (!userId) return;
+
+      const response: SignalResponse = await webrtcSignalingGateway.handleSignal(
+        sessionId,
+        userId,
+        req.body,
+      );
+
+      if (response.type === 'error') {
+        const status = response.code === 'NOT_FOUND' ? 404
+          : response.code === 'GONE' ? 410
+            : response.code === 'FORBIDDEN' ? 403
+              : 400;
+        return res.status(status).json({
+          success: false,
+          message: response.message,
+          code: response.code,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      if (response.type === 'fallback') {
+        return successResponse(res, { fallbackUrl: response.fallbackUrl, type: 'fallback' }, 'ICE timed out; use HTTP chunk fallback', 200);
+      }
+
+      successResponse(res, response, 'Signaling message processed');
+    }),
   );
 
   // General session routes

@@ -14,6 +14,22 @@ const getRedisPassword = (): string => process.env.REDIS_PASSWORD || env.REDIS_P
 let _masterClient: Redis | null = null;
 let _replicaClient: Redis | null = null;
 let _connecting = false;
+let _replicaConnecting = false;
+
+/**
+ * Check whether a Redis client is active or in a valid transitional state
+ * that should not trigger duplicate socket creation.
+ */
+export function isClientAlive(client: Redis | null): boolean {
+  return Boolean(
+    client &&
+      (client.status === 'ready' ||
+        client.status === 'connecting' ||
+        client.status === 'connect' ||
+        client.status === 'wait' ||
+        client.status === 'reconnecting')
+  );
+}
 
 export interface SentinelHealth {
   status: 'disconnected' | 'connecting' | 'connected';
@@ -102,8 +118,8 @@ export function getRedisMaster(): Redis {
     throw new Error('Redis Sentinel is not configured. Use getRedisClient() for standalone Redis.');
   }
 
-  if (_masterClient && (_masterClient.status === 'ready' || _masterClient.status === 'connecting' || _masterClient.status === 'wait')) {
-    return _masterClient;
+  if (isClientAlive(_masterClient)) {
+    return _masterClient!;
   }
 
   if (_connecting) {
@@ -152,6 +168,14 @@ export function getRedisMaster(): Redis {
         event: 'sentinel_master_switch',
         data,
       });
+      // Following a master switch, recycle replica client so it reconnects to updated topology
+      if (_replicaClient && typeof _replicaClient.disconnect === 'function') {
+        try {
+          _replicaClient.disconnect();
+        } catch (_) {}
+        _replicaClient = null;
+        _replicaConnecting = false;
+      }
     });
 
     void _masterClient.connect().catch((err) => {
@@ -178,9 +202,15 @@ export function getRedisReplica(): Redis {
     throw new Error('Redis Sentinel is not configured. Use getRedisClient() for standalone Redis.');
   }
 
-  if (_replicaClient && (_replicaClient.status === 'ready' || _replicaClient.status === 'connecting' || _replicaClient.status === 'wait')) {
-    return _replicaClient;
+  if (isClientAlive(_replicaClient)) {
+    return _replicaClient!;
   }
+
+  if (_replicaConnecting) {
+    if (_replicaClient) return _replicaClient;
+  }
+
+  _replicaConnecting = true;
 
   try {
     _replicaClient = createSentinelClient('slave');
@@ -190,6 +220,7 @@ export function getRedisReplica(): Redis {
         event: 'sentinel_replica_connected',
         masterName: getSentinelMasterName(),
       });
+      _replicaConnecting = false;
     });
 
     _replicaClient.on('ready', () => {
@@ -204,6 +235,7 @@ export function getRedisReplica(): Redis {
         event: 'sentinel_replica_error',
         masterName: getSentinelMasterName(),
       });
+      _replicaConnecting = false;
     });
 
     _replicaClient.on('close', () => {
@@ -218,9 +250,11 @@ export function getRedisReplica(): Redis {
       logger.warn('[redis-sentinel] Replica initial connect failed (will retry)', {
         error: err instanceof Error ? err.message : String(err),
       });
+      _replicaConnecting = false;
     });
   } catch (err) {
     logger.error('[redis-sentinel] Failed to create replica client, falling back to master', err);
+    _replicaConnecting = false;
     // Fall back to master if replica creation fails
     return getRedisMaster();
   }
@@ -240,6 +274,8 @@ export function getSentinelHealth(): SentinelHealth {
     ready: 'connected',
     wait: 'connecting',
     connect: 'connecting',
+    connecting: 'connecting',
+    reconnecting: 'connecting',
     close: 'disconnected',
     end: 'disconnected',
   };
@@ -267,24 +303,22 @@ export async function disconnectSentinel(): Promise<void> {
   const disconnectPromises: Promise<unknown>[] = [];
 
   if (master && master.status === 'ready') {
-    disconnectPromises.push(master.quit());
+    disconnectPromises.push(master.quit().catch(() => master.disconnect()));
+  } else if (master && typeof master.disconnect === 'function') {
+    master.disconnect();
   }
   if (replica && replica.status === 'ready') {
-    disconnectPromises.push(replica.quit());
+    disconnectPromises.push(replica.quit().catch(() => replica.disconnect()));
+  } else if (replica && typeof replica.disconnect === 'function') {
+    replica.disconnect();
   }
 
   await Promise.allSettled(disconnectPromises);
 
-  if (master && typeof master.disconnect === 'function') {
-    master.disconnect();
-  }
-  if (replica && typeof replica.disconnect === 'function') {
-    replica.disconnect();
-  }
-
   _masterClient = null;
   _replicaClient = null;
   _connecting = false;
+  _replicaConnecting = false;
 
   logger.info('[redis-sentinel] Disconnected', { event: 'sentinel_disconnected' });
 }
@@ -296,4 +330,5 @@ export function resetSentinelClients(): void {
   _masterClient = null;
   _replicaClient = null;
   _connecting = false;
+  _replicaConnecting = false;
 }

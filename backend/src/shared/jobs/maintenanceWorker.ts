@@ -1,4 +1,5 @@
 import { scheduleQuestGeneration } from '../../modules/quests/questScheduler.js';
+import { scheduleQuestExpiration } from '../../modules/quests/questExpiration.worker.js';
 // src/shared/jobs/maintenanceWorker.ts — Periodic maintenance worker
 // Runs DLQ cleanup, prunes expired SSE resources, and performs Redis hygiene.
 // Designed to run on a cron schedule via BullMQ repeatable jobs.
@@ -290,6 +291,9 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
             await (await import('../../modules/quests/questEngine.service.js')).runQuestGenerationSweep();
           }, { ttlMs: 10 * 60 * 1000 });
           break;
+        case 'expire_quests':
+          await (await import('../../modules/quests/questExpiration.worker.js')).runQuestExpirationWorkerSweep();
+          break;
         case 'cleanup_failed_jobs':
           await withDistributedLock('cleanup_failed_jobs', async () => {
             await runCleanupFailedJobs();
@@ -438,6 +442,7 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
   });
 
   await scheduleQuestGeneration(_queue);
+  await scheduleQuestExpiration(_queue);
 
   // DLQ cleanup every 6 hours
   await _queue.add(

@@ -18,11 +18,21 @@ vi.mock('../../src/shared/redis/client.js', () => ({
   createRedisConnection: vi.fn(),
 }));
 
-vi.mock('../../src/modules/runtime-state/unifiedRuntimeState.service.js', () => ({
-  unifiedRuntimeStateService: {
-    getRuntimeState: vi.fn(async () => ({ toObject: () => ({ level: 7, totalXp: 700 }) })),
-  },
-}));
+vi.mock('../../src/modules/runtime-state/unifiedRuntimeState.service.js', () => {
+  const mockState = {
+    level: 7,
+    xp: 700,
+    lastCalculatedAt: '2026-01-01T00:00:00.000Z',
+    sessionContext: {},
+    toObject: () => ({ level: 7, totalXp: 700 }),
+  };
+  return {
+    unifiedRuntimeStateService: {
+      getRuntimeState: vi.fn(async () => mockState),
+      getRuntimeStateFresh: vi.fn(async () => mockState),
+    },
+  };
+});
 
 import { eventBus } from '../../src/shared/sse/eventBus.js';
 
@@ -36,7 +46,9 @@ async function publish(userId: string, marker: string): Promise<void> {
   await settle();
 }
 
-const markers = (conn: SseConnection) => conn.dataFrames().map((f) => f.data?.payload?.marker);
+const eventFrames = (conn: SseConnection) =>
+  conn.dataFrames().filter((f) => f.data?.type !== 'runtime_state_full');
+const markers = (conn: SseConnection) => eventFrames(conn).map((f) => f.data?.payload?.marker);
 
 describe('Chaos: Redis restart with 120 SSE subscribers', () => {
   let connections: SseConnection[];
@@ -96,7 +108,7 @@ describe('Chaos: Redis restart with 120 SSE subscribers', () => {
     expect(eventBus.getMetrics().activeConnections).toBe(USERS.length * CLIENTS_PER_USER + 1);
 
     // Live events that were buffered carry real stream ids; fallback ones carry a marker id.
-    const ids = connections[0].dataFrames().map((f) => f.id!);
+    const ids = eventFrames(connections[0]).map((f) => f.id!);
     expect(ids[0]).toMatch(STREAM_ID);
     expect(ids[1]).toMatch(STREAM_ID);
     expect(ids[2]).toContain('-fallback-');

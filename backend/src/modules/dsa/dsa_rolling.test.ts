@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { parseLeetCodeCalendar, calculateStreaksFromHeatmap } from './dsa.service.js';
+import { describe, it, expect, vi } from 'vitest';
+import { parseLeetCodeCalendar, calculateStreaksFromHeatmap, generateRollingHeatmap } from './dsa.service.js';
+import { DsaSubmission, PlatformStats } from '../../db/models/index.js';
 
 describe('DSA Rolling Logic', () => {
   describe('parseLeetCodeCalendar', () => {
@@ -104,6 +105,43 @@ describe('DSA Rolling Logic', () => {
       ];
       const streaks = calculateStreaksFromHeatmap(heatmap);
       expect(streaks.current).toBe(1);
+    });
+  });
+
+  describe('generateRollingHeatmap', () => {
+    it('produces exactly 365 contiguous unique UTC days ending on today UTC without timezone drift', async () => {
+      const todayUtc = new Date().toISOString().split('T')[0];
+      vi.spyOn(DsaSubmission, 'aggregate').mockResolvedValueOnce([
+        { _id: todayUtc, count: 5 },
+      ] as any);
+      vi.spyOn(PlatformStats, 'findOne').mockReturnValue({
+        select: () => ({
+          lean: () => Promise.resolve({ rawData: { submissionCalendar: { [todayUtc]: 2 } } }),
+        }),
+      } as any);
+
+      const userId = '507f1f77bcf86cd799439011';
+      const heatmap = await generateRollingHeatmap(userId);
+
+      expect(heatmap).toHaveLength(365);
+      expect(heatmap[heatmap.length - 1].date).toBe(todayUtc);
+      expect(heatmap[heatmap.length - 1].count).toBe(7); // 5 CF + 2 LC
+
+      // Verify all dates are unique and strictly formatted YYYY-MM-DD
+      const dates = heatmap.map((h) => h.date);
+      const uniqueDates = new Set(dates);
+      expect(uniqueDates.size).toBe(365);
+      for (const d of dates) {
+        expect(d).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      }
+
+      // Verify contiguous progression: each consecutive date is exactly +1 day in UTC
+      for (let i = 1; i < dates.length; i++) {
+        const prev = new Date(dates[i - 1] + 'T00:00:00.000Z');
+        const curr = new Date(dates[i] + 'T00:00:00.000Z');
+        const diffMs = curr.getTime() - prev.getTime();
+        expect(diffMs).toBe(24 * 60 * 60 * 1000);
+      }
     });
   });
 });

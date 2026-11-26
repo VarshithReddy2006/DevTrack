@@ -158,7 +158,9 @@ export class ChangeStreamSyncWorker extends EventEmitter {
   private streamRetryCounts = new Map<string, number>();
   private flushRetryCounts = new Map<string, number>();
   private isFlushing = new Set<string>();
-  private readonly maxStreamRetries = 5;
+  private flushWaiters = new Map<string, Array<() => void>>();
+  private recoveringCollections = new Set<string>();
+  private recoveryInProgress = new Set<string>();
   private readonly maxFlushRetries = 5;
 
   private followerRetryTimer: NodeJS.Timeout | null = null;
@@ -304,6 +306,8 @@ export class ChangeStreamSyncWorker extends EventEmitter {
     }
     this.streamRetryTimers.clear();
     this.flushRetryCounts.clear();
+    this.recoveringCollections.clear();
+    this.recoveryInProgress.clear();
 
     for (const [, batch] of this.pendingBatches) {
       batch.clear();
@@ -330,12 +334,12 @@ export class ChangeStreamSyncWorker extends EventEmitter {
   /**
    * Starts a change stream on a specific collection.
    */
-  private async startStreamForCollection(config: CollectionSyncConfig): Promise<void> {
+  private async startStreamForCollection(config: CollectionSyncConfig, startFresh = false): Promise<void> {
     if (!this._isLeader || this._isStopping) return;
 
     try {
       // Read persisted resume token checkpoint
-      const resumeToken = await this.resumeTokenStore.getResumeToken(config.collectionName);
+      const resumeToken = startFresh ? null : await this.resumeTokenStore.getResumeToken(config.collectionName);
 
       const watchOptions: Record<string, unknown> = {
         fullDocument: 'updateLookup',
@@ -351,13 +355,15 @@ export class ChangeStreamSyncWorker extends EventEmitter {
 
       const changeStream = config.model.watch([], watchOptions);
       if (!changeStream || typeof changeStream.on !== 'function') {
-        logger.warn(`[changeStreamSync] Model.watch did not return an EventEmitter for "${config.collectionName}"`);
+        const error = new Error(`Model.watch did not return an EventEmitter for "${config.collectionName}"`);
+        logger.warn(error.message);
+        if (startFresh) throw error;
         return;
       }
       this.activeStreams.set(config.collectionName, changeStream);
-      this.streamRetryCounts.delete(config.collectionName);
 
       changeStream.on('change', async (change: any) => {
+        this.streamRetryCounts.delete(config.collectionName);
         await this.handleChangeEvent(config, change);
       });
 
@@ -366,10 +372,14 @@ export class ChangeStreamSyncWorker extends EventEmitter {
       });
 
       changeStream.on('close', () => {
-        logger.debug?.(`[changeStreamSync] Stream closed for collection "${config.collectionName}"`);
+        if (this.activeStreams.get(config.collectionName) === changeStream) {
+          logger.warn(`[changeStreamSync] Change stream closed unexpectedly for "${config.collectionName}"`);
+          void this.handleStreamError(config, new Error('Change stream closed unexpectedly'));
+        }
       });
     } catch (err) {
       logger.error(`[changeStreamSync] Failed to start change stream for "${config.collectionName}"`, err as Error);
+      if (startFresh) throw err;
       await this.handleStreamError(config, err);
     }
   }
@@ -439,8 +449,8 @@ export class ChangeStreamSyncWorker extends EventEmitter {
         queueOp = { type: 'delete', id, resumeToken, deletedAt: changeTimestamp };
       }
     } else if (op === 'invalidate') {
-      logger.warn(`[changeStreamSync] Stream invalidated for collection "${config.collectionName}". Restarting stream.`);
-      await this.restartStreamForCollection(config);
+      logger.warn(`[changeStreamSync] Stream invalidated for collection "${config.collectionName}". Rebuilding its search index and restarting.`);
+      await this.recoverCollection(config, 'invalidate event');
       return;
     }
 
@@ -520,7 +530,7 @@ export class ChangeStreamSyncWorker extends EventEmitter {
    * 4. Persist resume token to Redis ONLY AFTER provider operation succeeds with atomic leader fencing.
    * If provider throws, resume token is NOT advanced and buffered items are retained for retry.
    */
-  public async flushCollectionBatch(config: CollectionSyncConfig): Promise<void> {
+  public async flushCollectionBatch(config: CollectionSyncConfig, forceDuringRecovery = false): Promise<void> {
     const timer = this.flushTimers.get(config.collectionName);
     if (timer) {
       clearTimeout(timer);
@@ -532,9 +542,20 @@ export class ChangeStreamSyncWorker extends EventEmitter {
       return;
     }
 
+    if (this.recoveringCollections.has(config.collectionName) && !forceDuringRecovery) return;
+
     // Guard against concurrent flushes for the same collection
     if (this.isFlushing.has(config.collectionName)) {
-      this.scheduleCollectionFlush(config);
+      if (forceDuringRecovery) {
+        await new Promise<void>((resolve) => {
+          const waiters = this.flushWaiters.get(config.collectionName) || [];
+          waiters.push(resolve);
+          this.flushWaiters.set(config.collectionName, waiters);
+        });
+        await this.flushCollectionBatch(config, true);
+      } else {
+        this.scheduleCollectionFlush(config);
+      }
       return;
     }
 
@@ -620,10 +641,12 @@ export class ChangeStreamSyncWorker extends EventEmitter {
         logger.error(`[changeStreamSync] Exceeded max flush retries (${this.maxFlushRetries}) for "${config.collectionName}". Checkpoint NOT advanced. Events retained in memory.`, err as Error);
       }
 
-      this.emit('error', err);
+      this.emitError(err);
       throw err;
     } finally {
       this.isFlushing.delete(config.collectionName);
+      for (const resolve of this.flushWaiters.get(config.collectionName) || []) resolve();
+      this.flushWaiters.delete(config.collectionName);
 
       // If items remain in batchMap (e.g. added during async flush) and no retry timer is pending, schedule next flush
       if (!this.flushTimers.has(config.collectionName)) {
@@ -640,43 +663,29 @@ export class ChangeStreamSyncWorker extends EventEmitter {
   }
 
   /**
-   * Handles stream errors with controlled backoff.
+   * Handles resumable and non-resumable stream failures with capped backoff.
    */
   private async handleStreamError(config: CollectionSyncConfig, err: any): Promise<void> {
     const errMsg = err instanceof Error ? err.message : String(err);
     const errCode = (err as any)?.code;
+    const invalidResumeToken = [260, 280, 286, 40585].includes(Number(errCode))
+      || /resume.?token|change.?stream.?history.?lost|cannot resume/i.test(errMsg);
 
-    // Check for invalid resume token / oplog history loss (code 286 or 40585)
-    if (errCode === 286 || errCode === 40585 || errMsg.includes('ChangeStreamHistoryLost') || errMsg.includes('ResumeTokenInvalid')) {
-      logger.error(`[changeStreamSync] FATAL: Resume token is invalid or oplog history was lost for "${config.collectionName}". Stream stopped safely.`, {
-        code: errCode,
-        error: errMsg,
-      });
-      await this.closeStreamForCollection(config.collectionName);
-      this.emit('error', err);
+    if (invalidResumeToken) {
+      await this.recoverCollection(config, errMsg);
       return;
     }
 
     const retries = this.streamRetryCounts.get(config.collectionName) || 0;
-    if (retries >= this.maxStreamRetries) {
-      logger.error(`[changeStreamSync] Exceeded max stream retries (${this.maxStreamRetries}) for "${config.collectionName}". Stream stopped.`, {
-        code: errCode,
-        error: errMsg,
-      });
-      await this.closeStreamForCollection(config.collectionName);
-      this.emit('error', err);
-      return;
-    }
-
     this.streamRetryCounts.set(config.collectionName, retries + 1);
-    const delayMs = Math.min(500 * Math.pow(2, retries), 5000);
+    const delayMs = Math.min(500 * Math.pow(2, retries), 30000);
 
-    logger.warn(`[changeStreamSync] Transient change stream error on "${config.collectionName}". Retrying in ${delayMs}ms (attempt ${retries + 1}/${this.maxStreamRetries}).`, {
+    logger.warn(`[changeStreamSync] Change stream error on "${config.collectionName}". Retrying in ${delayMs}ms (attempt ${retries + 1}).`, {
       code: errCode,
       error: errMsg,
     });
 
-    if (this._isLeader && !this._isStopping) {
+    if (this._isLeader && !this._isStopping && !this.streamRetryTimers.has(config.collectionName)) {
       const retryTimer = setTimeout(async () => {
         this.streamRetryTimers.delete(config.collectionName);
         if (this._isLeader && !this._isStopping) {
@@ -684,10 +693,80 @@ export class ChangeStreamSyncWorker extends EventEmitter {
         }
       }, delayMs);
       this.streamRetryTimers.set(config.collectionName, retryTimer);
-      if (typeof retryTimer.unref === 'function') {
-        retryTimer.unref();
-      }
+      if (typeof retryTimer.unref === 'function') retryTimer.unref();
     }
+  }
+
+  private async recoverCollection(config: CollectionSyncConfig, reason: string): Promise<void> {
+    const collectionName = config.collectionName;
+    if (!this._isLeader || this._isStopping || this.recoveryInProgress.has(collectionName)) return;
+
+    this.recoveringCollections.add(collectionName);
+    this.recoveryInProgress.add(collectionName);
+    try {
+      await this.closeStreamForCollection(collectionName);
+      if (!this._isLeader || this._isStopping) return;
+      await this.flushCollectionBatch(config, true);
+      if (!this._isLeader || this._isStopping) return;
+      // Subscribe without the invalid checkpoint so writes are captured during reconciliation.
+      await this.startStreamForCollection(config, true);
+      if (!this._isLeader || this._isStopping) return;
+      await this.searchProvider.clear(config.indexName);
+      if (!this._isLeader || this._isStopping) return;
+
+      const sourceDocuments = await config.model.find({}).lean();
+      if (!this._isLeader || this._isStopping) return;
+      const searchDocuments: Array<{ id: string; doc: SearchDocument }> = [];
+      for (const sourceDocument of sourceDocuments) {
+        const doc = mapDocumentToSearch(config.entityType, sourceDocument);
+        if (doc) searchDocuments.push({ id: doc.id, doc });
+      }
+
+      for (let offset = 0; offset < searchDocuments.length; offset += 500) {
+        if (!this._isLeader || this._isStopping) return;
+        await this.searchProvider.indexDocuments(config.indexName, searchDocuments.slice(offset, offset + 500));
+      }
+      if (!this._isLeader || this._isStopping) return;
+      const hasBufferedChanges = (this.pendingBatches.get(collectionName)?.size || 0) > 0;
+      if (hasBufferedChanges) {
+        await this.flushCollectionBatch(config, true);
+      } else {
+        await this.resumeTokenStore.clearResumeToken(collectionName);
+      }
+      if (!this._isLeader || this._isStopping) return;
+
+      logger.info(`[changeStreamSync] Reconciled index for "${collectionName}" after ${reason}`, {
+        indexed: searchDocuments.length,
+      });
+      this.streamRetryCounts.delete(collectionName);
+      this.recoveringCollections.delete(collectionName);
+      if ((this.pendingBatches.get(collectionName)?.size || 0) > 0) {
+        this.scheduleCollectionFlushWithDelay(config, 0);
+      }
+    } catch (err) {
+      const retries = this.streamRetryCounts.get(collectionName) || 0;
+      this.streamRetryCounts.set(collectionName, retries + 1);
+      const delayMs = Math.min(500 * Math.pow(2, retries), 30000);
+      logger.error(`[changeStreamSync] Recovery failed for "${collectionName}". Retrying in ${delayMs}ms.`, err as Error);
+      await this.closeStreamForCollection(collectionName);
+      if (this._isLeader && !this._isStopping) {
+        const retryTimer = setTimeout(() => {
+          this.streamRetryTimers.delete(collectionName);
+          void this.recoverCollection(config, reason);
+        }, delayMs);
+        this.streamRetryTimers.set(collectionName, retryTimer);
+        if (typeof retryTimer.unref === 'function') retryTimer.unref();
+      } else {
+        this.recoveringCollections.delete(collectionName);
+      }
+    } finally {
+      this.recoveryInProgress.delete(collectionName);
+    }
+  }
+
+  private emitError(err: unknown): void {
+    if (this.listenerCount('error') > 0) this.emit('error', err);
+    else logger.error('[changeStreamSync] Worker error', err instanceof Error ? err : new Error(String(err)));
   }
 
   private async restartStreamForCollection(config: CollectionSyncConfig): Promise<void> {
@@ -798,6 +877,8 @@ export class ChangeStreamSyncWorker extends EventEmitter {
     }
     this.streamRetryTimers.clear();
     this.flushRetryCounts.clear();
+    this.recoveringCollections.clear();
+    this.recoveryInProgress.clear();
 
     logger.info('[changeStreamSync] Change Stream worker shutdown complete.');
     this.emit('stopped');
