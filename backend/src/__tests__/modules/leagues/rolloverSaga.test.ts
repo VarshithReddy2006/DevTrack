@@ -515,6 +515,46 @@ describe('RolloverSagaOrchestrator — Adversarial Integration Tests', () => {
     expect(auditLog!.details.reason).toBe('leaderboard_sniping_detected');
   });
 
+  it('TOCTOU protection: committed cohort is never reverted to in_progress and partial committed recovery is mutually exclusive', async () => {
+    const ids = await makeCohort('gold', 'c1', 10);
+
+    // First rollover commits cleanly
+    const first = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT });
+    expect(first.finalized).toBe(10);
+
+    const logBefore = await LeagueRolloverLog.findOne({ weekKey: WEEK, division: 'gold', cohortId: 'c1' }).lean();
+    expect(logBefore?.status).toBe('committed');
+    const attemptsBefore = logBefore?.attempts ?? 1;
+
+    // Concurrent re-runs on a committed cohort with 0 active rows must skip without mutating attempts or status
+    const [r1, r2] = await Promise.all([
+      runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT }),
+      runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT }),
+    ]);
+    expect(r1.finalized).toBe(0);
+    expect(r2.finalized).toBe(0);
+
+    const logAfter = await LeagueRolloverLog.findOne({ weekKey: WEEK, division: 'gold', cohortId: 'c1' }).lean();
+    expect(logAfter?.status).toBe('committed');
+    expect(logAfter?.attempts).toBe(attemptsBefore);
+
+    // Simulate a partial committed state where 2 rows are still active and 2 workers race to recover
+    await LeagueStanding.updateMany(
+      { weekKey: WEEK, userId: { $in: ids.slice(0, 2).map(id => new Types.ObjectId(id)) } },
+      { $set: { status: 'active', finalizedAt: null } },
+    );
+
+    const [rec1, rec2] = await Promise.all([
+      runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT }),
+      runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT }),
+    ]);
+    // Exactly one worker recovers the partial cohort; the other skips
+    expect(rec1.finalized + rec2.finalized).toBe(2);
+    const finalLog = await LeagueRolloverLog.findOne({ weekKey: WEEK, division: 'gold', cohortId: 'c1' }).lean();
+    expect(finalLog?.status).toBe('committed');
+    expect(finalLog?.attempts).toBe(attemptsBefore + 1);
+  });
+
   it('compensation rollback: deletes seeded Redis cohort sorted sets and resets checkpoint logs when seeding fails midway', async () => {
     await makeCohort('gold', 'c1', 10);
     await makeCohort('silver', 'c1', 10);
