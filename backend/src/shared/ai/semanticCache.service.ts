@@ -92,7 +92,9 @@ export class SemanticCacheService {
     }
 
     const apiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-    const isGeminiDown = AIProviderAdapter.getProviderHealth('gemini')?.status === 'down';
+    const isGeminiDown = typeof AIProviderAdapter?.getProviderHealth === 'function'
+      ? AIProviderAdapter.getProviderHealth('gemini')?.status === 'down'
+      : false;
     if (apiKey && apiKey !== 'dummy_key_for_dev' && !isGeminiDown) {
       try {
         const genAI = new GoogleGenerativeAI(apiKey);
