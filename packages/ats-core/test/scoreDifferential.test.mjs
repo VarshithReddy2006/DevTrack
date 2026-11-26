@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
-import { checkKeywordCoverage, scoreDifferential } from '@devtrack/ats-core';
+import { checkKeywordCoverage, escapeRegExp, MAX_KEYWORD_COUNT, MAX_KEYWORD_LENGTH, sanitizeKeywords, scoreDifferential } from '@devtrack/ats-core';
 
 const good = 'Built reliable Node.js services handling requests for customers across multiple regions';
 const compare = (originalBullets, revisedBullets, targetKeywords = []) => scoreDifferential({ originalBullets, revisedBullets, targetKeywords });
@@ -78,4 +78,22 @@ test('a browser bundle computes identical differential results', async () => {
   const browser = runInNewContext(outputFiles[0].text + '\natsCore');
   const input = { originalBullets: [good], revisedBullets: ['Built C++ services with .NET handling requests for customers'], targetKeywords: ['Node.js', '.NET', 'C++'] };
   assert.equal(JSON.stringify(browser.scoreDifferential(input)), JSON.stringify(scoreDifferential(input)));
+});
+
+test('keyword sanitization enforces 64-char and 100-keyword bounds and prevents ReDoS', () => {
+  assert.equal(escapeRegExp('C++ .* (a+)+'), 'C\\+\\+ \\.\\* \\(a\\+\\)\\+');
+  const longSkill = 'x'.repeat(MAX_KEYWORD_LENGTH + 1);
+  const raw = ['Node.js', longSkill, '  ', ...Array.from({ length: 120 }, (_, i) => `kw-${i}`)];
+  const sanitized = sanitizeKeywords(raw);
+  assert.equal(sanitized.length, MAX_KEYWORD_COUNT);
+  assert.ok(!sanitized.includes(longSkill));
+
+  const evilBullet = `${'a'.repeat(950)}!`;
+  const evilKeywords = ['(a+)+$', '([a-z]+)*$', '.*', longSkill, ...Array.from({ length: 120 }, (_, i) => `(a+)+${i}`)];
+  scoreDifferential({ originalBullets: [evilBullet], revisedBullets: [`${evilBullet} Node.js`], targetKeywords: evilKeywords });
+  const start = performance.now();
+  const res = scoreDifferential({ originalBullets: [evilBullet], revisedBullets: [`${evilBullet} Node.js`], targetKeywords: evilKeywords });
+  const elapsed = performance.now() - start;
+  assert.ok(elapsed < 5, `Expected < 5ms, got ${elapsed}ms`);
+  assert.deepEqual(res.keywordChanges, { added: [], removed: [] });
 });

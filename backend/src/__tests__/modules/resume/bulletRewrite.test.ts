@@ -174,6 +174,17 @@ describe('ACR contracts and service', () => {
     const value = output(); value.rewrites.reverse();
     expect(BulletRewriteModelSchema.safeParse(value).success).toBe(false);
   });
+  it('handles regex metacharacters and oversized skillsToHighlight safely in differential scoring', async () => {
+    const start = performance.now();
+    const res = await bulletRewriteService.suggest('user', {
+      ...input,
+      skillsToHighlight: ['(a+)+$', '.*', '([a-zA-Z]+)*$', 'a'.repeat(80), 'API'],
+    });
+    const elapsedMs = performance.now() - start;
+    expect(elapsedMs).toBeLessThan(50);
+    expect(res.mode).toBe('ai');
+    expect(res.rewrites).toHaveLength(3);
+  });
 });
 
 describe('ACR HTTP route with fixture auth, real contract/mount/limiter middleware', () => {

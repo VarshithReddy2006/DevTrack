@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import jsonPatch from 'fast-json-patch';
+import { sanitizeKeywords } from '@devtrack/ats-core';
 import { ResumeBulletRevision, type IResumeBulletRevision } from '../../db/models/resumeBulletRevision.model.js';
 import { ResumeVariant, type IBulletEdit } from '../../db/models/resumeVariant.model.js';
 import { ResumeProfile } from '../../db/models/resumeProfile.model.js';
@@ -89,7 +90,7 @@ export class BulletRevisionService {
       if (!patch.length && restoredFrom === undefined) return resume;
       const profile = await ResumeProfile.findOne({ _id: resume.resumeProfileId, userId: owner }).session(session).lean();
       if (!profile) throw notFound();
-      const atsScore = scoreBulletEdits(after, { targetRole: profile.targetRole, keywords: resume.prioritizedSkills });
+      const atsScore = scoreBulletEdits(after, { targetRole: profile.targetRole, keywords: sanitizeKeywords(resume.prioritizedSkills ?? []) });
       const versionNumber = current + 1;
       const updated = await ResumeVariant.findOneAndUpdate({
         _id: id, userId: owner,
