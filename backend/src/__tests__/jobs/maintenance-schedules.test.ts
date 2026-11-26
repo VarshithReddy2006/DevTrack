@@ -18,6 +18,12 @@ const fx = vi.hoisted(() => {
     env: { SYNC_ENABLED: true, SYNC_INTERVAL_MINUTES: 15, SYNC_COOLDOWN_MS: 300_000, NODE_ENV: 'test' },
     runScheduledSync: vi.fn(async () => undefined),
     runScheduledMissionSweep: vi.fn(async () => undefined),
+    runQuestGenerationSweep: vi.fn(async (_now?: Date, _opts?: { shouldContinue?: () => boolean }) => ({ users: 0 })),
+    lockHeld: true,
+    withDistributedLock: vi.fn(async (_name: string, task: (lock: { isHeld: boolean }) => Promise<unknown>, _opts?: unknown) => {
+      const result = await task({ get isHeld() { return state.lockHeld; } });
+      return { executed: true, result };
+    }),
   };
   return state;
 });
@@ -59,7 +65,13 @@ vi.mock('../../shared/jobs/dlq.service.js', () => ({
 }));
 vi.mock('../../config/env.js', () => ({ env: fx.env }));
 vi.mock('../../shared/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
-vi.mock('../../shared/redis/index.js', () => ({ getRedisClient: () => ({ status: 'ready' }) }));
+vi.mock('../../shared/redis/index.js', () => ({
+  getRedisClient: () => ({ status: 'ready' }),
+  withDistributedLock: fx.withDistributedLock,
+}));
+vi.mock('../../modules/quests/questEngine.service.js', () => ({
+  runQuestGenerationSweep: fx.runQuestGenerationSweep,
+}));
 vi.mock('../../shared/redis/syncLock.service.js', () => ({ cleanupStaleLocks: vi.fn() }));
 vi.mock('../../shared/scheduler/missionScheduler.js', () => ({ runScheduledMissionSweep: fx.runScheduledMissionSweep }));
 vi.mock('../../shared/syncScheduler.js', () => ({ runScheduledSync: fx.runScheduledSync }));
@@ -88,6 +100,9 @@ beforeEach(() => {
   Object.assign(fx.env, { SYNC_ENABLED: true, SYNC_INTERVAL_MINUTES: 15 });
   fx.runScheduledSync.mockClear();
   fx.runScheduledMissionSweep.mockClear();
+  fx.runQuestGenerationSweep.mockClear();
+  fx.withDistributedLock.mockClear();
+  fx.lockHeld = true;
 });
 afterEach(() => stopMaintenanceWorker());
 
@@ -163,6 +178,21 @@ describe('maintenance worker dispatch', () => {
     await run('platform_sync_sweep');
     expect(fx.runScheduledSync).toHaveBeenCalledOnce();
     expect(fx.runScheduledMissionSweep).not.toHaveBeenCalled();
+  });
+
+  it('runs generate_quests under an auto-renewing 60s distributed lock and wires lock.isHeld to shouldContinue', async () => {
+    await run('generate_quests');
+
+    expect(fx.withDistributedLock).toHaveBeenCalledWith(
+      'generate_quests',
+      expect.any(Function),
+      { ttlMs: 60_000, autoRenew: true, renewIntervalMs: 30_000 },
+    );
+    expect(fx.runQuestGenerationSweep).toHaveBeenCalledOnce();
+    const sweepOptions = fx.runQuestGenerationSweep.mock.calls[0]?.[1] as { shouldContinue?: () => boolean } | undefined;
+    expect(sweepOptions?.shouldContinue?.()).toBe(true);
+    fx.lockHeld = false;
+    expect(sweepOptions?.shouldContinue?.()).toBe(false);
   });
 
   it.each([['generate_daily_missions', 'daily'], ['generate_weekly_missions', 'weekly']])(
