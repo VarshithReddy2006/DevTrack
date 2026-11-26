@@ -7,6 +7,7 @@ import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
 import { getRedisClient, isRedisConfigured } from '../redis/client.js';
 import { logger } from '../logger.js';
 import env from '../../config/env.js';
+import { AIProviderAdapter } from '../../modules/ai/provider/AIProviderAdapter.js';
 
 export interface SemanticCacheEntry {
   id: string;
@@ -91,7 +92,8 @@ export class SemanticCacheService {
     }
 
     const apiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-    if (apiKey && apiKey !== 'dummy_key_for_dev') {
+    const isGeminiDown = AIProviderAdapter.getProviderHealth('gemini')?.status === 'down';
+    if (apiKey && apiKey !== 'dummy_key_for_dev' && !isGeminiDown) {
       try {
         const genAI = new GoogleGenerativeAI(apiKey);
         const embeddingModel = genAI.getGenerativeModel({ model: 'text-embedding-004' });
