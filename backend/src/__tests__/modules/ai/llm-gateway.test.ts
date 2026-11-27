@@ -387,12 +387,14 @@ describe('LLMGateway & QuotaService', () => {
         feature: 'tight_feature',
       });
 
-      // Request 2 rejected with AIQuotaExceededError
+      // Request 2 needs the provider and is rejected with AIQuotaExceededError.
+      // bypassCache keeps it a miss: cache hits are free and would still be served.
       await expect(
         llmGateway.generateCompletion({
           userId,
           prompt: 'Quota call 2',
           feature: 'tight_feature',
+          bypassCache: true,
         })
       ).rejects.toThrow(AIQuotaExceededError);
     });
