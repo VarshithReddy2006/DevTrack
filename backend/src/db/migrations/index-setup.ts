@@ -4,14 +4,15 @@ import { ResumeSession } from '../models/resumeSession.model.js';
 import { DatasetIngestionState } from '../models/datasetIngestion.model.js';
 import { ActivityEvent } from '../models/activityEvent.model.js';
 
-export async function setupProductionIndexes(): Promise<void> {
-  const indexes: Array<{ collection: mongoose.Collection; key: IndexKey; name: string }> = [
-    { collection: ResumeSession.collection, key: { userId: 1, sessionId: 1 }, name: 'idx_userId_sessionId' },
-    { collection: DatasetIngestionState.collection, key: { status: 1 }, name: 'idx_ingestion_status' },
-    { collection: ActivityEvent.collection, key: { userId: 1, createdAt: -1 }, name: 'idx_userId_createdAt' },
-  ];
+// Indexes added outside the schemas. The index auditor treats them as expected, not orphaned.
+export const PRODUCTION_INDEXES: ReadonlyArray<{ model: mongoose.Model<any>; key: IndexKey; name: string }> = [
+  { model: ResumeSession, key: { userId: 1, sessionId: 1 }, name: 'idx_userId_sessionId' },
+  { model: DatasetIngestionState, key: { status: 1 }, name: 'idx_ingestion_status' },
+  { model: ActivityEvent, key: { userId: 1, createdAt: -1 }, name: 'idx_userId_createdAt' },
+];
 
-  for (const { collection, key, name } of indexes) {
+export async function setupProductionIndexes(): Promise<void> {
+  for (const { model: { collection }, key, name } of PRODUCTION_INDEXES) {
     try {
       await ensureIndex(collection, key, name);
     } catch (error) {
