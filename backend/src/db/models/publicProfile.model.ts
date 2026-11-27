@@ -6,6 +6,23 @@ export const PUBLIC_PROFILE_THEMES = ['modern-dark', 'clean-minimal-light', 'mon
 export type PublicProfileTheme = typeof PUBLIC_PROFILE_THEMES[number];
 export const DEFAULT_PUBLIC_PROFILE_THEME: PublicProfileTheme = 'modern-dark';
 
+export const ANTI_GAMING_REVIEW_STATUSES = ['pardoned', 'confirmed_gaming'] as const;
+export type AntiGamingReviewStatus = typeof ANTI_GAMING_REVIEW_STATUSES[number];
+
+/**
+ * Latest maintainer decision on a flag. A pardon covers the flags it was given for, so a
+ * rebuild with the same evidence keeps the profile unflagged; a new flag or a later clean
+ * audit ends it. Confirmed gaming keeps the profile flagged for good.
+ */
+export interface AntiGamingReview {
+  status: AntiGamingReviewStatus;
+  flags: string[];
+  note: string;
+  decidedBy: Types.ObjectId;
+  decidedAt: Date;
+  decisionId: Types.ObjectId;
+}
+
 export interface IPublicProfile extends Document {
   userId: Types.ObjectId;
   username: string;
@@ -106,7 +123,9 @@ export interface IPublicProfile extends Document {
     suspicionScore: number;
     flags: string[];
     lastAuditedAt: Date | null;
+    /** Effective state: the raw score check, adjusted by the latest maintainer review. */
     isFlagged: boolean;
+    review: AntiGamingReview | null;
   };
 
   seo: {
@@ -235,6 +254,17 @@ const PublicProfileSchema = new Schema<IPublicProfile>(
       flags: [{ type: String }],
       lastAuditedAt: { type: Date, default: null },
       isFlagged: { type: Boolean, default: false },
+      review: {
+        type: new Schema<AntiGamingReview>({
+          status: { type: String, enum: ANTI_GAMING_REVIEW_STATUSES, required: true },
+          flags: [{ type: String }],
+          note: { type: String, required: true },
+          decidedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+          decidedAt: { type: Date, required: true },
+          decisionId: { type: Schema.Types.ObjectId, ref: 'AntiGamingDecision', required: true },
+        }, { _id: false }),
+        default: null,
+      },
     },
 
     seo: {
@@ -254,7 +284,8 @@ const PublicProfileSchema = new Schema<IPublicProfile>(
 );
 
 PublicProfileSchema.index({ visibility: 1, isIndexable: 1 });
-PublicProfileSchema.index({ 'antiGaming.isFlagged': 1 });
+// Serves the admin review queue (flagged first, highest score first) and plain isFlagged lookups.
+PublicProfileSchema.index({ 'antiGaming.isFlagged': 1, 'antiGaming.suspicionScore': -1 });
 PublicProfileSchema.index({ 'snapshot.computedAt': -1 });
 
 export const PublicProfile = mongoose.model<IPublicProfile>('PublicProfile', PublicProfileSchema);
