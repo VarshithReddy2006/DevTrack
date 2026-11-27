@@ -54,6 +54,13 @@ export const llmTokenUsage = new Counter({
   registers: [metricsRegistry],
 });
 
+export const leagueSagaRollbacks = new Counter({
+  name: 'league_saga_rollbacks_total',
+  help: 'Total weekly league rollover saga rollbacks triggered',
+  labelNames: ['phase', 'division', 'step'] as const,
+  registers: [metricsRegistry],
+});
+
 export function recordLlmTokens(provider: string, model: string, type: 'prompt' | 'completion' | 'total', tokens: number): void {
   if (Number.isFinite(tokens) && tokens > 0) llmTokenUsage.inc({ provider, model, type }, tokens);
 }

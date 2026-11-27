@@ -2,6 +2,7 @@
 import { Schema, model, type Document, type Types } from 'mongoose';
 import { EVIDENCE_LEDGER_INDEX } from './evidenceLedgerIndex.js';
 import { evidenceInputHash, hasExternalFlag } from '../../modules/readiness/verification/evidenceProof.js';
+import type { ArchitecturalProfile } from '../../modules/readiness/dependencyAnalyzer.service.js';
 
 export const VERIFICATION_STATUSES = ['verified', 'partial', 'unverified', 'flagged'] as const;
 export const EVIDENCE_SUBJECT_TYPES = ['resume_claim', 'repo', 'dsa_rating', 'focus_consistency', 'revision_retention', 'certification'] as const;
@@ -60,6 +61,8 @@ export interface IResumeEvidenceClaim extends Document {
     lastVerifiedAt: Date | null;
     verificationAttempts: number;
     flaggedReason: string | null;
+    /** Dependency analysis of a verified GitHub commit's repository (dependencyAnalyzer.service.ts). */
+    architecturalProfile?: ArchitecturalProfile;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -178,6 +181,7 @@ const resumeEvidenceClaimSchema = new Schema<IResumeEvidenceClaim>(
       lastVerifiedAt: { type: Date, default: null },
       verificationAttempts: { type: Number, default: 0 },
       flaggedReason: { type: String, default: null },
+      architecturalProfile: { type: Schema.Types.Mixed, default: undefined },
     },
   },
   {

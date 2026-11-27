@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
-import { parseLeetCodeCalendar, calculateStreaksFromHeatmap, generateRollingHeatmap } from './dsa.service.js';
-import { DsaSubmission, PlatformStats } from '../../db/models/index.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { Types } from 'mongoose';
+import { parseLeetCodeCalendar, calculateStreaksFromHeatmap, generateRollingHeatmap, getHeatmap } from './dsa.service.js';
+import { DsaProblem, DsaSubmission, PlatformStats, User } from '../../db/models/index.js';
 
 describe('DSA Rolling Logic', () => {
   describe('parseLeetCodeCalendar', () => {
@@ -109,6 +110,11 @@ describe('DSA Rolling Logic', () => {
   });
 
   describe('generateRollingHeatmap', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
     it('produces exactly 365 contiguous unique UTC days ending on today UTC without timezone drift', async () => {
       const todayUtc = new Date().toISOString().split('T')[0];
       vi.spyOn(DsaSubmission, 'aggregate').mockResolvedValueOnce([
@@ -142,6 +148,115 @@ describe('DSA Rolling Logic', () => {
         const diffMs = curr.getTime() - prev.getTime();
         expect(diffMs).toBe(24 * 60 * 60 * 1000);
       }
+    });
+
+    it('buckets submissions across midnight boundaries in Asia/Kolkata, UTC, and America/Chicago (UTC-5)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-05-01T21:00:00.000Z') });
+
+      const user = await User.create({
+        clerkId: 'clerk_tz_1',
+        email: 'tz1@example.com',
+        username: 'tzuser1',
+        displayName: 'TZ User',
+        timezone: 'Asia/Kolkata',
+      });
+      const problem = await DsaProblem.create({
+        userId: user._id,
+        externalId: '4-A',
+        title: 'Watermelon',
+        platform: 'codeforces',
+        difficulty: 'easy',
+        url: 'https://codeforces.com/problemset/problem/4/A',
+        category: 'Math',
+        status: 'solved',
+      });
+
+      // 2026-05-01T21:00:00Z == 2026-05-02T02:30:00+05:30 (Asia/Kolkata) == 2026-05-01T16:00:00-05:00 (America/Chicago)
+      // 2026-05-02T03:00:00Z == 2026-05-01T22:00:00-05:00 (America/Chicago, CDT UTC-5)
+      await DsaSubmission.create([
+        {
+          userId: user._id,
+          problemId: problem._id,
+          externalId: 'cf-late-ist',
+          platform: 'codeforces',
+          status: 'accepted',
+          submittedAt: new Date('2026-05-01T21:00:00.000Z'),
+          language: 'cpp',
+        },
+        {
+          userId: user._id,
+          problemId: problem._id,
+          externalId: 'cf-late-chi',
+          platform: 'codeforces',
+          status: 'accepted',
+          submittedAt: new Date('2026-05-02T03:00:00.000Z'),
+          language: 'cpp',
+        },
+      ]);
+
+      // Uses User.timezone ('Asia/Kolkata') automatically when timeZone param is omitted
+      const istHeatmap = await generateRollingHeatmap(user._id.toString());
+      expect(istHeatmap).toHaveLength(365);
+      expect(istHeatmap[istHeatmap.length - 1]).toEqual({ date: '2026-05-02', count: 2 });
+
+      // Explicit UTC only sees 2026-05-01T21:00:00Z inside the window ending 2026-05-01 UTC
+      const utcHeatmap = await generateRollingHeatmap(user._id.toString(), 'UTC');
+      expect(utcHeatmap).toHaveLength(365);
+      expect(utcHeatmap[utcHeatmap.length - 1]).toEqual({ date: '2026-05-01', count: 1 });
+
+      // At 2026-05-02T03:30:00Z (2026-05-01T22:30:00-05:00 in America/Chicago), both submissions belong to 2026-05-01
+      vi.setSystemTime(new Date('2026-05-02T03:30:00.000Z'));
+      const chiHeatmap = await generateRollingHeatmap(user._id.toString(), 'America/Chicago');
+      expect(chiHeatmap).toHaveLength(365);
+      expect(chiHeatmap[chiHeatmap.length - 1]).toEqual({ date: '2026-05-01', count: 2 });
+
+      // getHeatmap also aligns currentStreak with the user's timezone
+      vi.setSystemTime(new Date('2026-05-01T21:00:00.000Z'));
+      const istSummary = await getHeatmap(user._id.toString());
+      expect(istSummary.currentStreak).toBe(1);
+    });
+
+    it('falls back safely to UTC when user or explicit timezone is invalid or missing', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-05-01T21:00:00.000Z') });
+
+      const user = await User.create({
+        clerkId: 'clerk_tz_invalid',
+        email: 'tzinvalid@example.com',
+        username: 'tzinvalid',
+        displayName: 'TZ Invalid',
+        timezone: 'Mars/Olympus_Mons',
+      });
+      const problem = await DsaProblem.create({
+        userId: user._id,
+        externalId: '71-A',
+        title: 'Way Too Long Words',
+        platform: 'codeforces',
+        difficulty: 'easy',
+        url: 'https://codeforces.com/problemset/problem/71/A',
+        category: 'Strings',
+        status: 'solved',
+      });
+      await DsaSubmission.create({
+        userId: user._id,
+        problemId: problem._id,
+        externalId: 'cf-fallback-1',
+        platform: 'codeforces',
+        status: 'accepted',
+        submittedAt: new Date('2026-05-01T21:00:00.000Z'),
+        language: 'cpp',
+      });
+
+      const fromUserInvalid = await generateRollingHeatmap(user._id.toString());
+      expect(fromUserInvalid).toHaveLength(365);
+      expect(fromUserInvalid[fromUserInvalid.length - 1]).toEqual({ date: '2026-05-01', count: 1 });
+
+      const fromArgInvalid = await generateRollingHeatmap(user._id.toString(), 'Not/A_Timezone');
+      expect(fromArgInvalid).toHaveLength(365);
+      expect(fromArgInvalid[fromArgInvalid.length - 1]).toEqual({ date: '2026-05-01', count: 1 });
+
+      const missingUserHeatmap = await generateRollingHeatmap(new Types.ObjectId().toString());
+      expect(missingUserHeatmap).toHaveLength(365);
+      expect(missingUserHeatmap[missingUserHeatmap.length - 1].date).toBe('2026-05-01');
     });
   });
 });

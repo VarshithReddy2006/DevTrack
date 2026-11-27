@@ -7,8 +7,13 @@
 import { Types } from 'mongoose';
 import { LeagueStanding, UserSettings, type LeagueDivision, type LeagueOutcome } from '../../db/models/index.js';
 import { LEAGUE_DIVISIONS } from '../../db/models/index.js';
-import { LeagueRolloverLog, type ILeagueRolloverLog } from '../../db/models/leagueRolloverLog.model.js';
+import {
+  LeagueRolloverLog,
+  type ILeagueRolloverLog,
+  type ILeagueRolloverNextWeekPlacement,
+} from '../../db/models/leagueRolloverLog.model.js';
 import { logger } from '../../shared/logger.js';
+import { leagueSagaRollbacks } from '../../shared/observability/metrics.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { assignCohorts } from './cohorts.js';
 import { cohortKey } from './leagues.constants.js';
@@ -207,7 +212,8 @@ export class RolloverSagaOrchestrator {
 
   /**
    * Allocates finalized and opted-in users to new cohorts for the upcoming week and seeds Redis boards.
-   * On failure, rolls back inserted next-week standings to maintain database consistency.
+   * Records exact modified user IDs and prior placement markers in the saga log before mutating,
+   * and executes full inverse compensation across MongoDB and Redis on failure.
    */
   private async seedNextWeekCohorts(
     weekKey: string,
@@ -215,8 +221,13 @@ export class RolloverSagaOrchestrator {
     upcomingStart: Date,
   ): Promise<{ assigned: number }> {
     const finished = await LeagueStanding.find({ weekKey, status: 'finalized' })
-      .select('userId nextDivision')
-      .lean<Array<{ userId: Types.ObjectId; nextDivision: LeagueDivision }>>();
+      .select('userId division cohortId nextDivision')
+      .lean<Array<{
+        userId: Types.ObjectId;
+        division: LeagueDivision;
+        cohortId: string;
+        nextDivision: LeagueDivision;
+      }>>();
 
     const optedIn = new Set<string>();
     const finishedUserIds = finished.map((f) => f.userId);
@@ -233,31 +244,95 @@ export class RolloverSagaOrchestrator {
       }
     }
 
+    const priorOriginByUser = new Map<string, { division: LeagueDivision; cohortId: string }>();
     const byDivision = new Map<LeagueDivision, string[]>();
     for (const row of finished) {
       const id = row.userId.toString();
       if (!optedIn.has(id)) continue;
+      priorOriginByUser.set(id, { division: row.division, cohortId: row.cohortId });
       byDivision.set(row.nextDivision, [...(byDivision.get(row.nextDivision) ?? []), id]);
     }
 
-    const placements: Array<{ userId: string; division: LeagueDivision; cohortId: string }> = [];
+    const placements: Array<{
+      userId: string;
+      previousDivision: LeagueDivision;
+      previousCohortId: string;
+      division: LeagueDivision;
+      cohortId: string;
+    }> = [];
     for (const division of LEAGUE_DIVISIONS) {
       const ids = byDivision.get(division);
       if (!ids) continue;
       for (const { userId, cohortId } of assignCohorts(ids, `${upcomingWeekKey}:${division}`)) {
-        placements.push({ userId, division, cohortId });
+        const origin = priorOriginByUser.get(userId);
+        placements.push({
+          userId,
+          previousDivision: origin?.division ?? division,
+          previousCohortId: origin?.cohortId ?? cohortId,
+          division,
+          cohortId,
+        });
       }
     }
 
-    // Advance cohort checkpoint logs to 'seed_next_cohorts'
+    // Identify which users already have an upcoming-week standing so rollback never deletes pre-existing rows
+    const preExistingUserIds = new Set<string>();
+    const placementObjIds = placements.map((p) => new Types.ObjectId(p.userId));
+    for (let i = 0; i < placementObjIds.length; i += WRITE_BATCH) {
+      const batchIds = placementObjIds.slice(i, i + WRITE_BATCH);
+      const existingRows = await LeagueStanding.find({
+        weekKey: upcomingWeekKey,
+        userId: { $in: batchIds },
+      })
+        .select('userId')
+        .lean<Array<{ userId: Types.ObjectId }>>();
+      for (const row of existingRows) {
+        preExistingUserIds.add(row.userId.toString());
+      }
+    }
+
+    const newPlacementUserIds = placements
+      .filter((p) => !preExistingUserIds.has(p.userId))
+      .map((p) => p.userId);
+    const newPlacementUserIdSet = new Set(newPlacementUserIds);
+
+    // Record exact modified user IDs and prior placement metadata per cohort in the saga log
+    const placementsByOriginCohort = new Map<string, ILeagueRolloverNextWeekPlacement[]>();
+    for (const p of placements) {
+      const originKey = `${p.previousDivision}:${p.previousCohortId}`;
+      const list = placementsByOriginCohort.get(originKey) ?? [];
+      list.push({
+        userId: p.userId,
+        previousDivision: p.previousDivision,
+        previousCohortId: p.previousCohortId,
+        targetDivision: p.division,
+        targetCohortId: p.cohortId,
+        existedPrior: preExistingUserIds.has(p.userId),
+      });
+      placementsByOriginCohort.set(originKey, list);
+    }
+
+    // Advance cohort checkpoint logs to 'seed_next_cohorts' and persist placement audit snapshot
     await LeagueRolloverLog.updateMany(
       { weekKey, status: 'committed' },
       { $set: { currentStep: 'seed_next_cohorts' } },
     );
+    if (placementsByOriginCohort.size > 0) {
+      await LeagueRolloverLog.bulkWrite(
+        [...placementsByOriginCohort.entries()].map(([originKey, cohortPlacements]) => {
+          const [prevDiv, prevCohortId] = originKey.split(':') as [LeagueDivision, string];
+          return {
+            updateOne: {
+              filter: { weekKey, division: prevDiv, cohortId: prevCohortId, status: 'committed' as const },
+              update: { $set: { 'snapshot.nextWeekPlacements': cohortPlacements } },
+            },
+          };
+        }),
+      );
+    }
 
     let assigned = 0;
-    const insertedUserIds: string[] = [];
-    const seededKeys: string[] = [];
+    const seededEntries: Array<{ key: string; existedBefore: boolean; addedMembers: string[] }> = [];
 
     try {
       for (let i = 0; i < placements.length; i += WRITE_BATCH) {
@@ -288,9 +363,6 @@ export class RolloverSagaOrchestrator {
           })),
         );
         assigned += writes.upsertedCount;
-        for (const p of batch) {
-          insertedUserIds.push(p.userId);
-        }
       }
 
       const upcoming = await LeagueStanding.find({ weekKey: upcomingWeekKey, status: 'active' })
@@ -306,56 +378,87 @@ export class RolloverSagaOrchestrator {
       }
 
       for (const [key, entry] of members) {
-        seededKeys.push(key);
+        const existedBefore = await this.store.exists(key);
+        const addedMembers = entry.ids.filter((id) => newPlacementUserIdSet.has(id));
+        seededEntries.push({ key, existedBefore, addedMembers });
         await this.store.seed(key, entry.ids);
       }
 
+      await LeagueRolloverLog.updateMany(
+        { weekKey, status: 'committed', currentStep: 'seed_next_cohorts' },
+        { $set: { error: null } },
+      );
+
       return { assigned };
     } catch (err) {
-      logger.error('[saga] Next-week cohort placement/seeding failed, triggering compensation rollback', {
-        event: 'league_next_week_seeding_failed',
-        weekKey,
-        upcomingWeekKey,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const failureError = err instanceof Error ? err : new Error(String(err));
+      const purgedRedisKeys: string[] = [];
 
       // Inverse compensation for Redis sorted sets seeded before failure
-      for (const key of seededKeys) {
+      for (const entry of seededEntries) {
         try {
-          await this.store.del(key);
+          if (!entry.existedBefore) {
+            await this.store.del(entry.key);
+            purgedRedisKeys.push(entry.key);
+          } else if (entry.addedMembers.length > 0) {
+            await this.store.removeMany(entry.key, entry.addedMembers);
+            purgedRedisKeys.push(entry.key);
+          }
         } catch (cleanupErr) {
           logger.warn('[saga] Failed to clean up Redis cohort key during rollback', {
             event: 'league_next_week_redis_cleanup_failed',
             weekKey,
             upcomingWeekKey,
-            key,
+            key: entry.key,
             error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
           });
         }
       }
 
-      // Inverse compensation for step 4: clean up any inserted next-week standings
-      if (insertedUserIds.length > 0) {
+      // Inverse compensation for MongoDB: remove only rows newly inserted by this run (never pre-existing rows)
+      for (let i = 0; i < newPlacementUserIds.length; i += WRITE_BATCH) {
+        const batch = newPlacementUserIds.slice(i, i + WRITE_BATCH);
         await LeagueStanding.deleteMany({
           weekKey: upcomingWeekKey,
-          userId: { $in: insertedUserIds.map(id => new Types.ObjectId(id)) },
+          userId: { $in: batch.map(id => new Types.ObjectId(id)) },
         });
       }
 
-      // Reset cohort checkpoint logs from 'seed_next_cohorts' back to 'persist_standings' with error context
+      const rolledBackAt = new Date();
+      // Reset cohort checkpoint logs from 'seed_next_cohorts' back to 'persist_standings' with rollback audit
       await LeagueRolloverLog.updateMany(
         { weekKey, status: 'committed', currentStep: 'seed_next_cohorts' },
         {
           $set: {
             currentStep: 'persist_standings',
             error: {
-              message: err instanceof Error ? err.message : String(err),
+              message: failureError.message,
               step: 'seed_next_cohorts',
-              occurredAt: new Date(),
+              occurredAt: rolledBackAt,
+            },
+            lastRollback: {
+              phase: 'next_week_seeding',
+              step: 'seed_next_cohorts',
+              affectedUserIds: newPlacementUserIds,
+              purgedRedisKeys,
+              rolledBackAt,
+              reason: failureError.message,
             },
           },
         },
       );
+
+      this.emitRollbackTelemetry({
+        phase: 'next_week_seeding',
+        weekKey,
+        upcomingWeekKey,
+        division: 'all',
+        cohortId: 'all',
+        step: 'seed_next_cohorts',
+        affectedUserIds: newPlacementUserIds,
+        purgedRedisKeys,
+        error: failureError,
+      });
 
       throw err;
     }
@@ -481,6 +584,7 @@ export class RolloverSagaOrchestrator {
     };
 
     const executedSteps: ISagaStep[] = [];
+    let failedStep: ISagaStep | null = null;
     let failureError: Error | null = null;
 
     for (const step of sagaCohortSteps) {
@@ -491,6 +595,7 @@ export class RolloverSagaOrchestrator {
         await step.execute(ctx);
         executedSteps.push(step);
       } catch (err) {
+        failedStep = step;
         failureError = err instanceof Error ? err : new Error(String(err));
         logger.error(`[saga] Step '${step.name}' failed for cohort ${division}:${cohortId}`, failureError);
         break;
@@ -498,8 +603,9 @@ export class RolloverSagaOrchestrator {
     }
 
     if (failureError) {
-      // Execute inverse compensation in reverse order
-      await this.compensateExecutedSteps(executedSteps, ctx, failureError);
+      // Include the failed step itself so partial writes inside it are also compensated idempotently
+      const stepsToCompensate = failedStep ? [...executedSteps, failedStep] : executedSteps;
+      await this.compensateExecutedSteps(stepsToCompensate, ctx, failureError);
       return {
         cohortId,
         division,
@@ -537,7 +643,10 @@ export class RolloverSagaOrchestrator {
     ctx: SagaCohortContext,
     error: Error,
   ): Promise<void> {
-    logger.warn(`[saga] Rolling back cohort ${ctx.division}:${ctx.cohortId} via inverse compensation`);
+    const affectedUserIds =
+      ctx.affectedUserIds && ctx.affectedUserIds.length > 0
+        ? ctx.affectedUserIds
+        : (ctx.log.snapshot?.previousStandings?.map(s => s.userId) ?? []);
 
     for (const step of [...executedSteps].reverse()) {
       try {
@@ -547,15 +656,79 @@ export class RolloverSagaOrchestrator {
       }
     }
 
+    const rolledBackAt = new Date();
     ctx.log.status = 'compensated';
-    ctx.log.compensatedAt = new Date();
+    ctx.log.compensatedAt = rolledBackAt;
     ctx.log.error = {
       message: error.message,
       step: ctx.log.currentStep,
-      occurredAt: new Date(),
+      occurredAt: rolledBackAt,
       stack: error.stack,
     };
+    ctx.log.lastRollback = {
+      phase: 'cohort_finalization',
+      step: ctx.log.currentStep,
+      affectedUserIds,
+      purgedRedisKeys: [],
+      rolledBackAt,
+      reason: error.message,
+    };
     await ctx.log.save();
+
+    this.emitRollbackTelemetry({
+      phase: 'cohort_finalization',
+      weekKey: ctx.weekKey,
+      upcomingWeekKey: ctx.upcomingWeekKey,
+      division: ctx.division,
+      cohortId: ctx.cohortId,
+      step: ctx.log.currentStep,
+      affectedUserIds,
+      purgedRedisKeys: [],
+      error,
+    });
+  }
+
+  private emitRollbackTelemetry(params: {
+    phase: 'cohort_finalization' | 'next_week_seeding';
+    weekKey: string;
+    upcomingWeekKey: string;
+    division: string;
+    cohortId: string;
+    step: string;
+    affectedUserIds: string[];
+    purgedRedisKeys: string[];
+    error: Error;
+  }): void {
+    const timestamp = new Date().toISOString();
+    const payload = {
+      weekKey: params.weekKey,
+      upcomingWeekKey: params.upcomingWeekKey,
+      phase: params.phase,
+      division: params.division,
+      cohortId: params.cohortId,
+      step: params.step,
+      affectedUsers: params.affectedUserIds.length,
+      affectedUserIds: params.affectedUserIds,
+      purgedRedisKeys: params.purgedRedisKeys,
+      error: params.error.message,
+      timestamp,
+    };
+
+    logger.error('[saga] League rollover saga rollback executed', {
+      event: 'league_saga_rollback',
+      ...payload,
+    });
+    leagueSagaRollbacks.inc({
+      phase: params.phase,
+      division: params.division,
+      step: params.step,
+    });
+    eventBus.emit('league.saga_rollback', payload);
+    eventBus.publish({
+      type: 'league.saga_rollback' as any,
+      timestamp,
+      payload,
+    });
   }
 
   /**
