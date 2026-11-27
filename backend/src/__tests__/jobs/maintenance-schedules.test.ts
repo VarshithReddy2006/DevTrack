@@ -24,6 +24,8 @@ const fx = vi.hoisted(() => {
       const result = await task({ get isHeld() { return state.lockHeld; } });
       return { executed: true, result };
     }),
+    verifyCustomDomain: vi.fn(async () => null),
+    auditCustomDomains: vi.fn(async () => undefined),
   };
   return state;
 });
@@ -78,6 +80,9 @@ vi.mock('../../shared/syncScheduler.js', () => ({ runScheduledSync: fx.runSchedu
 vi.mock('../../db/models/index.js', () => ({ User: {}, UserAnalytics: {}, UserStreakLog: {} }));
 vi.mock('../../modules/activity/focusEngine.service.js', () => ({ focusEngine: { reapStaleSessions: vi.fn() } }));
 vi.mock('../../modules/profile/antiGaming.worker.js', () => ({ AntiGamingWorker: { startAuditJob: vi.fn() } }));
+vi.mock('../../modules/profile/customDomainVerifier.worker.js', () => ({
+  verifyCustomDomain: fx.verifyCustomDomain, auditCustomDomains: fx.auditCustomDomains,
+}));
 vi.mock('../../shared/jobs/queueFactory.js', () => ({ getNotificationQueue: vi.fn() }));
 vi.mock('../../modules/daily-challenge/daily-challenge.service.js', () => ({ seedDailyChallengeWindow: vi.fn() }));
 vi.mock('../../modules/daily-challenge/daily-challenge.time.js', () => ({
@@ -103,6 +108,8 @@ beforeEach(() => {
   fx.runQuestGenerationSweep.mockClear();
   fx.withDistributedLock.mockClear();
   fx.lockHeld = true;
+  fx.verifyCustomDomain.mockClear();
+  fx.auditCustomDomains.mockClear();
 });
 afterEach(() => stopMaintenanceWorker());
 
@@ -208,6 +215,25 @@ describe('maintenance worker dispatch', () => {
     await run('not_a_task');
     expect(fx.runScheduledSync).not.toHaveBeenCalled();
     expect(fx.runScheduledMissionSweep).not.toHaveBeenCalled();
+  });
+});
+
+describe('custom domain jobs', () => {
+  it('re-checks custom domains weekly, Sundays 04:00 UTC, under a stable id', async () => {
+    await scheduleMaintenanceTasks();
+
+    expect([...fx.repeatables.values()].find(r => r.opts.jobId === 'maintenance-audit-custom-domains')).toMatchObject({
+      name: 'audit-custom-domains', data: { task: 'audit_custom_domains' }, opts: { repeat: { pattern: '0 4 * * 0', tz: 'UTC' } },
+    });
+  });
+
+  it('dispatches the weekly audit and single verifications to the verifier', async () => {
+    startMaintenanceWorker();
+    await fx.processor!({ id: 'job-2', data: { task: 'audit_custom_domains' }, opts: {}, timestamp: Date.now() });
+    await fx.processor!({ id: 'job-3', data: { task: 'verify_custom_domain', domainId: 'domain-1' }, opts: {}, timestamp: Date.now() });
+
+    expect(fx.auditCustomDomains).toHaveBeenCalledOnce();
+    expect(fx.verifyCustomDomain).toHaveBeenCalledExactlyOnceWith('domain-1');
   });
 });
 
