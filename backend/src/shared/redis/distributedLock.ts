@@ -5,10 +5,24 @@
 import crypto from 'node:crypto';
 import type Redis from 'ioredis';
 import { getRedisClient } from './client.js';
+import { type FencingToken } from './fencingToken.js';
 import { logger } from '../logger.js';
+
+export type { FencingToken };
 
 export const DEFAULT_LOCK_TTL_MS = 60_000; // 60 seconds
 export const DEFAULT_LOCK_PREFIX = 'devtrack:lock:job:';
+export const DEFAULT_FENCE_PREFIX = 'lock:fence:';
+export const DEFAULT_CLOCK_DRIFT_FACTOR = 0.01;
+
+// Atomic Lua Script: Acquire lock with SET NX PX and increment monotonic fencing counter
+export const ACQUIRE_WITH_FENCE_LUA_SCRIPT = `
+if redis.call("set", KEYS[1], ARGV[1], "PX", tonumber(ARGV[2]), "NX") then
+  return redis.call("incr", KEYS[2])
+else
+  return 0
+end
+`.trim();
 
 // Atomic Lua Script: Release lock strictly if caller owns the current lock token
 export const RELEASE_LOCK_LUA_SCRIPT = `
@@ -31,8 +45,11 @@ end
 export interface DistributedLockOptions {
   ttlMs?: number;
   lockKey?: string;
+  fenceKey?: string;
   ownerToken?: string;
   redisClient?: Redis;
+  redisClients?: Redis[];
+  clockDriftFactor?: number;
   autoRenew?: boolean;
   renewIntervalMs?: number;
   fallbackOnRedisUnavailable?: boolean;
@@ -50,9 +67,11 @@ export interface DistributedLockRetryOptions extends DistributedLockOptions {
 
 export interface DistributedLockHandle {
   readonly lockKey: string;
+  readonly fenceKey: string;
   readonly ownerToken: string;
   readonly ttlMs: number;
   readonly isHeld: boolean;
+  readonly fencingToken: FencingToken | null;
   release(): Promise<boolean>;
   extend(additionalTtlMs?: number): Promise<boolean>;
   startAutoRenew(intervalMs?: number): void;
@@ -107,9 +126,16 @@ interface TestFallbackLockEntry {
   expiresAt: number;
 }
 
-// Single-process in-memory lock registry used strictly when NODE_ENV === 'test'
-// and fallbackOnRedisUnavailable === true, preserving mutual exclusion in test suites.
+// Single-process in-memory lock & monotonic fence registries used strictly in
+// test fallback mode (or when a mock client lacks Redis incr/eval primitives).
 const testFallbackLocks = new Map<string, TestFallbackLockEntry>();
+const testFallbackFenceTokens = new Map<string, number>();
+
+function nextFallbackFenceToken(fenceKey: string): number {
+  const next = (testFallbackFenceTokens.get(fenceKey) ?? 0) + 1;
+  testFallbackFenceTokens.set(fenceKey, next);
+  return next;
+}
 
 function getLiveTestFallbackLock(lockKey: string): TestFallbackLockEntry | null {
   const entry = testFallbackLocks.get(lockKey);
@@ -122,11 +148,12 @@ function getLiveTestFallbackLock(lockKey: string): TestFallbackLockEntry | null 
 }
 
 /**
- * Clears in-memory test-harness locks. No-op outside NODE_ENV === 'test'.
+ * Clears in-memory test-harness locks and fence counters. No-op outside NODE_ENV === 'test'.
  */
 export function clearTestFallbackLocks(): void {
   if (process.env.NODE_ENV === 'test') {
     testFallbackLocks.clear();
+    testFallbackFenceTokens.clear();
   }
 }
 
@@ -145,14 +172,41 @@ export function formatJobLockKey(nameOrKey: string): string {
 }
 
 /**
- * Distributed Lock instance coordinating mutual exclusion in Redis with owner fencing.
+ * Formats the monotonic fencing-token counter key (`lock:fence:<resource>`).
+ */
+export function formatFenceKey(nameOrKey: string): string {
+  if (nameOrKey.startsWith(DEFAULT_FENCE_PREFIX)) {
+    return nameOrKey;
+  }
+  const resource = nameOrKey.startsWith(DEFAULT_LOCK_PREFIX)
+    ? nameOrKey.slice(DEFAULT_LOCK_PREFIX.length)
+    : nameOrKey;
+  return `${DEFAULT_FENCE_PREFIX}${resource}`;
+}
+
+function isClientReady(redis: Redis | null | undefined): redis is Redis {
+  return Boolean(
+    redis &&
+      redis.status === 'ready' &&
+      (typeof redis.eval === 'function' || typeof redis.set === 'function')
+  );
+}
+
+/**
+ * Distributed Lock instance coordinating mutual exclusion in Redis with owner
+ * fencing, optional multi-node Redlock quorum, and monotonic fencing tokens.
  */
 export class DistributedLock implements DistributedLockHandle {
   public readonly lockKey: string;
+  public readonly fenceKey: string;
   public readonly ttlMs: number;
   public readonly ownerToken: string;
   private redisClientOverride: Redis | null = null;
+  private redisClientsOverride: Redis[] | null = null;
+  private readonly clockDriftFactor: number;
   private _isHeld = false;
+  private _fencingToken: FencingToken | null = null;
+  private heldClients: Redis[] = [];
   private autoRenewTimer: NodeJS.Timeout | null = null;
   private fallbackMode = false;
   private _lastFailureReason: LockAcquireFailureReason = null;
@@ -160,8 +214,16 @@ export class DistributedLock implements DistributedLockHandle {
 
   constructor(nameOrKey: string, options: DistributedLockOptions = {}, fallbackMode = false) {
     this.lockKey = options.lockKey || formatJobLockKey(nameOrKey);
+    this.fenceKey = options.fenceKey || formatFenceKey(options.lockKey || nameOrKey);
     this.ttlMs = options.ttlMs && options.ttlMs > 0 ? options.ttlMs : DEFAULT_LOCK_TTL_MS;
     this.ownerToken = options.ownerToken || `${process.pid}-${crypto.randomUUID()}`;
+    this.clockDriftFactor =
+      options.clockDriftFactor !== undefined && options.clockDriftFactor >= 0
+        ? options.clockDriftFactor
+        : DEFAULT_CLOCK_DRIFT_FACTOR;
+    if (options.redisClients && options.redisClients.length > 0) {
+      this.redisClientsOverride = [...options.redisClients];
+    }
     if (options.redisClient) {
       this.redisClientOverride = options.redisClient;
     }
@@ -180,6 +242,10 @@ export class DistributedLock implements DistributedLockHandle {
     return this._isHeld;
   }
 
+  public get fencingToken(): FencingToken | null {
+    return this._fencingToken;
+  }
+
   public get lastFailureReason(): LockAcquireFailureReason {
     return this._lastFailureReason;
   }
@@ -192,11 +258,70 @@ export class DistributedLock implements DistributedLockHandle {
     return this.redisClientOverride || getRedisClient();
   }
 
+  private getClients(): Redis[] {
+    if (this.redisClientsOverride && this.redisClientsOverride.length > 0) {
+      return this.redisClientsOverride;
+    }
+    return [this.getClient()];
+  }
+
+  private async acquireOnNode(redis: Redis): Promise<{ acquired: boolean; token: FencingToken | null }> {
+    if (typeof redis.eval === 'function') {
+      const raw = await redis.eval(
+        ACQUIRE_WITH_FENCE_LUA_SCRIPT,
+        2,
+        this.lockKey,
+        this.fenceKey,
+        this.ownerToken,
+        this.ttlMs
+      );
+      const token = Number(raw);
+      if (Number.isFinite(token) && token > 0) {
+        return { acquired: true, token };
+      }
+      return { acquired: false, token: null };
+    }
+
+    const result = await redis.set(this.lockKey, this.ownerToken, 'PX', this.ttlMs, 'NX');
+    if (result !== 'OK') {
+      return { acquired: false, token: null };
+    }
+
+    const incrFn = (redis as unknown as { incr?: (key: string) => Promise<number> }).incr;
+    const token =
+      typeof incrFn === 'function'
+        ? Number(await incrFn.call(redis, this.fenceKey))
+        : nextFallbackFenceToken(this.fenceKey);
+    return { acquired: true, token };
+  }
+
+  private async releaseOnNode(redis: Redis): Promise<boolean> {
+    if (!redis || redis.status !== 'ready') {
+      return false;
+    }
+    if (typeof redis.eval === 'function') {
+      const result = await redis.eval(RELEASE_LOCK_LUA_SCRIPT, 1, this.lockKey, this.ownerToken);
+      return result === 1;
+    }
+    return false;
+  }
+
+  private async extendOnNode(redis: Redis, newTtl: number): Promise<boolean> {
+    if (!redis || redis.status !== 'ready' || typeof redis.eval !== 'function') {
+      return false;
+    }
+    const result = await redis.eval(EXTEND_LOCK_LUA_SCRIPT, 1, this.lockKey, this.ownerToken, newTtl);
+    return result === 1;
+  }
+
   /**
-   * Attempts to acquire the distributed lock atomically via SET NX PX.
+   * Attempts to acquire the distributed lock atomically with a monotonic fencing token.
+   * Uses a majority quorum across nodes with clock-drift adjustment when multiple clients are configured.
    */
   public async acquire(): Promise<boolean> {
     this._isHeld = false;
+    this._fencingToken = null;
+    this.heldClients = [];
     this._lastFailureReason = null;
     this._lastAcquireError = null;
 
@@ -214,51 +339,124 @@ export class DistributedLock implements DistributedLockHandle {
         ownerToken: this.ownerToken,
         expiresAt: Date.now() + this.ttlMs,
       });
+      this._fencingToken = nextFallbackFenceToken(this.fenceKey);
       this._isHeld = true;
       return true;
     }
 
-    const redis = this.getClient();
-    if (!redis || redis.status !== 'ready' || typeof redis.set !== 'function') {
-      logger.warn('[distributedLock] Redis not ready or unavailable for lock acquisition', {
+    const clients = this.getClients();
+    if (clients.length === 1) {
+      const redis = clients[0];
+      const clientStatus = redis?.status;
+      if (!isClientReady(redis)) {
+        logger.warn('[distributedLock] Redis not ready or unavailable for lock acquisition', {
+          lockKey: this.lockKey,
+          status: clientStatus,
+        });
+        this._lastFailureReason = 'redis_not_ready';
+        return false;
+      }
+
+      try {
+        const { acquired, token } = await this.acquireOnNode(redis);
+        this._isHeld = acquired;
+        if (acquired) {
+          this._fencingToken = token;
+          this.heldClients = [redis];
+          logger.debug('[distributedLock] Lock acquired', {
+            lockKey: this.lockKey,
+            fenceKey: this.fenceKey,
+            fencingToken: token,
+            ownerToken: this.ownerToken,
+            ttlMs: this.ttlMs,
+          });
+        } else {
+          this._lastFailureReason = 'lock_held';
+          logger.info('[distributedLock] Lock acquisition skipped (already held)', {
+            lockKey: this.lockKey,
+            ttlMs: this.ttlMs,
+          });
+        }
+        return acquired;
+      } catch (err) {
+        const normalizedError = err instanceof Error ? err : new Error(String(err));
+        logger.error('[distributedLock] Failed to acquire lock due to Redis error', normalizedError, {
+          lockKey: this.lockKey,
+          error: normalizedError.message,
+        });
+        this._isHeld = false;
+        this._fencingToken = null;
+        this._lastFailureReason = 'redis_error';
+        this._lastAcquireError = normalizedError;
+        return false;
+      }
+    }
+
+    // Multi-node Redlock quorum acquisition
+    const quorum = Math.floor(clients.length / 2) + 1;
+    const readyClients = clients.filter(isClientReady);
+    if (readyClients.length < quorum) {
+      logger.warn('[distributedLock] Insufficient ready Redis nodes for Redlock quorum', {
         lockKey: this.lockKey,
-        status: redis?.status,
+        readyNodes: readyClients.length,
+        totalNodes: clients.length,
+        quorum,
       });
       this._lastFailureReason = 'redis_not_ready';
       return false;
     }
 
-    try {
-      const result = await redis.set(this.lockKey, this.ownerToken, 'PX', this.ttlMs, 'NX');
-      const acquired = result === 'OK';
-      this._isHeld = acquired;
+    const startMs = Date.now();
+    const outcomes = await Promise.allSettled(readyClients.map((client) => this.acquireOnNode(client)));
+    const acquiredNodes: Array<{ client: Redis; token: FencingToken }> = [];
+    let errorCount = 0;
+    let firstError: Error | null = null;
 
-      if (acquired) {
-        logger.debug('[distributedLock] Lock acquired', {
-          lockKey: this.lockKey,
-          ownerToken: this.ownerToken,
-          ttlMs: this.ttlMs,
-        });
+    outcomes.forEach((outcome, index) => {
+      if (outcome.status === 'fulfilled') {
+        if (outcome.value.acquired && outcome.value.token !== null) {
+          acquiredNodes.push({ client: readyClients[index], token: outcome.value.token });
+        }
       } else {
-        this._lastFailureReason = 'lock_held';
-        logger.info('[distributedLock] Lock acquisition skipped (already held)', {
-          lockKey: this.lockKey,
-          ttlMs: this.ttlMs,
-        });
+        errorCount++;
+        if (!firstError) {
+          firstError = outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason));
+        }
       }
+    });
 
-      return acquired;
-    } catch (err) {
-      const normalizedError = err instanceof Error ? err : new Error(String(err));
-      logger.error('[distributedLock] Failed to acquire lock due to Redis error', normalizedError, {
+    const elapsedMs = Date.now() - startMs;
+    const driftMs = Math.round(this.ttlMs * this.clockDriftFactor) + 2;
+    const validityMs = this.ttlMs - elapsedMs - driftMs;
+
+    if (acquiredNodes.length >= quorum && validityMs > 0) {
+      this._isHeld = true;
+      this.heldClients = acquiredNodes.map((n) => n.client);
+      this._fencingToken = Math.max(...acquiredNodes.map((n) => n.token));
+      logger.debug('[distributedLock] Redlock quorum acquired', {
         lockKey: this.lockKey,
-        error: normalizedError.message,
+        fenceKey: this.fenceKey,
+        fencingToken: this._fencingToken,
+        quorum,
+        acquiredCount: acquiredNodes.length,
+        validityMs,
       });
-      this._isHeld = false;
-      this._lastFailureReason = 'redis_error';
-      this._lastAcquireError = normalizedError;
-      return false;
+      return true;
     }
+
+    // Roll back partial acquisitions on quorum or validity-window failure
+    await Promise.allSettled(acquiredNodes.map((n) => this.releaseOnNode(n.client)));
+    this._isHeld = false;
+    this._fencingToken = null;
+    this.heldClients = [];
+
+    if (errorCount > 0 && readyClients.length - errorCount < quorum) {
+      this._lastFailureReason = 'redis_error';
+      this._lastAcquireError = firstError;
+    } else {
+      this._lastFailureReason = 'lock_held';
+    }
+    return false;
   }
 
   /**
@@ -281,20 +479,23 @@ export class DistributedLock implements DistributedLockHandle {
       return released;
     }
 
-    const redis = this.getClient();
-    if (!redis || redis.status !== 'ready' || typeof redis.eval !== 'function') {
+    const targets = this.heldClients.length > 0 ? this.heldClients : this.getClients();
+    const readyTargets = targets.filter((redis) => redis && redis.status === 'ready' && typeof redis.eval === 'function');
+    if (readyTargets.length === 0) {
       logger.warn('[distributedLock] Redis not ready or unavailable during lock release', {
         lockKey: this.lockKey,
-        status: redis?.status,
+        status: targets[0]?.status,
       });
       this._isHeld = false;
+      this.heldClients = [];
       return false;
     }
 
     try {
-      const result = await redis.eval(RELEASE_LOCK_LUA_SCRIPT, 1, this.lockKey, this.ownerToken);
-      const released = result === 1;
+      const results = await Promise.allSettled(readyTargets.map((redis) => this.releaseOnNode(redis)));
+      const released = results.some((res) => res.status === 'fulfilled' && res.value === true);
       this._isHeld = false;
+      this.heldClients = [];
 
       if (released) {
         logger.debug('[distributedLock] Lock released safely', {
@@ -315,6 +516,7 @@ export class DistributedLock implements DistributedLockHandle {
         error: err instanceof Error ? err.message : String(err),
       });
       this._isHeld = false;
+      this.heldClients = [];
       return false;
     }
   }
@@ -345,16 +547,30 @@ export class DistributedLock implements DistributedLockHandle {
       return true;
     }
 
-    const redis = this.getClient();
-    if (!redis || redis.status !== 'ready' || typeof redis.eval !== 'function') {
+    const clients = this.getClients();
+    const quorum = clients.length > 1 ? Math.floor(clients.length / 2) + 1 : 1;
+    const readyClients = clients.filter(
+      (redis) => redis && redis.status === 'ready' && typeof redis.eval === 'function'
+    );
+    if (readyClients.length < quorum) {
       this._isHeld = false;
       this.stopAutoRenew();
       return false;
     }
 
     try {
-      const result = await redis.eval(EXTEND_LOCK_LUA_SCRIPT, 1, this.lockKey, this.ownerToken, newTtl);
-      const extended = result === 1;
+      const startMs = Date.now();
+      const results = await Promise.allSettled(
+        readyClients.map((redis) => this.extendOnNode(redis, newTtl))
+      );
+      const extendedCount = results.filter(
+        (res) => res.status === 'fulfilled' && res.value === true
+      ).length;
+      const elapsedMs = Date.now() - startMs;
+      const driftMs = Math.round(newTtl * this.clockDriftFactor) + 2;
+      const validityOk = clients.length === 1 || newTtl - elapsedMs - driftMs > 0;
+      const extended = extendedCount >= quorum && validityOk;
+
       if (!extended) {
         this._isHeld = false;
         this.stopAutoRenew();
@@ -377,7 +593,7 @@ export class DistributedLock implements DistributedLockHandle {
   public startAutoRenew(intervalMs?: number): void {
     if (this.autoRenewTimer || !this._isHeld) return;
     const interval =
-      intervalMs && intervalMs > 0 ? intervalMs : Math.max(1000, Math.floor(this.ttlMs / 3));
+      intervalMs && intervalMs > 0 ? intervalMs : Math.max(50, Math.floor(this.ttlMs / 3));
 
     this.autoRenewTimer = setInterval(async () => {
       if (!this._isHeld) {
@@ -422,7 +638,12 @@ export async function acquireDistributedLock(
 ): Promise<DistributedLockHandle | null> {
   const isTestEnv = process.env.NODE_ENV === 'test';
   const allowTestFallback = isTestEnv && options.fallbackOnRedisUnavailable === true;
-  const redis = options.redisClient || getRedisClient();
+  const clients =
+    options.redisClients && options.redisClients.length > 0
+      ? options.redisClients
+      : [options.redisClient || getRedisClient()];
+  const quorum = clients.length > 1 ? Math.floor(clients.length / 2) + 1 : 1;
+  const readyClients = clients.filter(isClientReady);
   const lockKey = options.lockKey || formatJobLockKey(jobNameOrKey);
 
   if (!isTestEnv && options.fallbackOnRedisUnavailable === true) {
@@ -433,12 +654,12 @@ export async function acquireDistributedLock(
     });
   }
 
-  if (!redis || redis.status !== 'ready' || typeof redis.set !== 'function') {
+  if (readyClients.length < quorum) {
     if (allowTestFallback) {
       logger.warn('[distributedLock] TEST HARNESS ONLY: Redis not ready, using in-memory test lock', {
         job: jobNameOrKey,
         lockKey,
-        status: redis?.status,
+        status: clients[0]?.status,
       });
       const testLock = new DistributedLock(jobNameOrKey, options, true);
       const acquired = await testLock.acquire();
@@ -454,7 +675,7 @@ export async function acquireDistributedLock(
     throw new DistributedLockUnavailableError(
       lockKey,
       'redis_not_ready',
-      `Cannot acquire distributed lock "${lockKey}": Redis client is not ready (status: ${redis?.status ?? 'undefined'})`
+      `Cannot acquire distributed lock "${lockKey}": Redis client is not ready (status: ${clients[0]?.status ?? 'undefined'})`
     );
   }
 
