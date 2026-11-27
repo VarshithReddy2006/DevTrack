@@ -44,8 +44,22 @@ export interface ExportMetadata {
   archiveBytes: number;
 }
 
-// In-memory token store for export downloads (backed by Redis when available)
+// In-memory token store for export downloads (fallback when Redis is unavailable, bounded to prevent heap exhaustion)
+export const MAX_IN_MEMORY_EXPORTS = 50;
 const inMemoryExportStore = new Map<string, { buffer: Buffer; expiresAt: number; userId: string }>();
+
+function pruneInMemoryExports(now: number): void {
+  for (const [token, data] of inMemoryExportStore.entries()) {
+    if (data.expiresAt < now) {
+      inMemoryExportStore.delete(token);
+    }
+  }
+  while (inMemoryExportStore.size >= MAX_IN_MEMORY_EXPORTS) {
+    const oldestKey = inMemoryExportStore.keys().next().value;
+    if (!oldestKey) break;
+    inMemoryExportStore.delete(oldestKey);
+  }
+}
 
 // Clean up expired in-memory exports periodically
 setInterval(() => {
@@ -336,16 +350,9 @@ export async function generateDataExport(userId: string): Promise<{ archiveBuffe
 export async function storeExportArchive(userId: string, archiveBuffer: Buffer): Promise<{ token: string; expiresAt: Date }> {
   const token = randomUUID();
   const ttlSeconds = 24 * 60 * 60; // 24 hours
-  const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+  const now = Date.now();
+  const expiresAt = new Date(now + ttlSeconds * 1000);
 
-  // Store in memory
-  inMemoryExportStore.set(token, {
-    buffer: archiveBuffer,
-    expiresAt: expiresAt.getTime(),
-    userId,
-  });
-
-  // Also cache in Redis if available
   if (isRedisConfigured()) {
     try {
       const redis = getRedisClient();
@@ -356,21 +363,39 @@ export async function storeExportArchive(userId: string, archiveBuffer: Buffer):
     }
   }
 
+  // Retain in bounded in-memory L1/fallback store (evicting oldest beyond MAX_IN_MEMORY_EXPORTS)
+  pruneInMemoryExports(now);
+  inMemoryExportStore.set(token, {
+    buffer: archiveBuffer,
+    expiresAt: expiresAt.getTime(),
+    userId,
+  });
+
   return { token, expiresAt };
 }
 
 /**
  * Retrieves the archive buffer associated with a download token.
+ * When expectedUserId is provided, enforces strict ownership verification.
  */
-export async function getExportArchiveByToken(token: string): Promise<Buffer | null> {
+export async function getExportArchiveByToken(token: string, expectedUserId?: string): Promise<Buffer | null> {
   const mem = inMemoryExportStore.get(token);
   if (mem && mem.expiresAt > Date.now()) {
+    if (expectedUserId && mem.userId !== expectedUserId) {
+      return null;
+    }
     return mem.buffer;
   }
 
   if (isRedisConfigured()) {
     try {
       const redis = getRedisClient();
+      if (expectedUserId) {
+        const owner = await redis.get(`privacy:export:user:${token}`);
+        if (!owner || owner !== expectedUserId) {
+          return null;
+        }
+      }
       const b64 = await redis.get(`privacy:export:${token}`);
       if (b64) {
         return Buffer.from(b64, 'base64');

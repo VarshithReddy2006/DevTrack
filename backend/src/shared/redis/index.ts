@@ -21,3 +21,9 @@ export {
   type PipelineExecResult,
 } from './sentinelClient.js';
 export * from './distributedLock.js';
+export {
+  StaleFencingTokenError,
+  fencedFilter,
+  fenceStamp,
+  isDuplicateKeyError,
+} from './fencingToken.js';
