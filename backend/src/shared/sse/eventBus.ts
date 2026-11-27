@@ -266,6 +266,16 @@ const SSE_CHANNEL = 'devtrack:sse:events';
 // SSE Operational Metrics
 // ---------------------------------------------------------------------------
 
+export const DEFAULT_MAX_SUBSCRIBER_QUEUE_EVENTS = 50;
+export const DEFAULT_MAX_SUBSCRIBER_QUEUE_BYTES = 256 * 1024;
+export const DEFAULT_STALL_TIMEOUT_MS = 10_000;
+
+export interface EventBusOptions {
+  maxSubscriberQueueEvents?: number;
+  maxSubscriberQueueBytes?: number;
+  stallTimeoutMs?: number;
+}
+
 export interface SseMetricsSnapshot {
   activeConnections: number;
   totalConnections: number;
@@ -274,6 +284,10 @@ export interface SseMetricsSnapshot {
   heartbeatFailures: number;
   eventsPublished: number;
   uptimeSeconds: number;
+  backpressureDrops: number;
+  stalledDisconnects: number;
+  bufferedEvents: number;
+  bufferedBytes: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +394,17 @@ export interface SseClient {
   connectedAt: number;
   emit(event: SseEvent): void;
   destroy(): void;
+  /** Optional downstream socket backpressure signal. */
+  isBackpressured?: () => boolean;
+  /** Optional immediate response terminator used when evicting stalled subscribers. */
+  terminate?: () => void;
+}
+
+interface ClientBufferState {
+  queue: Uint8Array[];
+  queuedBytes: number;
+  stallTimer: NodeJS.Timeout | null;
+  stalledSince: number | null;
 }
 
 const encoder = new TextEncoder();
@@ -391,9 +416,13 @@ const encoder = new TextEncoder();
 class EventBus extends EventEmitter {
   private draining = false;
   private clients = new Map<string, SseClient>();
+  private clientBuffers = new Map<string, ClientBufferState>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private readonly HEARTBEAT_INTERVAL_MS = 25_000;
   private readonly MAX_CLIENTS = 10_000;
+  private readonly maxSubscriberQueueEvents: number;
+  private readonly maxSubscriberQueueBytes: number;
+  private readonly stallTimeoutMs: number;
   private redisSubscriber: ReturnType<typeof getRedisClient>['duplicate'] | null = null;
   private redisPublisher: ReturnType<typeof getRedisClient>['duplicate'] | null = null;
 
@@ -403,6 +432,8 @@ class EventBus extends EventEmitter {
   private totalReconnects = 0;
   private heartbeatFailures = 0;
   private eventsPublished = 0;
+  private backpressureDrops = 0;
+  private stalledDisconnects = 0;
   private readonly startedAt = Date.now();
   // Tags this instance's Redis messages so it can skip its own echo (already delivered locally).
   private readonly instanceId = randomUUID();
@@ -416,9 +447,14 @@ class EventBus extends EventEmitter {
   readonly streamAdapter: RedisStreamAdapter;
   private readonly recentlyDeliveredIds = new Set<string>();
 
-  constructor(customRedisClient?: any) {
+  constructor(customRedisClient?: any, options?: EventBusOptions) {
     super();
     this.setMaxListeners(this.MAX_CLIENTS);
+    this.maxSubscriberQueueEvents =
+      options?.maxSubscriberQueueEvents ?? DEFAULT_MAX_SUBSCRIBER_QUEUE_EVENTS;
+    this.maxSubscriberQueueBytes =
+      options?.maxSubscriberQueueBytes ?? DEFAULT_MAX_SUBSCRIBER_QUEUE_BYTES;
+    this.stallTimeoutMs = options?.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
     this.streamAdapter = new RedisStreamAdapter(
       this.instanceId,
       { numShards: TOTAL_SHARDS },
@@ -604,6 +640,145 @@ class EventBus extends EventEmitter {
     }).catch(err => logger.debug('[sse] Redis publish failed', { error: err }));
   }
 
+  private isClientBackpressured(client: SseClient): boolean {
+    if (client.isBackpressured?.()) return true;
+    const desired = client.controller?.desiredSize;
+    return typeof desired === 'number' && desired <= 0;
+  }
+
+  private getOrCreateBuffer(clientId: string): ClientBufferState {
+    let buf = this.clientBuffers.get(clientId);
+    if (!buf) {
+      buf = { queue: [], queuedBytes: 0, stallTimer: null, stalledSince: null };
+      this.clientBuffers.set(clientId, buf);
+    }
+    return buf;
+  }
+
+  private clearClientBuffer(clientId: string): void {
+    const buf = this.clientBuffers.get(clientId);
+    if (!buf) return;
+    if (buf.stallTimer) {
+      clearTimeout(buf.stallTimer);
+      buf.stallTimer = null;
+    }
+    buf.queue.length = 0;
+    buf.queuedBytes = 0;
+    buf.stalledSince = null;
+    this.clientBuffers.delete(clientId);
+  }
+
+  private evictStalledClient(client: SseClient, reason: 'buffer_overflow' | 'stall_timeout'): void {
+    this.stalledDisconnects++;
+    const buf = this.clientBuffers.get(client.id);
+    logger.warn('[sse] Forcefully disconnecting stalled SSE subscriber', {
+      event: reason === 'buffer_overflow' ? 'sse_subscriber_buffer_overflow' : 'sse_subscriber_stall_timeout',
+      clientId: client.id,
+      userId: client.userId,
+      queuedEvents: buf?.queue.length ?? 0,
+      queuedBytes: buf?.queuedBytes ?? 0,
+      maxEvents: this.maxSubscriberQueueEvents,
+      maxBytes: this.maxSubscriberQueueBytes,
+      stallTimeoutMs: this.stallTimeoutMs,
+    });
+
+    try {
+      client.terminate?.();
+    } catch {
+      // ignore termination errors
+    }
+    try {
+      if (typeof client.controller?.close === 'function') {
+        client.controller.close();
+      }
+    } catch {
+      // ignore if stream already closed
+    }
+    this.unregister(client.id);
+  }
+
+  private dispatchToClient(client: SseClient, encoded: Uint8Array, isHeartbeat = false): boolean {
+    if (!this.clients.has(client.id)) return false;
+    const buf = this.getOrCreateBuffer(client.id);
+
+    if (buf.queue.length === 0 && !this.isClientBackpressured(client)) {
+      try {
+        client.controller.enqueue(encoded);
+        return true;
+      } catch {
+        this.unregister(client.id);
+        return false;
+      }
+    }
+
+    // Do not pile redundant heartbeats into a backpressured client's buffer.
+    if (isHeartbeat) {
+      if (buf.stallTimer === null) {
+        buf.stalledSince = Date.now();
+        buf.stallTimer = setTimeout(() => {
+          const stalledClient = this.clients.get(client.id);
+          if (stalledClient && (this.isClientBackpressured(stalledClient) || (this.clientBuffers.get(client.id)?.queue.length ?? 0) > 0)) {
+            this.evictStalledClient(stalledClient, 'stall_timeout');
+          }
+        }, this.stallTimeoutMs);
+        buf.stallTimer.unref?.();
+      }
+      return true;
+    }
+
+    const nextCount = buf.queue.length + 1;
+    const nextBytes = buf.queuedBytes + encoded.byteLength;
+    if (nextCount > this.maxSubscriberQueueEvents || nextBytes > this.maxSubscriberQueueBytes) {
+      this.backpressureDrops++;
+      this.evictStalledClient(client, 'buffer_overflow');
+      return false;
+    }
+
+    buf.queue.push(encoded);
+    buf.queuedBytes = nextBytes;
+
+    if (buf.stallTimer === null) {
+      buf.stalledSince = Date.now();
+      buf.stallTimer = setTimeout(() => {
+        const stalledClient = this.clients.get(client.id);
+        if (stalledClient && ((this.clientBuffers.get(client.id)?.queue.length ?? 0) > 0 || this.isClientBackpressured(stalledClient))) {
+          this.evictStalledClient(stalledClient, 'stall_timeout');
+        }
+      }, this.stallTimeoutMs);
+      buf.stallTimer.unref?.();
+    }
+
+    return true;
+  }
+
+  /**
+   * Flushes buffered chunks to a subscriber once downstream socket/stream backpressure clears.
+   */
+  notifyClientDrain(clientId: string): void {
+    const client = this.clients.get(clientId);
+    const buf = this.clientBuffers.get(clientId);
+    if (!client || !buf) return;
+
+    while (buf.queue.length > 0 && !this.isClientBackpressured(client)) {
+      const next = buf.queue.shift()!;
+      buf.queuedBytes = Math.max(0, buf.queuedBytes - next.byteLength);
+      try {
+        client.controller.enqueue(next);
+      } catch {
+        this.unregister(client.id);
+        return;
+      }
+    }
+
+    if (buf.queue.length === 0 && !this.isClientBackpressured(client)) {
+      if (buf.stallTimer) {
+        clearTimeout(buf.stallTimer);
+        buf.stallTimer = null;
+      }
+      buf.stalledSince = null;
+    }
+  }
+
   private publishLocal(event: SseEvent, targetUserId?: string): void {
     let payload = '';
     if (event.id) {
@@ -612,24 +787,12 @@ class EventBus extends EventEmitter {
     payload += `data: ${JSON.stringify(event)}\n\n`;
     const encoded = encoder.encode(payload);
 
-    if (targetUserId) {
-      for (const client of this.clients.values()) {
-        if (client.userId === targetUserId) {
-          try {
-            client.controller.enqueue(encoded);
-          } catch {
-            this.unregister(client.id);
-          }
-        }
-      }
-    } else {
-      for (const client of this.clients.values()) {
-        try {
-          client.controller.enqueue(encoded);
-        } catch {
-          this.unregister(client.id);
-        }
-      }
+    const targets = targetUserId
+      ? [...this.clients.values()].filter((c) => c.userId === targetUserId)
+      : [...this.clients.values()];
+
+    for (const client of targets) {
+      this.dispatchToClient(client, encoded);
     }
   }
 
@@ -653,6 +816,7 @@ class EventBus extends EventEmitter {
     );
 
     this.clients.set(client.id, client);
+    this.getOrCreateBuffer(client.id);
     this.totalConnections++;
 
     // Shard routing & activation (only register shard on first connection for user on this pod)
@@ -680,6 +844,7 @@ class EventBus extends EventEmitter {
 
     const lifetime = Date.now() - client.connectedAt;
     const userId = client.userId;
+    this.clearClientBuffer(clientId);
     this.clients.delete(clientId);
     this.totalDisconnects++;
     client.destroy();
@@ -736,12 +901,9 @@ class EventBus extends EventEmitter {
       const payload = encoder.encode(`event: heartbeat\ndata: {}\n\n`);
       let failed = 0;
 
-      for (const client of this.clients.values()) {
-        try {
-          client.controller.enqueue(payload);
-        } catch {
+      for (const client of [...this.clients.values()]) {
+        if (!this.dispatchToClient(client, payload, true)) {
           failed++;
-          this.unregister(client.id);
         }
       }
 
@@ -778,6 +940,12 @@ class EventBus extends EventEmitter {
   }
 
   getMetrics(): SseMetricsSnapshot {
+    let bufferedEvents = 0;
+    let bufferedBytes = 0;
+    for (const buf of this.clientBuffers.values()) {
+      bufferedEvents += buf.queue.length;
+      bufferedBytes += buf.queuedBytes;
+    }
     return {
       activeConnections: this.clients.size,
       totalConnections: this.totalConnections,
@@ -786,6 +954,10 @@ class EventBus extends EventEmitter {
       heartbeatFailures: this.heartbeatFailures,
       eventsPublished: this.eventsPublished,
       uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
+      backpressureDrops: this.backpressureDrops,
+      stalledDisconnects: this.stalledDisconnects,
+      bufferedEvents,
+      bufferedBytes,
     };
   }
 
@@ -1315,15 +1487,17 @@ class EventBus extends EventEmitter {
       clearTimeout(timer);
     }
     this.pendingPatches.clear();
-    for (const client of this.clients.values()) {
+    for (const client of [...this.clients.values()]) {
       try {
         client.controller.close();
       } catch {
         // ignore
       }
+      this.clearClientBuffer(client.id);
       client.destroy();
     }
     this.clients.clear();
+    this.clientBuffers.clear();
 
     await this.streamAdapter.shutdown();
 

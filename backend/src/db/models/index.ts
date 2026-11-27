@@ -46,6 +46,9 @@ export {
   type SagaCohortStatus,
   type SagaCohortStep,
   type ILeagueRolloverSnapshotMember,
+  type ILeagueRolloverPreviousStanding,
+  type ILeagueRolloverNextWeekPlacement,
+  type ILeagueRolloverRollbackRecord,
   type ILeagueRolloverError,
 } from './leagueRolloverLog.model.js';
 export { RenderArtifact, RENDER_ARTIFACT_TYPES, RENDER_ARTIFACT_STATUSES, type IRenderArtifact, type RenderArtifactType, type RenderArtifactStatus } from './renderArtifact.model.js';

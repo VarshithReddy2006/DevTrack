@@ -2,8 +2,8 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose the v2 revision, resume revision, portfolio, push, readiness score, roadmap, search and anti-gaming
-  // review APIs through shared middleware, including the global rate limit. Other modules remain on v1.
+  // Expose the v2 revision, resume revision, portfolio, push, readiness score, roadmap, search, anti-gaming review, and outbox DLQ
+  // APIs through shared middleware, including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
     const quests = ((req.method === 'GET' || req.method === 'HEAD') && /^\/quests\/?$/i.test(req.path)) || (req.method === 'POST' && /^\/quests\/[^/]+\/claim\/?$/i.test(req.path));
     const revision = (req.method === 'GET' || req.method === 'HEAD') && /^\/revision\/(analytics|queue)\/?$/i.test(req.path);
@@ -26,7 +26,10 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const privacy = /^\/privacy(\/.*)?$/i.test(req.path);
     const antiGamingReview = ((req.method === 'GET' || req.method === 'HEAD') && /^\/ops\/anti-gaming\/(flagged|[^/]+\/breakdown)\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/ops\/anti-gaming\/[^/]+\/action\/?$/i.test(req.path));
-    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap || search || interview || privacy || antiGamingReview ? routes(req, res, next) : next();
+    const outboxDlq = ((req.method === 'GET' || req.method === 'HEAD') && /^\/ops\/outbox\/dlq(\/[^/]+)?\/?$/i.test(req.path))
+      || (req.method === 'POST' && /^\/ops\/outbox\/dlq\/(retry|[^/]+\/retry)\/?$/i.test(req.path))
+      || ((req.method === 'PATCH' || req.method === 'DELETE') && /^\/ops\/outbox\/dlq\/[^/]+\/?$/i.test(req.path));
+    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap || search || interview || privacy || antiGamingReview || outboxDlq ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);

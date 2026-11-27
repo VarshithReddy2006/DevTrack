@@ -32,6 +32,7 @@
     "migrate:interview-sessions": "tsx src/db/migrations/run-interview-sessions.ts",
     "migrate:embedding-user-hash": "tsx src/db/migrations/run-embedding-user-hash.ts",
     "migrate:daily-challenge-tiers": "tsx src/db/migrations/run-daily-challenge-tiers.ts",
+    "outbox:dlq": "tsx src/shared/events/outbox-cli.ts",
     "test:safety": "vitest run -c vitest.safety.config.ts",
     "test:token-pool": "vitest run -c vitest.token-pool.config.ts",
     "test:evidence-verification": "vitest run -c vitest.evidence-verification.config.ts",

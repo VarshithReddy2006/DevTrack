@@ -4,6 +4,7 @@ import { authMiddleware, adminMiddleware, opsAuditorMiddleware } from '../../mid
 import opsController from './ops.controller.js';
 import { opsFlagRoutes } from '../flags/flags.routes.js';
 import { adminAuditRoutes } from './adminAudit.routes.js';
+import { outboxAdminRoutes } from './outboxAdmin.routes.js';
 
 const router = Router();
 
@@ -14,6 +15,9 @@ router.use('/flags', opsFlagRoutes);
 
 // Anti-gaming review: reads for ops auditors, pardon/penalize for admins
 router.use('/anti-gaming', adminAuditRoutes);
+
+// Dead-lettered outbox events: list, retry, edit payload, archive (admin only)
+router.use('/outbox/dlq', outboxAdminRoutes);
 
 // Metrics and ops require ops auditor or admin
 router.get('/metrics', authMiddleware, opsAuditorMiddleware, opsController.metrics);

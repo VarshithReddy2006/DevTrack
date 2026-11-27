@@ -74,12 +74,25 @@ Delivery is best effort and sequential within the existing sweep. There is no
 new durable retry queue or guarantee of exactly-once delivery. The existing
 scheduler marks a contest as emitted before handling it; transient push failures
 are not retried for that contest. In-app insertion guards normal consumer replays.
-Large recipient lists can extend sweep duration. Browser permission, subscription
-enrollment UI, and a deployed push-provider smoke test are outside this backend
-change; the existing service worker supports receiving the resulting messages.
+Large recipient lists can extend sweep duration. Opted-in users are streamed
+from a cursor in batches of 100, so the consumer never loads the whole list.
+
+Each contest event is claimed once before any alert goes out: Redis
+`SET NX EX` when Redis is ready, otherwise a `ProcessedEvent` row (unique per
+consumer and event id) when Redis is unconfigured, not ready or erroring. The
+claim is a 10 minute lease while users are notified and becomes a 24 hour marker
+when the run finishes. A run that throws releases its claim so a retry is not
+skipped; a worker that dies mid-run leaves a lease that expires on its own. The
+per-user notification id still stops a second alert in either case.
+
+Browser permission, subscription enrollment UI, and a deployed push-provider
+smoke test are outside this backend change; the existing service worker supports
+receiving the resulting messages.
 
 Run `npx vitest run src/__tests__/modules/notifications/pushNotification.test.ts`
-and `npm run build` from `backend/`. Tests use an owned temporary MongoDB instance
+and `npm run build` from `backend/`. The claim, fallback and cursor cases are in
+`src/__tests__/modules/notifications/contest-alerts.dedup.test.ts`, which fakes
+Redis and the models. The other tests use an owned temporary MongoDB instance
 and mock outbound provider requests. A cryptographic test uses the real library
 to verify the VAPID JWT signature and decrypt the generated payload with the
 browser's private key. HTTP tests stub authentication; they do not verify Clerk

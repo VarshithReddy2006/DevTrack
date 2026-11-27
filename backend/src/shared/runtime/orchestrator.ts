@@ -6,6 +6,7 @@ import type { Express } from 'express';
 import mongoose from 'mongoose';
 import { connectDatabase, disconnectDatabase, sanitizeMongoError, scheduleMongoReconnect } from '../../db/connection.js';
 import { setupProductionIndexes } from '../../db/migrations/index-setup.js';
+import { startIndexAudit } from '../../db/migrations/indexAuditor.js';
 import { logger } from '../logger.js';
 import { eventBus } from '../sse/index.js';
 import { getRedisClient, disconnectRedis, getRedisHealth } from '../redis/index.js';
@@ -67,6 +68,9 @@ async function bootMongo(retries = 3, retryDelayMs = 2000): Promise<boolean> {
           error: idxErr instanceof Error ? idxErr.message : String(idxErr),
         });
       }
+      // Compares every model's declared indexes with the database and builds missing ones.
+      // Not awaited: index builds can take minutes on large collections and must not hold up boot.
+      void startIndexAudit();
 
       setMongoStatus('healthy');
       logger.info('[startup] MongoDB connected and ready', { event: 'mongodb_connected', readyState: mongoose.connection.readyState });
