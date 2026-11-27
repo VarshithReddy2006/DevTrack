@@ -6,7 +6,10 @@ import cors from 'cors';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_EXEMPT_PREFIXES,
+  NULL_ORIGIN_SECRET_HEADER,
+  isWebSocketUpgrade,
   originMatches,
+  originRejectionReason,
   originValidation,
   parseAllowedOrigins,
 } from '../../middleware/originValidation.js';
@@ -486,5 +489,87 @@ describe('14. Full Express server middleware chain integration', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.message).toBe('get ok');
+  });
+});
+
+describe('15. Null origins', () => {
+  const secret = 'desktop-shell-secret';
+  const call = (headers: Record<string, string>, nullOriginSecret?: string) => {
+    const next = vi.fn();
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnThis() };
+    originValidation({ allowedOrigins: ALLOWED, nullOriginSecret })(
+      { method: 'POST', headers, originalUrl: '/x', url: '/x' } as never,
+      res as never,
+      next
+    );
+    return { next, res };
+  };
+
+  it('lets a null origin through only with the configured secret', () => {
+    expect(call({ origin: 'null', [NULL_ORIGIN_SECRET_HEADER]: secret }, secret).next).toHaveBeenCalledOnce();
+  });
+
+  const refused: Array<[string, Record<string, string>, string | undefined]> = [
+    ['no secret header', { origin: 'null' }, secret],
+    ['a wrong secret', { origin: 'null', [NULL_ORIGIN_SECRET_HEADER]: 'guess' }, secret],
+    ['only a bearer header', { origin: 'null', authorization: 'Bearer abc' }, secret],
+    ['no secret configured', { origin: 'null', [NULL_ORIGIN_SECRET_HEADER]: secret }, undefined],
+    ['an empty configured secret', { origin: 'null', [NULL_ORIGIN_SECRET_HEADER]: '' }, ''],
+  ];
+
+  it.each(refused)('refuses a null origin with %s', (_label, headers, configured) => {
+    expect(call(headers, configured).res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('does not let the secret rescue a disallowed real origin', () => {
+    const r = call({ origin: 'https://evil.com', [NULL_ORIGIN_SECRET_HEADER]: secret }, secret);
+    expect(r.res.status).toHaveBeenCalledWith(403);
+  });
+});
+
+describe('16. Origin header shape', () => {
+  it.each([
+    'https://devtrack.sh/path',
+    'https://devtrack.sh?ref=1',
+    'https://devtrack.sh#x',
+    'https://evil.com@devtrack.sh',
+    'https://devtrack.sh\\@evil.com',
+    'https://evil.com?ref=devtrack.sh',
+    'https://devtrack.sh.attacker.com',
+    'https://devtrack.sh https://evil.com',
+  ])('refuses %s as an Origin', (origin) => {
+    expect(run('POST', { origin }).res.status).toHaveBeenCalledWith(403);
+  });
+});
+
+describe('17. WebSocket upgrade handshakes', () => {
+  const policy = { allowedOrigins: ALLOWED };
+
+  it('detects the Upgrade header in any case and inside a token list', () => {
+    for (const upgrade of ['websocket', 'WebSocket', 'WEBSOCKET', 'h2c, websocket']) {
+      expect(isWebSocketUpgrade({ headers: { upgrade } })).toBe(true);
+    }
+    expect(isWebSocketUpgrade({ headers: { upgrade: 'h2c' } })).toBe(false);
+    expect(isWebSocketUpgrade({ headers: {} })).toBe(false);
+  });
+
+  it('checks the origin of an upgrade even though it is a GET', () => {
+    expect(run('GET', { upgrade: 'WebSocket', origin: 'https://evil.com' }).res.status).toHaveBeenCalledWith(403);
+    expect(run('GET', { upgrade: 'websocket', origin: 'null' }).res.status).toHaveBeenCalledWith(403);
+    expect(run('GET', { upgrade: 'websocket', 'sec-fetch-site': 'cross-site' }).res.status).toHaveBeenCalledWith(403);
+    expect(run('GET', { upgrade: 'websocket', origin: 'https://devtrack.sh' }).next).toHaveBeenCalledOnce();
+    // non-browser client with no browser headers
+    expect(run('GET', { upgrade: 'websocket' }).next).toHaveBeenCalledOnce();
+  });
+
+  it('does not exempt upgrades on webhook paths', () => {
+    const r = run('GET', { upgrade: 'websocket', origin: 'https://evil.com' }, '/api/v2/webhooks/clerk');
+    expect(r.res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('gives the same verdict for a raw upgrade request', () => {
+    expect(originRejectionReason({ headers: { origin: 'https://devtrack.sh' } }, policy)).toBeNull();
+    expect(originRejectionReason({ headers: { origin: 'https://evil.com' } }, policy)).toBe('origin_not_allowed');
+    expect(originRejectionReason({ headers: { origin: 'http://[' } }, policy)).toBe('origin_not_allowed');
   });
 });
