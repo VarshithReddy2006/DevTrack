@@ -4,7 +4,12 @@
 // and step progression to guarantee crash-recovery, idempotency, and rollback safety.
 
 import mongoose, { Schema, type Document } from 'mongoose';
-import { LEAGUE_DIVISIONS, type LeagueDivision, type LeagueOutcome } from './leagueStanding.model.js';
+import {
+  LEAGUE_DIVISIONS,
+  type LeagueDivision,
+  type LeagueOutcome,
+  type LeagueStandingStatus,
+} from './leagueStanding.model.js';
 
 export const SAGA_COHORT_STATUSES = ['pending', 'in_progress', 'committed', 'compensated', 'failed'] as const;
 export type SagaCohortStatus = (typeof SAGA_COHORT_STATUSES)[number];
@@ -26,6 +31,38 @@ export interface ILeagueRolloverSnapshotMember {
   nextDivision?: LeagueDivision | null;
 }
 
+export interface ILeagueRolloverPreviousStanding {
+  userId: string;
+  division: LeagueDivision;
+  cohortId: string;
+  status: LeagueStandingStatus;
+  points: number;
+  rank?: number | null;
+  cohortSize?: number | null;
+  outcome?: LeagueOutcome | null;
+  nextDivision?: LeagueDivision | null;
+  finalizedAt?: Date | null;
+  notifiedAt?: Date | null;
+}
+
+export interface ILeagueRolloverNextWeekPlacement {
+  userId: string;
+  previousDivision: LeagueDivision;
+  previousCohortId: string;
+  targetDivision: LeagueDivision;
+  targetCohortId: string;
+  existedPrior: boolean;
+}
+
+export interface ILeagueRolloverRollbackRecord {
+  phase: 'cohort_finalization' | 'next_week_seeding';
+  step: string;
+  affectedUserIds: string[];
+  purgedRedisKeys: string[];
+  rolledBackAt: Date;
+  reason: string;
+}
+
 export interface ILeagueRolloverError {
   message: string;
   step: string;
@@ -43,7 +80,10 @@ export interface ILeagueRolloverLog extends Document {
   snapshot?: {
     board: Array<{ userId: string; points: number }>;
     standings: ILeagueRolloverSnapshotMember[];
+    previousStandings?: ILeagueRolloverPreviousStanding[];
+    nextWeekPlacements?: ILeagueRolloverNextWeekPlacement[];
   };
+  lastRollback?: ILeagueRolloverRollbackRecord | null;
   error?: ILeagueRolloverError | null;
   attempts: number;
   startedAt: Date;
@@ -79,6 +119,45 @@ const leagueRolloverLogSchema = new Schema<ILeagueRolloverLog>(
           nextDivision: { type: String, enum: [...LEAGUE_DIVISIONS, null], default: null },
         },
       ],
+      previousStandings: [
+        {
+          userId: { type: String, required: true },
+          division: { type: String, required: true, enum: LEAGUE_DIVISIONS },
+          cohortId: { type: String, required: true },
+          status: { type: String, required: true, enum: ['active', 'finalized'] },
+          points: { type: Number, required: true },
+          rank: { type: Number, default: null },
+          cohortSize: { type: Number, default: null },
+          outcome: { type: String, enum: ['promoted', 'demoted', 'stayed', null], default: null },
+          nextDivision: { type: String, enum: [...LEAGUE_DIVISIONS, null], default: null },
+          finalizedAt: { type: Date, default: null },
+          notifiedAt: { type: Date, default: null },
+        },
+      ],
+      nextWeekPlacements: [
+        {
+          userId: { type: String, required: true },
+          previousDivision: { type: String, required: true, enum: LEAGUE_DIVISIONS },
+          previousCohortId: { type: String, required: true },
+          targetDivision: { type: String, required: true, enum: LEAGUE_DIVISIONS },
+          targetCohortId: { type: String, required: true },
+          existedPrior: { type: Boolean, required: true, default: false },
+        },
+      ],
+    },
+    lastRollback: {
+      type: new Schema(
+        {
+          phase: { type: String, enum: ['cohort_finalization', 'next_week_seeding'] },
+          step: { type: String },
+          affectedUserIds: [{ type: String }],
+          purgedRedisKeys: [{ type: String }],
+          rolledBackAt: { type: Date },
+          reason: { type: String },
+        },
+        { _id: false },
+      ),
+      default: null,
     },
     error: {
       type: new Schema(
