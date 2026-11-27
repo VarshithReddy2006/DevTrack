@@ -142,4 +142,30 @@ describe('scheduled mission sweep', () => {
     expect(key).toBe('missions:scheduler:weekly:2026-11-09');
     expect(redis.eval).toHaveBeenCalledWith(expect.any(String), 1, key, token);
   });
+
+  it('isolates per-user failures in generateDailyMissions so healthy users still receive missions', async () => {
+    const now = new Date();
+    const [u1, u2, u3] = await User.create([
+      { clerkId: 'm_iso_1', username: 'miso1', displayName: 'M1', email: 'miso1@example.test', lastActiveAt: now },
+      { clerkId: 'm_iso_2', username: 'miso2', displayName: 'M2', email: 'miso2@example.test', lastActiveAt: now },
+      { clerkId: 'm_iso_3', username: 'miso3', displayName: 'M3', email: 'miso3@example.test', lastActiveAt: now },
+    ]);
+
+    const origFindOne = UserXp.findOne.bind(UserXp);
+    const spy = vi.spyOn(UserXp, 'findOne').mockImplementation(((filter: any) => {
+      if (filter?.userId?.toString() === u2._id.toString()) {
+        return { lean: async () => { throw new Error('Transient UserXp read failure'); } } as any;
+      }
+      return origFindOne(filter);
+    }) as any);
+
+    try {
+      await expect(generator.generateDailyMissions(now)).rejects.toThrow('Transient UserXp read failure');
+      expect(await Mission.countDocuments({ userId: u1._id })).toBe(3);
+      expect(await Mission.countDocuments({ userId: u2._id })).toBe(0);
+      expect(await Mission.countDocuments({ userId: u3._id })).toBe(3);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

@@ -73,15 +73,45 @@ async function generateMissions(type: MissionPeriodType, now: Date): Promise<voi
   const activeWindowDays = type === 'daily' ? 7 : 14;
   const activeUsers = await User.find({
     lastActiveAt: { $gte: new Date(now.getTime() - activeWindowDays * DAY_MS) },
-  }).select('_id');
+  }).select('_id').lean();
   const templatesFor = type === 'daily' ? generateDailyMissionTemplates : generateWeeklyMissionTemplates;
 
+  let succeeded = 0;
+  let failed = 0;
+  let firstError: unknown;
   for (let i = 0; i < activeUsers.length; i += USER_BATCH_SIZE) {
     const chunk = activeUsers.slice(i, i + USER_BATCH_SIZE);
-    await Promise.all(chunk.map(user => processUserMissions(user._id, type, period, now, templatesFor)));
+    const settled = await Promise.allSettled(
+      chunk.map(user => processUserMissions(user._id, type, period, now, templatesFor)),
+    );
+    for (let j = 0; j < settled.length; j++) {
+      const outcome = settled[j];
+      if (outcome.status === 'fulfilled') {
+        succeeded++;
+      } else {
+        failed++;
+        firstError ??= outcome.reason;
+        logger.error('[missions] Failed to generate missions for user', {
+          type,
+          period: period.key,
+          userId: chunk[j]._id.toString(),
+          error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+        });
+      }
+    }
   }
 
-  logger.info('[missions] Mission generation complete', { type, period: period.key, activeUsers: activeUsers.length });
+  logger.info('[missions] Mission generation complete', {
+    type,
+    period: period.key,
+    activeUsers: activeUsers.length,
+    succeeded,
+    failed,
+  });
+
+  if (failed > 0) {
+    throw firstError;
+  }
 }
 
 function generateDailyMissionTemplates(avgProblemsPerDay: number, userLevel: number): MissionTemplate[] {
