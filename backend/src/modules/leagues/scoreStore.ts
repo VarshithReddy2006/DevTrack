@@ -28,6 +28,8 @@ export interface LeagueScoreStore {
   replace(key: string, entries: ScoreEntry[]): Promise<void>;
   /** ZREM */
   remove(key: string, member: string): Promise<void>;
+  /** Batch ZREM for multiple members (used when purging partially seeded members from pre-existing keys). */
+  removeMany(key: string, members: string[]): Promise<void>;
   /** ZREVRANGE key start stop WITHSCORES, highest score first. */
   ranked(key: string, start: number, stop: number): Promise<ScoreEntry[]>;
   exists(key: string): Promise<boolean>;
@@ -73,6 +75,11 @@ export function createRedisScoreStore(client: RedisLike): LeagueScoreStore {
 
     async remove(key, member) {
       await client.zrem(key, member);
+    },
+
+    async removeMany(key, members) {
+      if (members.length === 0) return;
+      await client.zrem(key, ...members);
     },
 
     async ranked(key, start, stop) {

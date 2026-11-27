@@ -68,15 +68,19 @@ describe('createRedisScoreStore', () => {
     expect(pipeline.exec).toHaveBeenCalledOnce();
   });
 
-  it('maps exists, remove and expire to their Redis commands', async () => {
+  it('maps exists, remove, removeMany and expire to their Redis commands', async () => {
     const { client } = stubClient();
     client.exists.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
     const store = createRedisScoreStore(client as never);
     expect(await store.exists('k')).toBe(true);
     expect(await store.exists('k')).toBe(false);
     await store.remove('k', 'a');
+    await store.removeMany('k', ['b', 'c']);
+    await store.removeMany('k', []);
     await store.expire('k', 60);
     expect(client.zrem).toHaveBeenCalledWith('k', 'a');
+    expect(client.zrem).toHaveBeenCalledWith('k', 'b', 'c');
+    expect(client.zrem).toHaveBeenCalledTimes(2);
     expect(client.expire).toHaveBeenCalledWith('k', 60);
   });
 });

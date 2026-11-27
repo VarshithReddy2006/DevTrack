@@ -5,6 +5,10 @@
 import { Request, Response } from 'express';
 
 import { eventBus, SseClient } from './eventBus.js';
+
+export const SSE_DRAIN_TIMEOUT_MS = 10_000;
+export const SSE_MAX_REPLAY_HOLDBACK_EVENTS = 50;
+export const SSE_MAX_REPLAY_HOLDBACK_BYTES = 256 * 1024;
 import { logger } from '../logger.js';
 import { env } from '../../config/env.js';
 import { getRedisClient } from '../redis/client.js';
@@ -196,11 +200,17 @@ export async function replayMissedEvents(
   return replayedIds;
 }
 
+export interface SseStreamOptions {
+  isBackpressured?: () => boolean;
+  terminate?: () => void;
+}
+
 export function createSseStream(
   userId: string,
   clientId: string,
   requestId: string,
-  lastEventId?: string
+  lastEventId?: string,
+  options?: SseStreamOptions
 ): ReadableStream<Uint8Array> {
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
 
@@ -213,10 +223,40 @@ export function createSseStream(
       let replaying = true;
       let closeRequested = false;
       const heldBack: Uint8Array[] = [];
+      let heldBackBytes = 0;
       const gatedController = {
         enqueue(chunk: Uint8Array) {
-          if (replaying) heldBack.push(chunk);
-          else controller.enqueue(chunk);
+          if (replaying) {
+            if (
+              heldBack.length + 1 > SSE_MAX_REPLAY_HOLDBACK_EVENTS ||
+              heldBackBytes + chunk.byteLength > SSE_MAX_REPLAY_HOLDBACK_BYTES
+            ) {
+              logger.warn('[sse] Disconnecting slow reconnecting client: holdback buffer exceeded', {
+                event: 'sse_replay_holdback_overflow',
+                clientId,
+                userId,
+                requestId,
+                heldBackEvents: heldBack.length,
+                heldBackBytes,
+              });
+              replaying = false;
+              heldBack.length = 0;
+              heldBackBytes = 0;
+              closeRequested = true;
+              options?.terminate?.();
+              try {
+                controller.close();
+              } catch {
+                // Stream already closed
+              }
+              eventBus.unregister(clientId);
+              return;
+            }
+            heldBack.push(chunk);
+            heldBackBytes += chunk.byteLength;
+          } else {
+            controller.enqueue(chunk);
+          }
         },
         close: () => {
           if (replaying) closeRequested = true;
@@ -233,6 +273,8 @@ export function createSseStream(
         userId,
         controller: gatedController,
         connectedAt: Date.now(),
+        isBackpressured: options?.isBackpressured,
+        terminate: options?.terminate,
         emit(event) {
           if (!controllerRef) return;
           try {
@@ -284,6 +326,7 @@ export function createSseStream(
         }
       }
       heldBack.length = 0;
+      heldBackBytes = 0;
       if (closeRequested) {
         try {
           controller.close();
@@ -291,6 +334,9 @@ export function createSseStream(
           // Stream already closed
         }
       }
+    },
+    pull() {
+      eventBus.notifyClientDrain?.(clientId);
     },
     cancel() {
       eventBus.unregister(clientId);
@@ -304,6 +350,153 @@ export function createSseStream(
   });
 
   return stream;
+}
+
+export interface SseSinkController {
+  writable: WritableStream<Uint8Array>;
+  isBackpressured: () => boolean;
+  terminate: () => void;
+}
+
+/**
+ * Builds a backpressure-aware WritableStream sink over Express's ServerResponse.
+ * Pauses stream pulling whenever `res.write(chunk)` returns false, resumes on `drain`,
+ * and terminates the stalled socket if `drain` does not arrive within `drainTimeoutMs`.
+ */
+export function createSseWritableSink(
+  res: Response,
+  clientId: string,
+  requestId: string,
+  options?: {
+    drainTimeoutMs?: number;
+    onDrain?: () => void;
+    onUnregister?: () => void;
+  }
+): SseSinkController {
+  const drainTimeoutMs = options?.drainTimeoutMs ?? SSE_DRAIN_TIMEOUT_MS;
+  const unregister = options?.onUnregister ?? (() => eventBus.unregister(clientId));
+  let backpressured = false;
+  let terminated = false;
+  let cancelPendingDrain: ((reason: Error) => void) | null = null;
+
+  const terminate = () => {
+    if (terminated) return;
+    terminated = true;
+    backpressured = false;
+    cancelPendingDrain?.(new Error('SSE connection terminated due to backpressure'));
+    cancelPendingDrain = null;
+    try {
+      if (!res.writableEnded) {
+        res.end();
+      }
+    } catch {
+      // Response already closed
+    }
+  };
+
+  const writable = new WritableStream<Uint8Array>({
+    write(chunk) {
+      if (terminated || res.writableEnded || res.destroyed) {
+        throw new Error('SSE response stream is closed');
+      }
+
+      const ok = res.write(chunk);
+      if (ok) {
+        backpressured = false;
+        return;
+      }
+
+      backpressured = true;
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+
+        const cleanup = () => {
+          clearTimeout(timer);
+          res.off('drain', onDrain);
+          res.off('close', onClose);
+          res.off('error', onError);
+          if (cancelPendingDrain === abortDrain) {
+            cancelPendingDrain = null;
+          }
+        };
+
+        const onDrain = () => {
+          if (settled) return;
+          settled = true;
+          backpressured = false;
+          cleanup();
+          options?.onDrain?.();
+          resolve();
+        };
+
+        const onClose = () => {
+          if (settled) return;
+          settled = true;
+          backpressured = false;
+          cleanup();
+          reject(new Error('SSE response closed before drain'));
+        };
+
+        const onError = (err: Error) => {
+          if (settled) return;
+          settled = true;
+          backpressured = false;
+          cleanup();
+          reject(err);
+        };
+
+        const abortDrain = (reason: Error) => {
+          if (settled) return;
+          settled = true;
+          backpressured = false;
+          cleanup();
+          reject(reason);
+        };
+
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          backpressured = false;
+          cleanup();
+          logger.warn('[sse] Client failed to drain within timeout; terminating stalled connection', {
+            event: 'sse_drain_timeout',
+            clientId,
+            requestId,
+            drainTimeoutMs,
+          });
+          terminate();
+          unregister();
+          reject(new Error('SSE client drain timeout exceeded'));
+        }, drainTimeoutMs);
+        timer.unref?.();
+
+        cancelPendingDrain = abortDrain;
+        res.once('drain', onDrain);
+        res.once('close', onClose);
+        res.once('error', onError);
+      });
+    },
+    close() {
+      terminate();
+      unregister();
+    },
+    abort(err) {
+      logger.warn('[sse] Stream aborted', {
+        event: 'sse_stream_aborted',
+        clientId,
+        requestId,
+        error: String(err),
+      });
+      terminate();
+      unregister();
+    },
+  });
+
+  return {
+    writable,
+    isBackpressured: () => backpressured,
+    terminate,
+  };
 }
 
 export async function handleSseRequest(req: Request, res: Response): Promise<void> {
@@ -364,39 +557,28 @@ export async function handleSseRequest(req: Request, res: Response): Promise<voi
 
   eventBus.startHeartbeat();
 
-  const stream = createSseStream(userId, clientId, requestId, lastEventId);
+  const sink = createSseWritableSink(res, clientId, requestId, {
+    onDrain: () => eventBus.notifyClientDrain(clientId),
+  });
 
-  stream.pipeTo(
-    new WritableStream({
-      write(chunk) {
-        res.write(chunk);
-      },
-      close() {
-        res.end();
-        eventBus.unregister(clientId);
-      },
-      abort(err) {
-        res.end();
-        logger.warn('[sse] Stream aborted', {
-          event: 'sse_stream_aborted',
-          clientId,
-          requestId,
-          error: String(err),
-        });
-        eventBus.unregister(clientId);
-      },
-    })
-  ).catch((err) => {
+  const stream = createSseStream(userId, clientId, requestId, lastEventId, {
+    isBackpressured: sink.isBackpressured,
+    terminate: sink.terminate,
+  });
+
+  stream.pipeTo(sink.writable).catch((err) => {
     logger.warn('[sse] Stream pipe error', {
       event: 'sse_pipe_error',
       clientId,
       requestId,
       error: String(err),
     });
+    sink.terminate();
     eventBus.unregister(clientId);
   });
 
   res.on('close', () => {
+    sink.terminate();
     eventBus.unregister(clientId);
     trackSseDisconnection(userId);
     logger.info('[sse] Response closed', {

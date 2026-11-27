@@ -103,22 +103,33 @@ export class RevisionService {
 
       nextReviewSeq = card.reviewSeq + 1;
 
-      card.reviewSeq = nextReviewSeq;
-      card.repetitions = sm2.repetitions;
-      card.easeFactor = sm2.easeFactor;
-      card.intervalDays = sm2.intervalDays;
-      card.dueAt = sm2.dueAt;
-      card.lastReviewedAt = now;
+      const saved = await RevisionCard.findOneAndUpdate(
+        { _id: cardObjId, userId: userObjId, reviewSeq },
+        {
+          $set: {
+            reviewSeq: nextReviewSeq,
+            repetitions: sm2.repetitions,
+            easeFactor: sm2.easeFactor,
+            intervalDays: sm2.intervalDays,
+            dueAt: sm2.dueAt,
+            lastReviewedAt: now,
+          },
+        },
+        { new: true, ...(session ? { session } : {}) }
+      );
 
-      if (session) {
-        await card.save({ session });
-        await writeOutboxEvent(session, { type: 'revision.reviewed', aggregateType: 'RevisionCard', aggregateId: cardId, userId,
-          payload: { cardId, reviewSeq: nextReviewSeq, rating, reviewedAt: now.toISOString() } });
-      } else {
-        await card.save();
+      if (!saved) {
+        throw new RevisionCardStaleError(
+          `Stale review submission: card ${cardId} was updated concurrently (expected seq ${reviewSeq})`
+        );
       }
 
-      return card;
+      if (session) {
+        await writeOutboxEvent(session, { type: 'revision.reviewed', aggregateType: 'RevisionCard', aggregateId: cardId, userId,
+          payload: { cardId, reviewSeq: nextReviewSeq, rating, reviewedAt: now.toISOString() } });
+      }
+
+      return saved;
     };
 
     try {

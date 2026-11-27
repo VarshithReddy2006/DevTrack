@@ -63,7 +63,8 @@ export async function recordActivity(
 
   // ── Step 2: Anti-cheat validation ─────────────────────────────────────────
   const now = new Date();
-  const daysDiff = Math.floor((now.getTime() - normalizedDate.getTime()) / (1000 * 60 * 60 * 24));
+  const todayNormalized = normalizeToUserDate(now, timezone);
+  const daysDiff = Math.round((todayNormalized.getTime() - normalizedDate.getTime()) / (1000 * 60 * 60 * 24));
   if (!options?.trustedCompletion && daysDiff > MAX_VALID_AGE_DAYS) {
     logger.warn('[streak] Activity rejected: too old', {
       event: 'streak_rejected_old',
@@ -120,7 +121,7 @@ export async function recordActivity(
       });
       break;
     } catch (err: any) {
-      if (err?.code === 11000 && attempts < 2) {
+      if (!session && err?.code === 11000 && attempts < 2) {
         attempts++;
         continue;
       }

@@ -24,6 +24,12 @@ import { logger } from '../../shared/logger.js';
 import { getUserXp } from '../xp/processor.js';
 import { getStreakStatus } from '../streak/streak.service.js';
 import type { FocusSessionResult } from '../activity/focusEngine.service.js';
+import {
+  StaleFencingTokenError,
+  fencedFilter,
+  fenceStamp,
+  isDuplicateKeyError,
+} from '../../shared/redis/fencingToken.js';
 
 export interface RuntimeStateEvent {
   eventId: string;
@@ -31,11 +37,15 @@ export interface RuntimeStateEvent {
   userId: string;
   timestamp: Date;
   data: Record<string, unknown>;
+  /** Optional monotonic fencing token from the lock protecting this write. */
+  fenceToken?: number | null;
 }
 
 export interface RebuildOptions {
   fromEventId?: string;
   force?: boolean;
+  /** Optional monotonic fencing token asserted against stateVersion before writing. */
+  fenceToken?: number | null;
 }
 
 export class UnifiedRuntimeStateService {
@@ -141,46 +151,80 @@ export class UnifiedRuntimeStateService {
     const daysActive = userAnalytics?.totalActiveDays ?? 0;
     const totalProblemsSolved = userAnalytics?.totalProblemsSolved ?? 0;
 
-    const state = await UnifiedRuntimeState.findOneAndUpdate(
-      { userId: userObjId },
-      {
-        $set: {
-          xp: userXp?.totalXp ?? 0,
-          level: userXp?.currentLevel ?? 1,
-          xpToNextLevel: userXp?.xpToNextLevel ?? 100,
-          streak: streakStatus.currentStreak,
-          streakRisk,
-          momentumState,
-          fatigueState,
-          trustScore,
-          emotionalState,
-          recoveryState,
-          activeGoals: [],
-          activeChallenges: [],
-          activeAchievements: [],
-          progressionPacing,
-          nearMilestones,
-          longestStreak,
-          daysActive,
-          totalProblemsSolved,
-          recentMilestones: [],
-          onboardingStage,
-          engagementPressure,
-          lastEventId: options?.fromEventId ?? '',
-          lastCalculatedAt: new Date(),
+    const fenceToken =
+      typeof options?.fenceToken === 'number' && Number.isFinite(options.fenceToken)
+        ? options.fenceToken
+        : null;
+
+    let state: IUnifiedRuntimeState | null = null;
+    try {
+      state = await UnifiedRuntimeState.findOneAndUpdate(
+        fencedFilter({ userId: userObjId }, fenceToken, 'stateVersion'),
+        {
+          $set: {
+            xp: userXp?.totalXp ?? 0,
+            level: userXp?.currentLevel ?? 1,
+            xpToNextLevel: userXp?.xpToNextLevel ?? 100,
+            streak: streakStatus.currentStreak,
+            streakRisk,
+            momentumState,
+            fatigueState,
+            trustScore,
+            emotionalState,
+            recoveryState,
+            activeGoals: [],
+            activeChallenges: [],
+            activeAchievements: [],
+            progressionPacing,
+            nearMilestones,
+            longestStreak,
+            daysActive,
+            totalProblemsSolved,
+            recentMilestones: [],
+            onboardingStage,
+            engagementPressure,
+            lastEventId: options?.fromEventId ?? '',
+            lastCalculatedAt: new Date(),
+            ...fenceStamp(fenceToken, 'stateVersion'),
+          },
         },
-      },
-      { upsert: true, new: true }
-    );
+        { upsert: true, new: true }
+      );
+    } catch (error) {
+      if (fenceToken !== null && isDuplicateKeyError(error)) {
+        throw new StaleFencingTokenError(fenceToken, 'UnifiedRuntimeState');
+      }
+      throw error;
+    }
+
+    if (!state) {
+      throw new Error('Runtime state rebuild returned empty document');
+    }
 
     return state;
   }
 
   private async applyEventBatch(events: RuntimeStateEvent[]): Promise<IUnifiedRuntimeState> {
     const userId = events[0].userId;
+    const batchFenceToken = events.reduce<number | null>(
+      (max, event) =>
+        typeof event.fenceToken === 'number' && Number.isFinite(event.fenceToken)
+          ? (max === null ? event.fenceToken : Math.max(max, event.fenceToken))
+          : max,
+      null
+    );
     const handled = new Set(['xp_awarded', 'streak_updated', 'focus_session_started', 'focus_session_heartbeat',
       'focus_session_paused', 'focus_session_resumed', 'focus_session_stopped', 'focus_session_cancelled']);
-    const state = events.some(event => !handled.has(event.eventType))
+    const hasUnhandled = events.some(event => !handled.has(event.eventType));
+    if (hasUnhandled && batchFenceToken !== null) {
+      const existing = await UnifiedRuntimeState.findOne({ userId: new Types.ObjectId(userId) })
+        .select('stateVersion')
+        .lean();
+      if (typeof existing?.stateVersion === 'number' && existing.stateVersion >= batchFenceToken) {
+        throw new StaleFencingTokenError(batchFenceToken, 'UnifiedRuntimeState', existing.stateVersion);
+      }
+    }
+    const state = hasUnhandled
       ? await this.rebuildRuntimeState(userId, { fromEventId: events.at(-1)!.eventId })
       : await this.getRuntimeStateFresh(userId);
     if (!state) throw new Error('Runtime state is unavailable');
@@ -256,7 +300,12 @@ export class UnifiedRuntimeStateService {
 
     }
     const updateDoc: Record<string, unknown> = {
-      $set: { ...updates, lastEventId: events.at(-1)!.eventId, lastCalculatedAt: new Date() },
+      $set: {
+        ...updates,
+        lastEventId: events.at(-1)!.eventId,
+        lastCalculatedAt: new Date(),
+        ...fenceStamp(batchFenceToken, 'stateVersion'),
+      },
     };
     if (hasAbsoluteXp) {
       // XP producers carry committed totals. Use the largest total rather than
@@ -265,8 +314,23 @@ export class UnifiedRuntimeStateService {
       delete incUpdates.xp;
     }
     if (Object.keys(incUpdates).length) updateDoc.$inc = incUpdates;
-    const updated = await UnifiedRuntimeState.findByIdAndUpdate(state._id, updateDoc, { new: true });
-    if (!updated) throw new Error('Runtime state disappeared during flush');
+    const updated = batchFenceToken !== null
+      ? await UnifiedRuntimeState.findOneAndUpdate(
+          fencedFilter({ _id: state._id }, batchFenceToken, 'stateVersion'),
+          updateDoc,
+          { new: true }
+        )
+      : await UnifiedRuntimeState.findByIdAndUpdate(state._id, updateDoc, { new: true });
+    if (!updated) {
+      if (batchFenceToken !== null) {
+        throw new StaleFencingTokenError(
+          batchFenceToken,
+          'UnifiedRuntimeState',
+          state.stateVersion ?? null
+        );
+      }
+      throw new Error('Runtime state disappeared during flush');
+    }
     const patch: Record<string, unknown> = { ...updates };
     if (hasAbsoluteXp || incUpdates.xp !== undefined) patch.xp = updated.xp;
     // Session fields are transient; coalesce them separately from progression

@@ -232,4 +232,35 @@ describe('Streak Event Consumers (dsa.problem.solved & revision.card_reviewed)',
     expect(revResults).toHaveLength(1);
     expect(revResults[0]).toMatchObject({ consumerName: 'streak.revisionCardReviewed', reason: 'executed' });
   });
+
+  it('computes anti-cheat daysDiff in user local calendar days across UTC midnight boundaries', async () => {
+    const { recordActivity } = await import('../../../modules/streak/streak.service.js');
+    vi.useFakeTimers();
+    try {
+      // 2026-11-26T12:00:00Z is already 2026-11-27 01:00 in Pacific/Auckland (+13)
+      vi.setSystemTime(new Date('2026-11-26T12:00:00.000Z'));
+
+      // 2026-11-24 local in Pacific/Auckland is 3 local calendar days old -> must be rejected
+      await recordActivity({
+        userId,
+        streakType: 'dsa',
+        source: 'auckland-too-old',
+        timezone: 'Pacific/Auckland',
+        activityDate: new Date('2026-11-24T00:00:00.000Z'),
+      });
+      expect(await UserStreakLog.countDocuments({ userId: new Types.ObjectId(userId) })).toBe(0);
+
+      // 2026-11-25 local in Pacific/Auckland is 2 local calendar days old -> must be accepted
+      await recordActivity({
+        userId,
+        streakType: 'dsa',
+        source: 'auckland-valid-2d',
+        timezone: 'Pacific/Auckland',
+        activityDate: new Date('2026-11-25T00:00:00.000Z'),
+      });
+      expect(await UserStreakLog.countDocuments({ userId: new Types.ObjectId(userId), dateKey: '2026-11-25' })).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { authMiddleware, adminMiddleware, opsAuditorMiddleware } from '../../middleware/auth.js';
 import opsController from './ops.controller.js';
 import { opsFlagRoutes } from '../flags/flags.routes.js';
+import { outboxAdminRoutes } from './outboxAdmin.routes.js';
 
 const router = Router();
 
@@ -10,6 +11,9 @@ const router = Router();
 router.get('/health', opsController.health);
 
 router.use('/flags', opsFlagRoutes);
+
+// Dead-lettered outbox events: list, retry, edit payload, archive (admin only)
+router.use('/outbox/dlq', outboxAdminRoutes);
 
 // Metrics and ops require ops auditor or admin
 router.get('/metrics', authMiddleware, opsAuditorMiddleware, opsController.metrics);

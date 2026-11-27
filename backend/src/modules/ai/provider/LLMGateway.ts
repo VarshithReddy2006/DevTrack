@@ -90,18 +90,12 @@ export class LLMGateway {
       heuristicFallback,
     } = request;
 
-    // 1. Quota Check & Consumption
-    const quota = await quotaService.checkAndConsumeQuota(userId, feature);
-    if (!quota.allowed) {
-      throw new AIQuotaExceededError(feature, quota.limit, quota.used, quota.resetAt);
-    }
-
     const preferredProvider = request.preferredProvider || 'gemini';
     const targetModel = request.model || (preferredProvider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini');
     const promptHash = this.computePromptHash(targetModel, systemPrompt, prompt);
     const cacheKey = `devtrack:ai:prompt_cache:${promptHash}`;
 
-    // 2. Redis Prompt-Hash Cache Check
+    // 1. Redis Prompt-Hash Cache Check
     if (!bypassCache && isRedisConfigured()) {
       try {
         const redis = getRedisClient();
@@ -146,7 +140,7 @@ export class LLMGateway {
       }
     }
 
-    // 2.5 Semantic Cache Check (Vector Cosine Similarity >= 0.95 within topicScope/feature)
+    // 2. Semantic Cache Check (Vector Cosine Similarity >= 0.95 within topicScope/feature)
     if (!bypassCache && env.SEMANTIC_CACHE_ENABLED) {
       try {
         const semanticRes = await semanticCacheService.findSimilar(feature, prompt);
@@ -191,7 +185,10 @@ export class LLMGateway {
       }
     }
 
-    // 3. Provider Chain Execution: Primary -> Fallback -> Heuristic
+    // 3. Quota: only a request that is about to call a provider uses a unit
+    const refundQuota = await this.reserveQuota(userId, feature);
+
+    // 4. Provider Chain Execution: Primary -> Fallback -> Heuristic
     let content = '';
     let selectedModel = targetModel;
     let selectedProvider: string = preferredProvider;
@@ -247,7 +244,8 @@ export class LLMGateway {
           error: secondaryErr instanceof Error ? secondaryErr.message : String(secondaryErr),
         });
 
-        // Heuristic Rule-Based Fallback (Guardrail G8)
+        // Heuristic Rule-Based Fallback (Guardrail G8). No provider answered, so give the unit back.
+        await refundQuota();
         content = heuristicFallback
           ? heuristicFallback(prompt, systemPrompt)
           : this.defaultHeuristicFallback(prompt);
@@ -261,7 +259,7 @@ export class LLMGateway {
     const latencyMs = Math.max(1, Date.now() - startTime);
     const cost = this.estimateCost(selectedProvider, tokensUsed);
 
-    // 4. Cache Response in Redis (Exact Hash Cache and Semantic Vector Cache)
+    // 5. Cache Response in Redis (Exact Hash Cache and Semantic Vector Cache)
     if (isRedisConfigured() && content) {
       try {
         const redis = getRedisClient();
@@ -299,7 +297,7 @@ export class LLMGateway {
       }
     }
 
-    // 5. Audit Logging
+    // 6. Audit Logging
     await this.auditLog({
       userId,
       promptHash,
@@ -333,15 +331,18 @@ export class LLMGateway {
    * Streaming counterpart of generateCompletion. Yields text deltas as the provider produces
    * them, then a final `done` event shaped like a generateCompletion result.
    *
-   * Same quota feature accounting (one unit per call), prompt-hash cache and heuristic (G8)
-   * fallback as generateCompletion:
-   * - A cache hit is replayed as a single delta followed by `done` with cached: true.
+   * Same quota feature accounting, prompt-hash cache and heuristic (G8) fallback as
+   * generateCompletion:
+   * - A cache hit is replayed as a single delta followed by `done` with cached: true. It uses
+   *   no quota and is served even when the daily quota is spent.
    * - Provider failover lives in AIProviderAdapter.streamResponse and only happens before the
    *   first delta; if every provider fails before any text, `heuristicFallback` supplies the
-   *   content (an empty string yields no delta) and `done.provider` is 'heuristic'.
+   *   content (an empty string yields no delta), `done.provider` is 'heuristic' and the quota
+   *   unit is given back.
    * - If a provider drops after text was already yielded, AIStreamInterruptedError is thrown
    *   rather than splicing in a different answer.
-   * Throws AIQuotaExceededError before anything is yielded when the daily quota is spent.
+   * On a cache miss, throws AIQuotaExceededError before anything is yielded when the daily
+   * quota is spent.
    */
   async *streamCompletion(request: LLMCompletionRequest, options: AIStreamOptions = {}): AsyncGenerator<LLMStreamEvent> {
     const startTime = Date.now();
@@ -355,11 +356,6 @@ export class LLMGateway {
       bypassCache = false,
       heuristicFallback,
     } = request;
-
-    const quota = await quotaService.checkAndConsumeQuota(userId, feature);
-    if (!quota.allowed) {
-      throw new AIQuotaExceededError(feature, quota.limit, quota.used, quota.resetAt);
-    }
 
     const preferredProvider = request.preferredProvider || 'gemini';
     const targetModel = request.model || (preferredProvider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini');
@@ -426,6 +422,8 @@ export class LLMGateway {
       }
     }
 
+    const refundQuota = await this.reserveQuota(userId, feature);
+
     const adapterReq: AIRequest = {
       prompt, systemPrompt, temperature, maxTokens,
       model: request.model,
@@ -468,6 +466,7 @@ export class LLMGateway {
       logger.error('[LLMGateway] All streaming providers failed, triggering heuristic fallback', {
         error: err instanceof Error ? err.message : String(err),
       });
+      await refundQuota();
       content = heuristicFallback ? heuristicFallback(prompt, systemPrompt) : this.defaultHeuristicFallback(prompt);
       selectedModel = 'heuristic-rule-engine';
       selectedProvider = 'heuristic';
@@ -522,6 +521,22 @@ export class LLMGateway {
         cached: false, cacheHit: false, cost, fallbackTriggered, promptHash,
       },
     };
+  }
+
+  /**
+   * Uses one quota unit right before a provider call. Cache hits return before this, so
+   * they cost nothing and still work once the quota is spent.
+   * Returns a callback that gives the unit back when no provider produced the answer.
+   */
+  private async reserveQuota(userId: string, feature: string): Promise<() => Promise<void>> {
+    const takenAt = new Date();
+    const quota = await quotaService.checkAndConsumeQuota(userId, feature, takenAt);
+    if (!quota.allowed) {
+      throw new AIQuotaExceededError(feature, quota.limit, quota.used, quota.resetAt);
+    }
+    // used is 0 when the quota check failed open, so nothing was taken.
+    if (quota.used <= 0) return async () => {};
+    return () => quotaService.refundQuota(userId, feature, takenAt);
   }
 
   /**
