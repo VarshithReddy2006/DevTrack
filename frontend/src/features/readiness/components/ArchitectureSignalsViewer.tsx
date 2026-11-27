@@ -902,17 +902,35 @@ export const ArchitectureSignalsViewer: React.FC<ArchitectureSignalsViewerProps>
           {allNodes.length === 0 ? (
             <div
               data-testid="architecture-empty-state"
-              className="mt-6 flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 px-6 py-10 text-center"
+              className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 px-5 py-6 text-center sm:text-left"
             >
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-400">
-                <Server className="h-6 w-6" aria-hidden={true} />
+              <div className="flex flex-col sm:flex-row items-center gap-3.5 min-w-0">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-400">
+                  <Server className="h-5 w-5" aria-hidden={true} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900">
+                    No architecture signals detected yet
+                  </h3>
+                  <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-600">
+                    Sync a GitHub repository containing a Dockerfile, docker-compose.yml, Kubernetes manifest, or backend dependency manifest to map your system topology.
+                  </p>
+                </div>
               </div>
-              <h3 className="mt-3 text-base font-bold text-slate-900">
-                No architecture signals detected yet
-              </h3>
-              <p className="mt-1 max-w-md text-xs leading-relaxed text-slate-600">
-                Sync a GitHub repository containing a Dockerfile, docker-compose.yml, Kubernetes manifest, or backend dependency manifest to map your system topology.
-              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2 shrink-0">
+                <a
+                  href="/projects"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-700 transition-colors"
+                >
+                  Sync GitHub Repositories
+                </a>
+                <a
+                  href="/settings"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  Configure Repo
+                </a>
+              </div>
             </div>
           ) : (
             <div className="mt-6 space-y-6">
@@ -1006,6 +1024,14 @@ export const ArchitectureSignalsViewer: React.FC<ArchitectureSignalsViewerProps>
                       </span>
                     </div>
                     <p className="mt-1.5 text-xs leading-relaxed text-slate-600">{rec.description}</p>
+                    <div className="mt-2.5 pt-2 border-t border-slate-100 flex justify-end">
+                      <a
+                        href="/projects"
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 transition-colors"
+                      >
+                        Add Evidence →
+                      </a>
+                    </div>
                   </li>
                 ))}
               </ul>

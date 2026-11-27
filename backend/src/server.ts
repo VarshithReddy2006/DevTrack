@@ -27,11 +27,7 @@ import { getOrCreateQueue, QueueNames } from './shared/jobs/index.js';
 import { getWorkerStatus, getXpWorkerStatus } from './shared/jobs/index.js';
 import { orchestrator, registerShutdownSignals } from './shared/runtime/index.js';
 import { getInfrastructureState, setApiStatus, type InfrastructureState } from './shared/runtime/infrastructureRegistry.js';
-import routes from './routes/index.js';
 import { getRegisteredWorkerStatuses } from './shared/jobs/workers.js';
-import { dlqRoutes } from './routes/dlq.routes.js';
-import { registerPublicProfileShell } from './modules/profile/ogShell.routes.js';
-import { mountApiRoutes } from './routes/mount.js';
 import { sanitizeMongoError } from './db/connection.js';
 import { discoverMigrations } from './db/migrations/discover.js';
 import { createMigrationRunner } from './db/migrations/runner.js';
@@ -39,8 +35,9 @@ import { createMigrationRunner } from './db/migrations/runner.js';
 const require = createRequire(import.meta.url);
 const { version: APP_VERSION } = require('../package.json') as { version: string };
 
-export async function createApp(): Promise<express.Express> {
+function createBaseApp(): { app: express.Express; mountAllRoutes: () => Promise<void> } {
   const app = express();
+  let mountedRouter: express.Router | null = null;
 
   // Must run before any middleware that reads req.ip (rate limiters, request context).
   configureTrustProxy(app, env.TRUST_PROXY);
@@ -89,19 +86,51 @@ export async function createApp(): Promise<express.Express> {
   // Phase 2: Health & observability endpoints (before routes)
   setupHealthEndpoints(app, getRedisHealth, getWorkerStatus, getXpWorkerStatus, getOrCreateQueue, QueueNames, eventBus, syncState, getInfrastructureState);
 
-  registerPublicProfileShell(app, env.CORS_ORIGIN, env.PUBLIC_API_URL || undefined);
-
-  // Phase 3: API routes
-  app.use('/api/system/dlq', dlqRoutes);
-  mountApiRoutes(app, routes);
+  // Phase 3: Deferred route dispatcher so HTTP port binds before heavy route/module imports
+  app.use((req, res, next) => {
+    if (mountedRouter) {
+      return mountedRouter(req, res, next);
+    }
+    if (req.path === '/api' || req.path.startsWith('/api/') || req.path.startsWith('/u/')) {
+      res.setHeader('Retry-After', '2');
+      return res.status(503).json({
+        success: false,
+        error: 'Server is warming up, please retry shortly',
+      });
+    }
+    return next();
+  });
 
   // Phase 4: Error handlers
   app.use(notFoundHandler);
   app.use(errorHandler);
 
-  // Phase 5: Orchestrated infrastructure boot (moved to bootstrap() to run non-blocking)
-  // await orchestrator.startup(app);
+  const mountAllRoutes = async () => {
+    const [
+      { default: routes },
+      { dlqRoutes },
+      { registerPublicProfileShell },
+      { mountApiRoutes },
+    ] = await Promise.all([
+      import('./routes/index.js'),
+      import('./routes/dlq.routes.js'),
+      import('./modules/profile/ogShell.routes.js'),
+      import('./routes/mount.js'),
+    ]);
 
+    const router = express.Router();
+    registerPublicProfileShell(router, env.CORS_ORIGIN, env.PUBLIC_API_URL || undefined);
+    router.use('/api/system/dlq', dlqRoutes);
+    mountApiRoutes(router, routes);
+    mountedRouter = router;
+  };
+
+  return { app, mountAllRoutes };
+}
+
+export async function createApp(): Promise<express.Express> {
+  const { app, mountAllRoutes } = createBaseApp();
+  await mountAllRoutes();
   return app;
 }
 
@@ -125,7 +154,7 @@ async function bootstrap() {
     logger.warn('Set OPENAI_API_KEY or GEMINI_API_KEY for full intelligence capabilities.');
   }
 
-  const app = await createApp();
+  const { app, mountAllRoutes } = createBaseApp();
 
   // Phase 6: HTTP server start (bind immediately to 0.0.0.0 and PORT so cloud port scanners like Render succeed instantly)
   const host = (env.IS_PROD || process.env.RENDER === 'true') ? '0.0.0.0' : (process.env.HOST || '0.0.0.0');
@@ -143,6 +172,19 @@ async function bootstrap() {
   });
 
   registerShutdownSignals(server, shutdownTelemetry);
+
+  // Yield the event loop until the HTTP server is listening and able to answer
+  // cloud port-scanner/liveness probes before importing heavy route modules.
+  await new Promise<void>((resolve) => {
+    if (server.listening) {
+      setTimeout(resolve, 25);
+    } else {
+      server.once('listening', () => setTimeout(resolve, 25));
+    }
+  });
+
+  await mountAllRoutes();
+  logger.info('API routes mounted');
 
   if (env.IS_PROD) {
     try {

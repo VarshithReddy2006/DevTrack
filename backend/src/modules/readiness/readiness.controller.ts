@@ -1,10 +1,12 @@
 import { getPlacementRadar } from './placementRadar.service.js';
+import { isObjectIdOrHexString } from 'mongoose';
 import { z } from 'zod';
 import { CareerIntentService } from './services/CareerIntentService.js';
 import { ReadinessOrchestratorService } from './engine/ReadinessOrchestratorService.js';
 import { DomainIntelligenceService } from './engine/ReadinessOrchestratorService.js';
 import { UserSkillProgress } from '../../db/models/userSkillProgress.model.js';
 import { normalizeSkill } from './role/roleSkills.js';
+import { generateRoadmap, roleSlug } from './roadmapGenerator.service.js';
 import { ApiResponse } from '../../shared/response.js';
 import { withAuth } from '../../shared/controllerUtils.js';
 import { logger } from '../../shared/logger.js';
@@ -57,9 +59,16 @@ export const ReadinessController = {
       const roadmapIntelligence = (intelligence as any)?.intelligence ?? (intelligence as any);
       const normalizedRoadmap = {
         domain: 'roadmap',
+        noRoleSelected: Boolean(roadmapIntelligence?.noRoleSelected),
+        targetRole: roadmapIntelligence?.targetRole ?? '',
+        goal: roadmapIntelligence?.goal ?? '',
+        experienceLevel: roadmapIntelligence?.experienceLevel ?? '',
+        weeklyHours: roadmapIntelligence?.weeklyHours ?? 10,
+        targetDeadlineWeeks: roadmapIntelligence?.targetDeadlineWeeks ?? 0,
         currentStage: roadmapIntelligence?.currentStage ?? 'Unknown',
         roadmapProgress: roadmapIntelligence?.roadmapProgress ?? 0,
         verifiedSkills: roadmapIntelligence?.verifiedSkills ?? [],
+        verifiedSkillSources: roadmapIntelligence?.verifiedSkillSources ?? [],
         completedRoadmapSkills: roadmapIntelligence?.completedRoadmapSkills ?? [],
         missingSkills: roadmapIntelligence?.missingSkills ?? [],
         prioritySkills: roadmapIntelligence?.prioritySkills ?? [],
@@ -69,6 +78,10 @@ export const ReadinessController = {
         readinessGain: roadmapIntelligence?.readinessGain ?? 0,
         estimatedWeeksToNextMilestone: roadmapIntelligence?.estimatedWeeksToNextMilestone ?? 0,
         nextSkillResource: roadmapIntelligence?.nextSkillResource ?? null,
+        skillResources: roadmapIntelligence?.skillResources ?? {},
+        confidence: roadmapIntelligence?.confidence ?? (intelligence as any)?.shared?.confidence ?? 0,
+        lastSyncedAt: roadmapIntelligence?.lastSyncedAt ?? null,
+        verificationCoverage: roadmapIntelligence?.verificationCoverage ?? 0,
       };
       res.json({ success: true, data: normalizedRoadmap });
       return;
@@ -95,6 +108,9 @@ export const ReadinessController = {
       timelineGoals: z.string().optional(),
       currentStrongestSkills: z.array(z.string()).optional(),
       desiredSkills: z.array(z.string()).optional(),
+      knownSkills: z.array(z.string()).optional(),
+      jobTargetId: z.string().optional(),
+      targetDeadlineWeeks: z.union([z.number(), z.string().regex(/^\d+$/).transform(Number)]).optional(),
     });
 
     const validationResult = SetCareerIntentSchema.safeParse(req.body);
@@ -104,12 +120,17 @@ export const ReadinessController = {
     }
 
     const { dreamRole, targetRole, goal, experienceLevel, weeklyHours, targetPackage, targetCompanyTier, timelineGoals,
-      currentStrongestSkills, desiredSkills } = validationResult.data;
+      currentStrongestSkills, desiredSkills, knownSkills, jobTargetId, targetDeadlineWeeks } = validationResult.data;
     const resolvedRole = dreamRole?.trim() || targetRole?.trim();
     if (!resolvedRole) {
       ApiResponse.badRequest(res, 'A career role is required');
       return;
     }
+
+    const exp = (experienceLevel || '').toLowerCase();
+    const hours = Number(weeklyHours || 10);
+    const derivedDeadlineWeeks = targetDeadlineWeeks
+      ?? (exp.includes('advanced') ? 8 : exp.includes('intermediate') ? 12 : hours >= 20 ? 12 : 16);
 
     const intent = await CareerIntentService.upsertCareerIntent({
       userId,
@@ -120,9 +141,40 @@ export const ReadinessController = {
       goal: goal || '',
       experienceLevel: experienceLevel || '',
       weeklyHours: weeklyHours ?? 0,
-      currentStrongestSkills,
+      currentStrongestSkills: currentStrongestSkills ?? knownSkills,
       desiredSkills,
+      jobTargetId,
+      targetDeadlineWeeks: derivedDeadlineWeeks,
     });
+
+    if (knownSkills && knownSkills.length > 0) {
+      await Promise.all(
+        knownSkills
+          .map(skill => normalizeSkill(skill))
+          .filter(Boolean)
+          .map(skill =>
+            UserSkillProgress.findOneAndUpdate(
+              { userId, skill },
+              { userId, skill, completed: true, completedAt: new Date(), source: 'manual' },
+              { upsert: true, new: true }
+            )
+          )
+      );
+    }
+
+    if (isObjectIdOrHexString(userId)) {
+      try {
+        await generateRoadmap(userId, {
+          targetRoleId: jobTargetId?.trim() || roleSlug(resolvedRole),
+          targetDeadlineWeeks: Math.min(52, Math.max(2, derivedDeadlineWeeks)),
+        });
+      } catch (err) {
+        logger.warn('[readiness] Non-fatal: milestone generation skipped after intent update', {
+          userId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     res.json({ success: true, data: intent });
   }),

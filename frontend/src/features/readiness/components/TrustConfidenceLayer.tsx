@@ -100,39 +100,39 @@ export const TrustConfidenceLayer: React.FC<Props> = ({
         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Trust & Confidence</span>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {/* Confidence */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-slate-100">
+        <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200/80 min-w-0">
           <div className={`w-2 h-2 rounded-full shrink-0 ${confidenceStyle.dot}`} />
-          <div>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Confidence</p>
-            <p className={`text-xs font-bold ${confidenceStyle.text}`}>{confidenceLevel} ({confidence}%)</p>
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Confidence</p>
+            <p className={`text-xs font-bold tabular-nums ${confidenceStyle.text}`}>{confidenceLevel} ({confidence}%)</p>
           </div>
         </div>
 
         {/* Data Freshness */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-slate-100">
-          <Clock size={12} className="text-slate-400 shrink-0" />
-          <div>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Data Freshness</p>
-            <p className="text-xs font-bold text-slate-700">{formatSyncTime(lastSyncedAt)}</p>
+        <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200/80 min-w-0">
+          <Clock size={14} className="text-slate-400 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Data Freshness</p>
+            <p className="text-xs font-bold text-slate-700 tabular-nums">{formatSyncTime(lastSyncedAt)}</p>
           </div>
         </div>
 
         {/* Verification Coverage */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-slate-100">
-          <CheckCircle size={12} className="text-slate-400 shrink-0" />
-          <div>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Verification</p>
-            <p className="text-xs font-bold text-slate-700">{verificationCoverage}% covered</p>
+        <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200/80 min-w-0">
+          <CheckCircle size={14} className="text-slate-400 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Verification</p>
+            <p className="text-xs font-bold text-slate-700 tabular-nums">{verificationCoverage}% covered</p>
           </div>
         </div>
 
         {/* Synchronized Status */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-slate-100">
+        <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200/80 min-w-0">
           {statusMeta.icon}
-          <div>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
             <p className={`text-xs font-bold ${statusMeta.textClass}`}>
               {statusMeta.label}
             </p>

@@ -49,6 +49,14 @@ const DIFFICULTY_WEIGHTS = {
   hard: 5.0,
 } as const;
 
+const CORE_INTERVIEW_TOPICS = new Set([
+  'dp',
+  'graphs',
+  'trees',
+  'arrays',
+  'backtracking',
+]);
+
 export function getTopicTier(mastery: number): TopicTier {
   if (mastery >= 90) return 'Mastery';
   if (mastery >= 70) return 'Advanced';
@@ -102,9 +110,9 @@ function resolveTopicDifficulty(
   solved: number,
   explicit?: TopicDifficultyBreakdown,
   globalDist?: { easy: number; medium: number; hard: number }
-): TopicDifficultyBreakdown {
+): { difficulty: TopicDifficultyBreakdown; isEstimated: boolean } {
   const totalSolved = Math.max(0, Math.floor(solved));
-  if (totalSolved === 0) return { easy: 0, medium: 0, hard: 0 };
+  if (totalSolved === 0) return { difficulty: { easy: 0, medium: 0, hard: 0 }, isEstimated: false };
 
   const expEasy = Math.max(0, Math.floor(explicit?.easy ?? 0));
   const expMedium = Math.max(0, Math.floor(explicit?.medium ?? 0));
@@ -112,17 +120,23 @@ function resolveTopicDifficulty(
   const expSum = expEasy + expMedium + expHard;
 
   if (expSum === totalSolved) {
-    return { easy: expEasy, medium: expMedium, hard: expHard };
+    return { difficulty: { easy: expEasy, medium: expMedium, hard: expHard }, isEstimated: false };
   }
   if (expSum > totalSolved) {
-    return allocateByDistribution(totalSolved, { easy: expEasy, medium: expMedium, hard: expHard });
+    return {
+      difficulty: allocateByDistribution(totalSolved, { easy: expEasy, medium: expMedium, hard: expHard }),
+      isEstimated: false,
+    };
   }
 
   const remaining = allocateByDistribution(totalSolved - expSum, globalDist);
   return {
-    easy: expEasy + remaining.easy,
-    medium: expMedium + remaining.medium,
-    hard: expHard + remaining.hard,
+    difficulty: {
+      easy: expEasy + remaining.easy,
+      medium: expMedium + remaining.medium,
+      hard: expHard + remaining.hard,
+    },
+    isEstimated: true,
   };
 }
 
@@ -171,7 +185,7 @@ export class RecommendationEngine {
     const topics: TopicAnalysis[] = [];
 
     Object.entries(topicBreakdown).forEach(([topic, solved]) => {
-      const difficulty = resolveTopicDifficulty(
+      const { difficulty, isEstimated } = resolveTopicDifficulty(
         solved,
         topicDifficultyBreakdown?.[topic as keyof TopicBreakdown],
         difficultyDistribution
@@ -181,7 +195,15 @@ export class RecommendationEngine {
         DIFFICULTY_WEIGHTS.medium * difficulty.medium +
         DIFFICULTY_WEIGHTS.hard * difficulty.hard;
       const baseline = BASELINE_PROBLEMS[topic] || 30;
-      const mastery = Math.min(100, Math.round((weightedSolves / baseline) * 100));
+      let mastery = Math.min(100, Math.round((weightedSolves / baseline) * 100));
+
+      // Minimum Medium/Hard depth gate: prevent inflated 90-100% Mastery without deep problems
+      if (difficulty.hard < 3) {
+        mastery = Math.min(mastery, 79);
+      }
+      if (CORE_INTERVIEW_TOPICS.has(topic) && difficulty.medium + difficulty.hard < 8) {
+        mastery = Math.min(mastery, 64);
+      }
 
       topics.push({
         topic,
@@ -189,6 +211,7 @@ export class RecommendationEngine {
         mastery,
         tier: getTopicTier(mastery),
         difficulty,
+        ...(isEstimated ? { isEstimatedDifficulty: true } : {}),
       });
     });
 

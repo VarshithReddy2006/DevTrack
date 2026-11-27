@@ -65,7 +65,7 @@ describe('RecommendationEngine', () => {
     expect(heapsTopic).toEqual({
       topic: 'heaps',
       solved: 8,
-      mastery: 88,
+      mastery: 79,
       tier: 'Advanced',
       difficulty: { easy: 2, medium: 4, hard: 2 },
     });
@@ -103,7 +103,7 @@ describe('RecommendationEngine', () => {
     expect(all.find((t) => t.topic === 'queue')?.tier).toBe('Novice');
   });
 
-  it('proportionally infers per-topic difficulty breakdown when only aggregate stats exist', () => {
+  it('proportionally infers per-topic difficulty breakdown when only aggregate stats exist and marks isEstimatedDifficulty', () => {
     const result = engine.generateRecommendations({
       topicBreakdown: emptyBreakdown({ arrays: 20 }),
       difficultyDistribution: { easy: 100, medium: 80, hard: 20 }, // 50% E, 40% M, 10% H
@@ -111,9 +111,38 @@ describe('RecommendationEngine', () => {
 
     const arrays = result.strongTopics.find((t) => t.topic === 'arrays');
     expect(arrays?.difficulty).toEqual({ easy: 10, medium: 8, hard: 2 });
-    // 10*1 + 8*2.5 + 2*5 = 40 / 45 = 89%
-    expect(arrays?.mastery).toBe(89);
+    // 10*1 + 8*2.5 + 2*5 = 40 / 45 = 89%, capped at 79% because hard < 3
+    expect(arrays?.mastery).toBe(79);
     expect(arrays?.tier).toBe('Advanced');
+    expect(arrays?.isEstimatedDifficulty).toBe(true);
+  });
+
+  it('enforces minimum Hard and Medium+Hard depth gates on core interview topics', () => {
+    const result = engine.generateRecommendations({
+      topicBreakdown: emptyBreakdown({
+        dp: 60,     // 60 Easy -> 60/60 = 100% raw, but medium+hard = 0 < 8 -> capped at 64% (Proficient)
+        trees: 20,  // 10E + 8M + 2H -> 40/50 = 80% raw, hard = 2 < 3 -> capped at 79% (Advanced)
+        graphs: 18, // 5E + 9M + 4H -> 47.5/50 = 95% raw, gates satisfied -> 95% (Mastery)
+      }),
+      topicDifficultyBreakdown: {
+        dp: { easy: 60, medium: 0, hard: 0 },
+        trees: { easy: 10, medium: 8, hard: 2 },
+        graphs: { easy: 5, medium: 9, hard: 4 },
+      },
+    });
+
+    const all = [...result.strongTopics, ...result.weakTopics];
+    const dp = all.find((t) => t.topic === 'dp');
+    const trees = all.find((t) => t.topic === 'trees');
+    const graphs = all.find((t) => t.topic === 'graphs');
+
+    expect(dp?.mastery).toBe(64);
+    expect(dp?.tier).toBe('Proficient');
+    expect(trees?.mastery).toBe(79);
+    expect(trees?.tier).toBe('Advanced');
+    expect(graphs?.mastery).toBe(95);
+    expect(graphs?.tier).toBe('Mastery');
+    expect(graphs?.isEstimatedDifficulty).toBeUndefined();
   });
 
   it('caps mastery at 100 even when weighted points exceed baseline', () => {

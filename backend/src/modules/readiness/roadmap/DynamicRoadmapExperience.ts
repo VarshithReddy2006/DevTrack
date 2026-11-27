@@ -1,6 +1,12 @@
+import { isObjectIdOrHexString } from 'mongoose';
+import { Project } from '../../../db/models/project.model.js';
 import { ReadinessRoadmap } from '../../../db/models/readinessRoadmap.model.js';
 import { ReadinessSkills } from '../../../db/models/readinessSkills.model.js';
 import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js';
+import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
+import { UserSkillProgress } from '../../../db/models/userSkillProgress.model.js';
+import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
+import { normalizeSkill } from '../role/roleSkills.js';
 import { SkillGraphNormalizationLayer } from '../skillGraph/SkillGraphNormalizationLayer.js';
 import { logger } from '../../../shared/logger.js';
 
@@ -61,15 +67,36 @@ class DynamicRoadmapExperienceClass {
     try {
       logger.info('[DynamicRoadmapExperience] Generating dynamic roadmap', { userId, targetRole });
       
-      // Fetch readiness data
-      const [roadmapData, skillsData, projectsData] = await Promise.all([
+      // Fetch readiness data & verified skill sources
+      const validObjectId = isObjectIdOrHexString(userId);
+      const [roadmapData, skillsData, projectsData, resumeProfile, skillProgress, verifiedProjects, projectsList] = await Promise.all([
         ReadinessRoadmap.findOne({ userId }),
         ReadinessSkills.findOne({ userId }),
         ReadinessProjects.findOne({ userId }),
+        ResumeProfile.findOne({ userId }).select('selectedSkills').lean(),
+        UserSkillProgress.find({ userId, completed: true }).select('skill').lean(),
+        validObjectId
+          ? VerifiedProject.find({ userId, 'verification.status': 'verified' })
+              .select('techStack metrics.primaryLanguage metrics.languages')
+              .lean()
+          : Promise.resolve([]),
+        validObjectId ? Project.find({ userId }).select('techStack').lean() : Promise.resolve([]),
       ]);
+
+      const verifiedSkillSet = new Set<string>([
+        ...(resumeProfile?.selectedSkills ?? []),
+        ...skillProgress.map(p => p.skill),
+        ...projectsList.flatMap(p => p.techStack ?? []),
+        ...verifiedProjects.flatMap(vp => [
+          ...(vp.techStack ?? []),
+          ...(vp.metrics?.primaryLanguage ? [vp.metrics.primaryLanguage] : []),
+          ...Object.keys(vp.metrics?.languages ?? {}),
+        ]),
+      ].map(normalizeSkill).filter(Boolean));
       
-      // Identify blockers
-      const blockers = this.identifyBlockers(roadmapData, skillsData, projectsData);
+      // Identify blockers (excluding dependencies already verified across resume/projects/github)
+      const blockers = this.identifyBlockers(roadmapData, skillsData, projectsData)
+        .filter(b => !verifiedSkillSet.has(normalizeSkill(b.nodeName)));
       
       // Determine primary blocker
       const primaryBlocker = blockers.length > 0 ? blockers[0] : null;

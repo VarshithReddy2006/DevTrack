@@ -316,4 +316,16 @@ describe('PATCH /api/v2/readiness/roadmap/milestones/:milestoneId/tasks/:taskId'
     expect((await toggle('m1', 'm1-t1', { completed: 'yes' })).status).toBe(400);
     expect((await toggle('m1', 'm1-t1', {})).status).toBe(400);
   });
+
+  it('returns curated learning resources for GET /readiness/roadmap/resource and rejects missing skill', async () => {
+    const res = await request('/resource?skill=React', 'GET');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.skill).toBe('React');
+    expect(body.data.practiceProject?.title).toBeTruthy();
+
+    const missing = await request('/resource', 'GET');
+    expect(missing.status).toBe(400);
+  });
 });

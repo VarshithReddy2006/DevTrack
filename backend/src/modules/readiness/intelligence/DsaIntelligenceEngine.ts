@@ -131,22 +131,37 @@ export const DsaIntelligenceEngine = {
         ? freshnessValues.reduce((sum, p) => sum + p.freshnessScore, 0) / freshnessValues.length : 0 };
       
       // Calculate overall confidence score
-      const confidenceScore = this.calculateOverallConfidence(
+      const rawConfidenceScore = this.calculateOverallConfidence(
         totalSolves,
         solveConsistency,
         processedTopics,
         compositeFreshness
       );
+
+      // Hydrate live DSAService telemetry so ReadinessDsa matches /readiness/dsa even when
+      // PlatformStats exists without granular DsaSubmission rows.
+      let effectiveTotalSolves = totalSolves;
+      let effectiveSolveConsistency = solveConsistency;
+      let confidenceScore = rawConfidenceScore;
+      try {
+        const { dsaService } = await import('../dsa/service/dsa.service.js');
+        const liveDsa = await dsaService.generateDSAIntelligence({ userId });
+        effectiveTotalSolves = Math.max(totalSolves, liveDsa.difficultyDistribution.total || 0);
+        effectiveSolveConsistency = Math.max(solveConsistency, liveDsa.consistencyScore || 0);
+        confidenceScore = Math.max(rawConfidenceScore, liveDsa.confidenceScore || 0);
+      } catch {
+        // Non-fatal in unit tests or isolated environments without full DSA repository fixtures
+      }
       
       const confidenceReasoning = this.generateConfidenceReasoning(
-        totalSolves,
-        solveConsistency,
+        effectiveTotalSolves,
+        effectiveSolveConsistency,
         processedTopics.length,
         compositeFreshness
       );
       
       const evidenceCoverage = this.calculateEvidenceCoverage(
-        totalSolves,
+        effectiveTotalSolves,
         processedTopics.length,
         submissions.length
       );
@@ -154,9 +169,9 @@ export const DsaIntelligenceEngine = {
       await ReadinessDsa.findOneAndUpdate(
         { userId },
         {
-          totalSolves,
+          totalSolves: effectiveTotalSolves,
           hardProblemProgression,
-          solveConsistency,
+          solveConsistency: effectiveSolveConsistency,
           difficultyDistribution,
           topics: processedTopics,
           weakTopics,

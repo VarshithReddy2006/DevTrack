@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Express } from 'express';
+import type { IRouter } from 'express';
 import { asyncHandler } from '../../middleware/error.js';
 import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { PublicProfileService } from './publicProfile.service.js';
@@ -74,7 +74,7 @@ function renderShell(shell: Shell): string {
  * `apiUrl` is the public origin of this API. With it, published profiles advertise their
  * generated card as og:image; without it the shell keeps the static preview image.
  */
-export function registerPublicProfileShell(app: Express, frontendUrl: string, apiUrl?: string): void {
+export function registerPublicProfileShell(app: IRouter, frontendUrl: string, apiUrl?: string): void {
   // Use the configured frontend origin for canonical URLs and browser navigation.
   const frontend = URL.canParse(frontendUrl) ? new URL(frontendUrl) : undefined;
   const origin = frontend && /^https?:$/.test(frontend.protocol)

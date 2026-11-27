@@ -1,4 +1,5 @@
 import axiosClient from '../utils/axiosClient';
+import type { RoadmapMilestone } from '../features/readiness/components/roadmapTimeline.types';
 
 export type ReadinessSnapshot = {
   dynamicState: {
@@ -51,6 +52,9 @@ export type CareerIntentInput = {
   targetPackage?: string;
   targetCompanyTier?: string;
   timelineGoals?: string;
+  knownSkills?: string[];
+  jobTargetId?: string;
+  targetDeadlineWeeks?: number;
 };
 
 // ─── Domain Intelligence Types ───
@@ -143,11 +147,23 @@ export interface LearningResource {
   isFallback?: boolean;
 }
 
+export type VerifiedSkillSource = {
+  skill: string;
+  source: 'resume' | 'github' | 'project' | 'self';
+};
+
 export type RoadmapDomainNormalized = {
   domain: string;
+  noRoleSelected?: boolean;
+  targetRole?: string;
+  goal?: string;
+  experienceLevel?: string;
+  weeklyHours?: number;
+  targetDeadlineWeeks?: number;
   currentStage: string;
   roadmapProgress: number; // 0-100
   verifiedSkills: string[];
+  verifiedSkillSources?: VerifiedSkillSource[];
   completedRoadmapSkills: string[];
   missingSkills: string[]; // missing skills
   prioritySkills: string[]; // highest value skills
@@ -156,8 +172,86 @@ export type RoadmapDomainNormalized = {
   highestImpactSkill: string;
   readinessGain: number;
   estimatedWeeksToNextMilestone: number;
-  nextSkillResource?: LearningResource;
+  nextSkillResource?: LearningResource | null;
+  skillResources?: Record<string, LearningResource>;
+  confidence?: number;
+  lastSyncedAt?: string | null;
+  verificationCoverage?: number;
 };
+
+export interface MilestoneRoadmapTaskApi {
+  taskId: string;
+  kind: 'project' | 'dsa' | 'concept' | 'verification';
+  title: string;
+  completed: boolean;
+  completedAt: string | null;
+}
+
+export interface MilestoneRoadmapItemApi {
+  milestoneId: string;
+  sequence: number;
+  startWeek: number;
+  endWeek: number;
+  skills: string[];
+  objective: string;
+  projectArchitecture: string;
+  keyConcepts: string[];
+  dsaPatterns: string[];
+  verificationCriteria: string[];
+  tasks: MilestoneRoadmapTaskApi[];
+  completed: boolean;
+  completedAt: string | null;
+  progress: number;
+}
+
+export interface MilestoneRoadmapApiResponse {
+  id: string;
+  targetRoleId: string;
+  targetRole: string;
+  targetSource: 'role_catalog' | 'job_target';
+  targetDeadlineWeeks: number;
+  baselineReadinessScore: number | null;
+  missingSkills: string[];
+  deferredSkills: string[];
+  source: 'ai' | 'template';
+  degradedReason: string | null;
+  generatedAt: string;
+  progress: number;
+  milestones: MilestoneRoadmapItemApi[];
+}
+
+export function mapMilestoneRoadmapToTimeline(api: MilestoneRoadmapApiResponse | null): RoadmapMilestone[] {
+  if (!api || !Array.isArray(api.milestones)) return [];
+  let foundActive = false;
+  return [...api.milestones]
+    .sort((a, b) => a.sequence - b.sequence || a.startWeek - b.startWeek)
+    .map((m) => {
+      let status: 'completed' | 'active' | 'locked' = 'locked';
+      if (m.completed) {
+        status = 'completed';
+      } else if (!foundActive) {
+        status = 'active';
+        foundActive = true;
+      }
+      const title = m.skills?.length
+        ? m.skills.join(' & ')
+        : `Sprint ${m.sequence}`;
+      return {
+        id: m.milestoneId,
+        title,
+        objective: m.objective,
+        weekStart: m.startWeek,
+        weekEnd: m.endWeek,
+        estimatedHours: Math.max(4, (m.tasks?.length || 1) * 3),
+        status,
+        tasks: (m.tasks || []).map((t) => ({
+          id: t.taskId,
+          title: t.title,
+          completed: t.completed,
+        })),
+      };
+    });
+}
 
 /**
  * Backend returns the normalized roadmap schema directly as `success.data` for:
@@ -257,5 +351,36 @@ export const readinessService = {
       console.error('Failed to set skill progress', error);
       return { success: false, error: error.response?.data?.error || error.message };
     }
+  },
+
+  async getMilestoneRoadmap(options?: { signal?: AbortSignal }): Promise<MilestoneRoadmapApiResponse | null> {
+    try {
+      const res = await axiosClient.get<{ success: boolean; data: MilestoneRoadmapApiResponse }>('/readiness/roadmap', { signal: options?.signal });
+      return res.data?.data ?? null;
+    } catch (error: any) {
+      if (error?.response?.status === 404) return null;
+      throw error;
+    }
+  },
+
+  async generateMilestoneRoadmap(payload: { targetRoleId: string; targetDeadlineWeeks?: number }): Promise<MilestoneRoadmapApiResponse> {
+    const res = await axiosClient.post<{ success: boolean; data: MilestoneRoadmapApiResponse }>('/readiness/roadmap/generate', payload);
+    return res.data.data;
+  },
+
+  async toggleMilestoneTask(milestoneId: string, taskId: string, completed: boolean): Promise<MilestoneRoadmapApiResponse> {
+    const res = await axiosClient.patch<{ success: boolean; data: MilestoneRoadmapApiResponse }>(
+      `/readiness/roadmap/milestones/${encodeURIComponent(milestoneId)}/tasks/${encodeURIComponent(taskId)}`,
+      { completed }
+    );
+    return res.data.data;
+  },
+
+  async getSkillResource(skill: string, options?: { signal?: AbortSignal }): Promise<LearningResource> {
+    const res = await axiosClient.get<{ success: boolean; data: LearningResource }>(
+      `/readiness/roadmap/resource?skill=${encodeURIComponent(skill)}`,
+      { signal: options?.signal }
+    );
+    return res.data.data;
   }
 };

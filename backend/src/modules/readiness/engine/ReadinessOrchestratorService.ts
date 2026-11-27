@@ -9,8 +9,10 @@ import { ReadinessProjects } from '../../../db/models/readinessProjects.model.js
 import { ReadinessRoadmap } from '../../../db/models/readinessRoadmap.model.js';
 import { ReadinessBenchmarks } from '../../../db/models/readinessBenchmarks.model.js';
 import { CareerIntent } from '../../../db/models/careerIntent.model.js';
+import { Project } from '../../../db/models/project.model.js';
 import { ResumeProfile } from '../../../db/models/resumeProfile.model.js';
 import { UserSkillProgress } from '../../../db/models/userSkillProgress.model.js';
+import { VerifiedProject } from '../../../db/models/verifiedProject.model.js';
 import { getRequiredSkills, normalizeSkill } from '../role/roleSkills.js';
 import { getResourceForSkill } from '../resources/learningResources.js';
 
@@ -43,8 +45,8 @@ export const ReadinessOrchestratorService = {
         readPillar('Benchmarks', ReadinessBenchmarks.findOne({ userId }).lean()),
       ]);
 
-      // Lazily materialize or refresh DSA readiness if missing or empty when user has platform stats / accepted solves.
-      const dsaNeedsMaterialization = !dsa || dsa.totalSolves === 0 || (dsa.topics?.length ?? 0) === 0;
+      // Lazily materialize or refresh DSA readiness if missing, empty, or missing consistency when user has platform stats / accepted solves.
+      const dsaNeedsMaterialization = !dsa || dsa.totalSolves === 0 || (dsa.topics?.length ?? 0) === 0 || dsa.solveConsistency === 0;
       if (dsaNeedsMaterialization && !unavailablePillars.includes('DSA') && isObjectIdOrHexString(userId)) {
         try {
           const [hasSub, hasStats] = await Promise.all([
@@ -126,7 +128,13 @@ export const ReadinessOrchestratorService = {
         adaptiveRoadmap,
         rawMetrics: {
           core,
-          dsa,
+          dsa: dsa
+            ? {
+                ...dsa,
+                totalSolved: dsa.totalSolves ?? 0,
+                consistencyScore: dsa.solveConsistency ?? 0,
+              }
+            : null,
           projects,
           skills,
           benchmarks
@@ -185,7 +193,7 @@ export const DomainIntelligenceService = {
         case 'engineering':
           return buildEngineeringIntelligence(projects, skills, shared, nextBestActions);
         case 'roadmap':
-          return await buildRoadmapIntelligence(userId, roadmap, shared, nextBestActions);
+          return await buildRoadmapIntelligence(userId, roadmap, shared, nextBestActions, { core, dsa, skills, projects });
         case 'evolution':
           return await buildEvolutionIntelligence(userId, roadmap, core, shared);
         case 'copilot':
@@ -285,11 +293,28 @@ function buildEngineeringIntelligence(projects: any, skills: any, shared: any, n
   };
 }
 
-async function buildRoadmapIntelligence(userId: string, roadmap: any, shared: any, nextBestActions: any[]) {
-  const [careerIntent, resumeProfile, userSkillProgress] = await Promise.all([
+type SkillSource = 'resume' | 'github' | 'project' | 'self';
+
+async function buildRoadmapIntelligence(
+  userId: string,
+  roadmap: any,
+  shared: any,
+  nextBestActions: any[],
+  context?: { core?: any; dsa?: any; skills?: any; projects?: any },
+) {
+  const validObjectId = isObjectIdOrHexString(userId);
+  const [careerIntent, resumeProfile, userSkillProgress, verifiedProjects, projectsList] = await Promise.all([
     CareerIntent.findOne({ userId }).lean(),
     ResumeProfile.findOne({ userId }).lean(),
-    UserSkillProgress.find({ userId, completed: true }).lean()
+    UserSkillProgress.find({ userId, completed: true }).lean(),
+    validObjectId
+      ? VerifiedProject.find({ userId, 'verification.status': 'verified' })
+          .select('techStack metrics.primaryLanguage metrics.languages updatedAt')
+          .lean()
+      : Promise.resolve([]),
+    validObjectId
+      ? Project.find({ userId }).select('techStack updatedAt').lean()
+      : Promise.resolve([]),
   ]);
 
   if (!careerIntent || !careerIntent.dreamRole) {
@@ -302,6 +327,7 @@ async function buildRoadmapIntelligence(userId: string, roadmap: any, shared: an
         currentStage: 'Unknown',
         roadmapProgress: 0,
         verifiedSkills: [],
+        verifiedSkillSources: [],
         completedRoadmapSkills: [],
         missingSkills: [],
         prioritySkills: [],
@@ -309,7 +335,10 @@ async function buildRoadmapIntelligence(userId: string, roadmap: any, shared: an
         nextThreeSkills: [],
         highestImpactSkill: '',
         readinessGain: 0,
-        estimatedWeeksToNextMilestone: 0
+        estimatedWeeksToNextMilestone: 0,
+        confidence: shared.confidence || 0,
+        lastSyncedAt: null,
+        verificationCoverage: 0,
       },
       nextBestActions: []
     };
@@ -318,23 +347,47 @@ async function buildRoadmapIntelligence(userId: string, roadmap: any, shared: an
   const targetRole = careerIntent.dreamRole;
   const requiredSkills = getRequiredSkills(targetRole);
 
-  // Normalize skills
-  const resumeSkills = resumeProfile?.selectedSkills || [];
-  const normalizedResume = new Set(resumeSkills.map(s => normalizeSkill(s)));
+  // Build authoritative verified-skill source map (GitHub > Project > Resume > Self)
+  const sourceMap = new Map<string, SkillSource>();
+  const registerSource = (raw: string | undefined, source: SkillSource) => {
+    if (!raw) return;
+    const norm = normalizeSkill(raw);
+    if (!norm) return;
+    const rank: Record<SkillSource, number> = { github: 4, project: 3, resume: 2, self: 1 };
+    const existing = sourceMap.get(norm);
+    if (!existing || rank[source] > rank[existing]) {
+      sourceMap.set(norm, source);
+    }
+  };
 
-  const manualSkills = userSkillProgress.map(p => p.skill);
-  const normalizedManual = new Set(manualSkills.map(s => normalizeSkill(s)));
+  for (const s of userSkillProgress.map(p => p.skill)) registerSource(s, 'self');
+  for (const s of resumeProfile?.selectedSkills ?? []) registerSource(s, 'resume');
+  for (const p of projectsList) {
+    for (const tech of p.techStack ?? []) registerSource(tech, 'project');
+  }
+  for (const vp of verifiedProjects) {
+    for (const tech of vp.techStack ?? []) registerSource(tech, 'github');
+    if (vp.metrics?.primaryLanguage) registerSource(vp.metrics.primaryLanguage, 'github');
+    for (const lang of Object.keys(vp.metrics?.languages ?? {})) registerSource(lang, 'github');
+  }
+  for (const domainEntry of context?.skills?.domains ?? []) {
+    for (const s of domainEntry?.verifiedSkills ?? []) registerSource(s, 'github');
+  }
 
   const verifiedSkills: string[] = [];
+  const verifiedSkillSources: Array<{ skill: string; source: SkillSource }> = [];
   const completedRoadmapSkills: string[] = [];
   const missingSkills: string[] = [];
 
   requiredSkills.forEach(skill => {
     const norm = normalizeSkill(skill);
-    if (normalizedResume.has(norm)) {
+    const source = sourceMap.get(norm);
+    if (source === 'github' || source === 'project' || source === 'resume') {
       verifiedSkills.push(skill);
-    } else if (normalizedManual.has(norm)) {
+      verifiedSkillSources.push({ skill, source });
+    } else if (source === 'self') {
       completedRoadmapSkills.push(skill);
+      verifiedSkillSources.push({ skill, source: 'self' });
     } else {
       missingSkills.push(skill);
     }
@@ -357,14 +410,68 @@ async function buildRoadmapIntelligence(userId: string, roadmap: any, shared: an
 
   // Calculate dynamic weekly commitment estimation
   const hours = Number(careerIntent.weeklyHours || 10);
-  const estimatedWeeksToNextMilestone = Math.max(1, Math.round(missingSkills.length * (15 / hours)));
+  const estimatedWeeksToNextMilestone = missingSkills.length > 0
+    ? Math.max(1, Math.round(missingSkills.length * (15 / Math.max(1, hours))))
+    : 0;
 
   const nextSkillResource = getResourceForSkill(nextSkill);
+  const resourceKeys = [...new Set([nextSkill, ...prioritySkills, ...missingSkills.slice(0, 6)].filter(Boolean))];
+  const skillResources = Object.fromEntries(
+    resourceKeys.map(skill => [skill, getResourceForSkill(skill)])
+  );
+
+  const syncDates: Date[] = [
+    context?.core?.computedAt,
+    context?.dsa?.computedAt,
+    context?.skills?.computedAt,
+    context?.projects?.computedAt,
+    roadmap?.computedAt,
+    resumeProfile?.updatedAt,
+    careerIntent?.updatedAt,
+    ...verifiedProjects.map(vp => vp.updatedAt),
+    ...projectsList.map(p => p.updatedAt),
+  ].filter((d): d is Date => d instanceof Date && Number.isFinite(d.getTime()));
+
+  const latestSync = syncDates.length
+    ? new Date(Math.max(...syncDates.map(d => d.getTime()))).toISOString()
+    : null;
+
+  const signalConfidences = [
+    context?.core?.confidence,
+    context?.core?.confidenceScore,
+    context?.dsa?.confidenceScore,
+    context?.skills?.confidenceScore,
+    context?.projects?.confidenceScore,
+  ].filter((v): v is number => typeof v === 'number' && v > 0);
+
+  const derivedConfidence = shared.confidence > 0
+    ? shared.confidence
+    : signalConfidences.length > 0
+      ? Math.round(signalConfidences.reduce((sum, n) => sum + n, 0) / signalConfidences.length)
+      : verifiedSkills.length > 0
+        ? Math.min(85, 50 + verifiedSkills.length * 5)
+        : 0;
+
+  const verificationCoverage = Math.min(
+    100,
+    Math.max(
+      context?.core?.completeness ?? 0,
+      requiredSkills.length > 0 ? Math.round((verifiedSkills.length / requiredSkills.length) * 100) : 0,
+      roadmapProgress
+    )
+  );
 
   const intelligence = {
+    noRoleSelected: false,
+    targetRole,
+    goal: careerIntent.goal || '',
+    experienceLevel: careerIntent.experienceLevel || '',
+    weeklyHours: hours,
+    targetDeadlineWeeks: careerIntent.targetDeadlineWeeks || 0,
     currentStage,
     roadmapProgress,
     verifiedSkills,
+    verifiedSkillSources,
     completedRoadmapSkills,
     missingSkills,
     prioritySkills,
@@ -373,7 +480,11 @@ async function buildRoadmapIntelligence(userId: string, roadmap: any, shared: an
     highestImpactSkill: nextSkill,
     readinessGain: requiredSkills.length > 0 ? Math.round(100 / requiredSkills.length) : 10,
     estimatedWeeksToNextMilestone,
-    nextSkillResource
+    nextSkillResource,
+    skillResources,
+    confidence: derivedConfidence,
+    lastSyncedAt: latestSync,
+    verificationCoverage,
   };
 
   return {

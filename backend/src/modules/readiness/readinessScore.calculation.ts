@@ -57,7 +57,7 @@ export type InterviewScoreInput = z.infer<typeof interviewSchema>;
 export interface ReadinessScoreInputs {
   dsa: DsaScoreInput | null;
   projects: ProjectScoreInput | null;
-  contests: Array<{ rating: number; observedAt: Date }>;
+  contests: Array<{ platform?: string; rating: number; observedAt: Date }>;
   revision: { reviews: number; lapses: number };
   /** null means the interview storage adapter is not available; [] means no recent evidence. */
   interviews: InterviewScoreInput[] | null;

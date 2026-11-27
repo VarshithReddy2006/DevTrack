@@ -42,6 +42,7 @@ export interface TopicAnalysis {
   mastery: number; // 0-100
   tier: TopicTier;
   difficulty: TopicDifficultyBreakdown;
+  isEstimatedDifficulty?: boolean;
 }
 
 export interface DSAIntelligenceInput {

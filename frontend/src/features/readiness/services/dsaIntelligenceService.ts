@@ -14,6 +14,7 @@ export interface DsaTopicAnalysisItem {
   mastery: number;
   tier?: TopicTier;
   difficulty?: TopicDifficultyBreakdown;
+  isEstimatedDifficulty?: boolean;
 }
 
 export interface DsaIntelligenceResponse {

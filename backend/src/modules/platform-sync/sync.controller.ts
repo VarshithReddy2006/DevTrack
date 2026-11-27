@@ -53,6 +53,18 @@ export async function syncAll(req: AuthenticatedRequest, res: Response): Promise
     const allSucceeded = sanitized.length > 0 && sanitized.every((r) => r.success);
     const someSucceeded = sanitized.some((r) => r.success);
 
+    if (someSucceeded) {
+      try {
+        const { ReadinessAggregationService } = await import('../readiness/services/ReadinessAggregationService.js');
+        await ReadinessAggregationService.refreshFragments(userId, ['dsa']);
+      } catch (err) {
+        logger.warn('Non-fatal: readiness DSA refresh after sync-all failed', {
+          userId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     const message = sanitized.length === 0
       ? 'No connected platforms to sync'
       : allSucceeded

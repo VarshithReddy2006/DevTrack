@@ -67,7 +67,7 @@ export class ReadinessSnapshotServiceClass {
   }
 
   async createReadinessSnapshot(userId: string, changeDescription: string, createdBy = 'system'): Promise<ReadinessSnapshot> {
-    const [dsa, skills, projects, roadmap, benchmarks, core] = await Promise.all([
+    let [dsa, skills, projects, roadmap, benchmarks, core] = await Promise.all([
       ReadinessDsa.findOne({ userId }).lean(),
       ReadinessSkills.findOne({ userId }).lean(),
       ReadinessProjects.findOne({ userId }).lean(),
@@ -75,6 +75,30 @@ export class ReadinessSnapshotServiceClass {
       ReadinessBenchmarks.findOne({ userId }).lean(),
       ReadinessCore.findOne({ userId }).lean(),
     ]);
+
+    if (!dsa || (dsa.totalSolves === 0 && (!dsa.topics || dsa.topics.length === 0))) {
+      try {
+        const [{ PlatformStats }, { DsaSubmission }, { DsaIntelligenceEngine }] = await Promise.all([
+          import('../../../db/models/platformStats.model.js'),
+          import('../../../db/models/dsaSubmission.model.js'),
+          import('../intelligence/DsaIntelligenceEngine.js'),
+        ]);
+        const [hasStats, hasSub] = await Promise.all([
+          PlatformStats.exists({ userId, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] }, totalSolved: { $gt: 0 } }),
+          DsaSubmission.exists({ userId, status: 'accepted' }),
+        ]);
+        if (hasStats || hasSub) {
+          await DsaIntelligenceEngine.generateIntelligence({ userId });
+          dsa = await ReadinessDsa.findOne({ userId }).lean();
+        }
+      } catch (error) {
+        logger.warn('[ReadinessSnapshotService] Live DSA hydration skipped', {
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     return this.saveReadinessSnapshot(userId, { dsa, skills, projects, roadmap, benchmarks, core }, changeDescription, createdBy);
   }
 

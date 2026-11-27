@@ -58,6 +58,7 @@ export const TopicAnalysisSchema = z.object({
   mastery: z.number().min(0).max(100),
   tier: TopicTierSchema.optional(),
   difficulty: TopicDifficultyBreakdownSchema.optional(),
+  isEstimatedDifficulty: z.boolean().optional(),
 });
 
 export const DSAIntelligenceResponseSchema = z.object({

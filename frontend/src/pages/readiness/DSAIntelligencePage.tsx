@@ -194,7 +194,11 @@ interface CategoryTopicItem {
   mastery: number;
   tier: TopicTier;
   difficulty?: TopicDifficultyBreakdown;
+  isEstimatedDifficulty?: boolean;
 }
+
+const ESTIMATED_DIFFICULTY_TOOLTIP =
+  'Estimated from overall platform difficulty distribution';
 
 const CategoryBreakdownCard: React.FC<{
   title: string;
@@ -207,62 +211,71 @@ const CategoryBreakdownCard: React.FC<{
   const totalTaggedSolves = items.reduce((sum, item) => sum + item.solved, 0);
 
   return (
-    <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs flex flex-col">
+    <section className="rounded-2xl bg-white border border-slate-200/80 p-6 shadow-xs flex flex-col min-w-0">
       <div className="flex flex-wrap items-start justify-between gap-2 mb-5">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0">
             <Layers size={16} className="text-indigo-600" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h2 className="text-base font-bold text-slate-900">{title}</h2>
             <p className="text-xs text-slate-500">{subtitle}</p>
           </div>
         </div>
-        <span className="text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-md">
+        <span className="text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-md shrink-0 tabular-nums">
           Avg {avgMastery}% · {totalTaggedSolves} tagged
         </span>
       </div>
 
-      <div className="space-y-3.5">
+      <div className="space-y-4">
         {items.map((item) => (
-          <div key={item.topic}>
-            <div className="flex flex-wrap items-center justify-between gap-2 text-sm mb-1.5">
+          <div key={item.topic} className="space-y-1.5">
+            {/* Line 1: Topic label + Tier badge (left), Mastery % pill (right) */}
+            <div className="flex items-center justify-between gap-2 text-sm">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="font-medium text-slate-800 truncate">{item.label}</span>
                 {item.solved > 0 && (
                   <span
-                    className={`hidden sm:inline-flex text-[10px] font-semibold px-1.5 py-0.5 rounded border ${TIER_BADGE_CLASSES[item.tier]}`}
+                    className={`inline-flex shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${TIER_BADGE_CLASSES[item.tier]}`}
                   >
                     {item.tier}
                   </span>
                 )}
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-slate-500 tabular-nums">{item.solved} solved</span>
-                {item.difficulty && (
-                  <span
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200/80 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold tabular-nums"
-                    aria-label={`Easy ${item.difficulty.easy}, Medium ${item.difficulty.medium}, Hard ${item.difficulty.hard}`}
-                  >
-                    <span className="text-slate-400">[</span>
-                    <span className="text-emerald-600">E: {item.difficulty.easy}</span>
-                    <span className="text-slate-300">|</span>
-                    <span className="text-amber-600">M: {item.difficulty.medium}</span>
-                    <span className="text-slate-300">|</span>
-                    <span className="text-rose-600">H: {item.difficulty.hard}</span>
-                    <span className="text-slate-400">]</span>
-                  </span>
-                )}
-                <span className={`text-xs font-semibold px-2 py-0.5 rounded border tabular-nums ${badgeTextClass(item.mastery)}`}>
-                  {item.mastery}%
-                </span>
-              </div>
+              <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded border tabular-nums ${badgeTextClass(item.mastery)}`}>
+                {item.mastery}%
+              </span>
             </div>
+
+            {/* Line 2: Full-width smooth progress bar */}
             <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full transition-all duration-500 ${barFillClass(item.mastery)}`}
                 style={{ width: `${Math.min(100, Math.max(0, item.mastery))}%` }}
               />
+            </div>
+
+            {/* Line 3 (caption): X solved (left) + [ E | M | H ] breakdown (right) */}
+            <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+              <span className="tabular-nums">{item.solved} solved</span>
+              {item.difficulty && (
+                <span
+                  title={item.isEstimatedDifficulty ? ESTIMATED_DIFFICULTY_TOOLTIP : undefined}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200/80 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold tabular-nums"
+                  aria-label={`${item.isEstimatedDifficulty ? 'Estimated ' : ''}Easy ${item.difficulty.easy}, Medium ${item.difficulty.medium}, Hard ${item.difficulty.hard}`}
+                >
+                  {item.isEstimatedDifficulty && (
+                    <span className="text-slate-400" aria-hidden="true">~</span>
+                  )}
+                  <span className="text-slate-400">[</span>
+                  <span className="text-emerald-600">E: {item.difficulty.easy}</span>
+                  <span className="text-slate-300">|</span>
+                  <span className="text-amber-600">M: {item.difficulty.medium}</span>
+                  <span className="text-slate-300">|</span>
+                  <span className="text-rose-600">H: {item.difficulty.hard}</span>
+                  <span className="text-slate-400">]</span>
+                </span>
+              )}
             </div>
           </div>
         ))}
@@ -323,7 +336,7 @@ const DSAIntelligencePage: React.FC = () => {
   // Merge strongTopics + weakTopics into a single map for categorized rendering
   const topicMap = new Map<
     string,
-    { solved: number; mastery: number; tier: TopicTier; difficulty?: TopicDifficultyBreakdown }
+    { solved: number; mastery: number; tier: TopicTier; difficulty?: TopicDifficultyBreakdown; isEstimatedDifficulty?: boolean }
   >();
   for (const t of [...(data.strongTopics ?? []), ...(data.weakTopics ?? [])]) {
     if (typeof t === 'string') {
@@ -334,6 +347,7 @@ const DSAIntelligencePage: React.FC = () => {
         mastery: t.mastery,
         tier: deriveTopicTier(t.mastery, t.tier),
         difficulty: t.difficulty,
+        isEstimatedDifficulty: t.isEstimatedDifficulty,
       });
     }
   }
@@ -348,6 +362,7 @@ const DSAIntelligencePage: React.FC = () => {
         mastery: entry.mastery,
         tier: entry.tier,
         difficulty: entry.difficulty,
+        isEstimatedDifficulty: entry.isEstimatedDifficulty,
       };
     });
 
@@ -356,6 +371,11 @@ const DSAIntelligencePage: React.FC = () => {
   const strongTopics = data.strongTopics ?? [];
   const visibleStrongTopics = showAllStrong ? strongTopics : strongTopics.slice(0, 6);
   const weakTopics = data.weakTopics ?? [];
+  const nextTopicSet = new Set(data.nextTopics ?? []);
+  const remainingWeakTopics = weakTopics.filter((t) => {
+    const key = typeof t === 'string' ? t : t.topic;
+    return !nextTopicSet.has(key);
+  });
 
   const statusMeta: Record<string, { label: string; className: string }> = {
     improving: { label: 'Improving Trend', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
@@ -418,8 +438,8 @@ const DSAIntelligencePage: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50/40 text-slate-900 pb-28 md:pb-24">
-      <div className="max-w-[1400px] mx-auto w-full px-4 md:px-6 pt-4 flex flex-col gap-6">
+    <div className="min-h-screen bg-slate-50/40 text-slate-900 pb-28 md:pb-24 overflow-x-hidden">
+      <div className="max-w-[1400px] mx-auto w-full px-4 md:px-6 pt-4 flex flex-col gap-6 min-w-0">
         {/* Header */}
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
@@ -526,8 +546,8 @@ const DSAIntelligencePage: React.FC = () => {
 
         {/* Balanced Bottom Workspace: Topic Health Summary (Left) + Actionable Practice Cards (Right) */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left Column: Strong Topics + Needs Practice */}
-          <div className="lg:col-span-5 flex flex-col gap-6">
+          {/* Left Column: Strong Topics + Remaining Topics Below 60% */}
+          <div className="lg:col-span-5 flex flex-col gap-6 min-w-0">
             <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
               <div className="flex items-center justify-between gap-2 mb-4">
                 <div className="flex items-center gap-2.5">
@@ -587,19 +607,19 @@ const DSAIntelligencePage: React.FC = () => {
               )}
             </section>
 
-            <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
+            <section className="rounded-2xl bg-white border border-slate-200/80 p-6 shadow-xs">
               <div className="flex items-center gap-2.5 mb-4">
                 <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
                   <Target size={16} className="text-amber-600" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-bold text-slate-900">Needs Practice</h2>
-                  <p className="text-xs text-slate-500">Topics below 60% benchmark</p>
+                  <h2 className="text-sm font-bold text-slate-900">Additional Gaps Below 60%</h2>
+                  <p className="text-xs text-slate-500">Secondary topics outside your top action cards</p>
                 </div>
               </div>
-              {weakTopics.length > 0 ? (
+              {remainingWeakTopics.length > 0 ? (
                 <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
-                  {weakTopics.map((t, i) => {
+                  {remainingWeakTopics.map((t, i) => {
                     const topicKey = typeof t === 'string' ? t : t.topic;
                     const tier = typeof t === 'string' ? 'Novice' : deriveTopicTier(t.mastery, t.tier);
                     return (
@@ -629,15 +649,19 @@ const DSAIntelligencePage: React.FC = () => {
                   })}
                 </div>
               ) : (
-                <div className="py-6 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-                  <p className="text-xs text-slate-500 font-medium">All tracked topics meet benchmark mastery.</p>
+                <div className="py-6 px-4 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                  <p className="text-xs text-slate-600 font-medium">
+                    {weakTopics.length > 0
+                      ? 'All priority gaps are featured in your Recommended Next Topics action cards →'
+                      : 'All tracked topics meet benchmark mastery.'}
+                  </p>
                 </div>
               )}
             </section>
           </div>
 
           {/* Right Column: Actionable Next Topic Practice Cards */}
-          <section className="lg:col-span-7 rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
+          <section className="lg:col-span-7 rounded-2xl bg-white border border-slate-200/80 p-6 shadow-xs min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-5">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100">
@@ -658,7 +682,7 @@ const DSAIntelligencePage: React.FC = () => {
             </div>
 
             {data.nextTopics && data.nextTopics.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {data.nextTopics.map((topic, i) => {
                   const catalog = TOPIC_CATALOG[topic];
                   const topicLabel = formatTopicLabel(topic);

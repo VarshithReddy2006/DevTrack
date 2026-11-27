@@ -15,6 +15,8 @@ export interface CareerIntentInput {
   goal?: string;
   experienceLevel?: string;
   weeklyHours?: number;
+  jobTargetId?: string;
+  targetDeadlineWeeks?: number;
 }
 
 const dayMs = 24 * 60 * 60 * 1000;
@@ -91,6 +93,8 @@ export const CareerIntentService = {
           existing.goal = input.goal ?? existing.goal;
           existing.experienceLevel = input.experienceLevel ?? existing.experienceLevel;
           existing.weeklyHours = input.weeklyHours ?? existing.weeklyHours;
+          existing.jobTargetId = input.jobTargetId ?? existing.jobTargetId;
+          existing.targetDeadlineWeeks = input.targetDeadlineWeeks ?? existing.targetDeadlineWeeks;
 
           // Explicit confirmation also refreshes an otherwise unchanged intent.
           existing.updatedAt = now;
@@ -114,6 +118,8 @@ export const CareerIntentService = {
             goal: input.goal,
             experienceLevel: input.experienceLevel,
             weeklyHours: input.weeklyHours,
+            jobTargetId: input.jobTargetId,
+            targetDeadlineWeeks: input.targetDeadlineWeeks,
             confidenceState: this.calculateConfidenceState(input, now.getTime()),
             history: [],
           });

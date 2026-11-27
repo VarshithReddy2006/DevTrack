@@ -24,6 +24,9 @@ export async function getPlacementRadar(userId: string, now = new Date()) {
           }
         : null,
       contestRatings: inputs.contests.map((c) => c.rating),
+      contestPlatforms: inputs.contests
+        .filter((c) => typeof c.platform === "string" && c.platform.length > 0)
+        .map((c) => ({ platform: c.platform as string, rating: c.rating })),
       revision: inputs.revision,
       solveConsistency: dsaFresh ? dsa.solveConsistency : null,
     },

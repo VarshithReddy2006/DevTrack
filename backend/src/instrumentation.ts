@@ -1,16 +1,35 @@
-import { register } from 'node:module';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
-import { ExpressInstrumentation } from '@opentelemetry/instrumentation-express';
-import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
-import { IORedisInstrumentation } from '@opentelemetry/instrumentation-ioredis';
-import { MongooseInstrumentation } from '@opentelemetry/instrumentation-mongoose';
-import { NodeSDK } from '@opentelemetry/sdk-node';
-import { AlwaysOffSampler, BatchSpanProcessor, NoopSpanProcessor } from '@opentelemetry/sdk-trace';
-import { traceContextPropagator } from './shared/tracing/propagation.js';
-import { safeSpanExporter } from './shared/tracing/safeSpanExporter.js';
+const otelEnabled =
+  process.env.OTEL_SDK_DISABLED !== 'true' &&
+  process.env.NODE_ENV !== 'test' &&
+  (Boolean(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || process.env.OTEL_EXPORTER_OTLP_ENDPOINT) ||
+    process.env.OTEL_FORCE_ENABLE === 'true');
 
-function startTelemetry() {
-  if (process.env.OTEL_SDK_DISABLED === 'true' || process.env.NODE_ENV === 'test') return undefined;
+async function startTelemetry() {
+  if (!otelEnabled) return undefined;
+
+  const [
+    { register },
+    { OTLPTraceExporter },
+    { ExpressInstrumentation },
+    { HttpInstrumentation },
+    { IORedisInstrumentation },
+    { MongooseInstrumentation },
+    { NodeSDK },
+    { AlwaysOffSampler, BatchSpanProcessor, NoopSpanProcessor },
+    { traceContextPropagator },
+    { safeSpanExporter },
+  ] = await Promise.all([
+    import('node:module'),
+    import('@opentelemetry/exporter-trace-otlp-http'),
+    import('@opentelemetry/instrumentation-express'),
+    import('@opentelemetry/instrumentation-http'),
+    import('@opentelemetry/instrumentation-ioredis'),
+    import('@opentelemetry/instrumentation-mongoose'),
+    import('@opentelemetry/sdk-node'),
+    import('@opentelemetry/sdk-trace'),
+    import('./shared/tracing/propagation.js'),
+    import('./shared/tracing/safeSpanExporter.js'),
+  ]);
 
   register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
   const exportEnabled = Boolean(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
@@ -35,7 +54,7 @@ function startTelemetry() {
   return sdk;
 }
 
-const sdk = startTelemetry();
+const sdk = await startTelemetry();
 
 export async function shutdownTelemetry(): Promise<void> {
   await sdk?.shutdown();

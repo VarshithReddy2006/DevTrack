@@ -1,7 +1,7 @@
-import type { Express, Router } from 'express';
+import type { IRouter, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
-export function mountApiRoutes(app: Express, routes: Router): void {
+export function mountApiRoutes(app: IRouter, routes: Router): void {
   // Expose the v2 revision, resume revision, portfolio (incl. custom domains), push, readiness score, roadmap, search, anti-gaming review, and outbox DLQ
   // APIs through shared middleware, including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
@@ -20,7 +20,7 @@ export function mountApiRoutes(app: Express, routes: Router): void {
       || ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/custom-domain\/status\/?$/i.test(req.path));
     const readinessScore = (req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/score\/?$/i.test(req.path);
     const readinessZkp = /^\/readiness\/zkp(\/.*)?$/i.test(req.path);
-    const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap\/?$/i.test(req.path))
+    const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap(\/resource)?\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/readiness\/roadmap\/generate\/?$/i.test(req.path))
       || (req.method === 'PATCH' && /^\/readiness\/roadmap\/milestones\/[^/]+\/tasks\/[^/]+\/?$/i.test(req.path));
     const search = (req.method === 'GET' || req.method === 'HEAD') && /^\/search\/?$/i.test(req.path);

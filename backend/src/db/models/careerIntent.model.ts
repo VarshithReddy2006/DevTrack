@@ -14,6 +14,8 @@ export interface ICareerIntent extends Document {
   goal?: string; // e.g., 'First Job'
   experienceLevel?: string; // e.g., 'Beginner'
   weeklyHours?: number; // e.g., 10
+  jobTargetId?: string;
+  targetDeadlineWeeks?: number;
   history: Array<{
     role: string;
     package: string;
@@ -38,6 +40,8 @@ const CareerIntentSchema = new Schema<ICareerIntent>(
     goal: { type: String, default: '' },
     experienceLevel: { type: String, default: '' },
     weeklyHours: { type: Number, default: 0 },
+    jobTargetId: { type: String, default: '' },
+    targetDeadlineWeeks: { type: Number, default: 0 },
     history: [
       {
         role: { type: String },

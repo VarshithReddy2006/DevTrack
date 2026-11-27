@@ -70,7 +70,8 @@ export const CreateProjectModal: React.FC<{
   open: boolean;
   onClose: () => void;
   onCreate: (payload: ApiProjectCreatePayload) => Promise<void>;
-}> = ({ open, onClose, onCreate }) => {
+  initialDraft?: { name?: string; description?: string; techStack?: string };
+}> = ({ open, onClose, onCreate, initialDraft }) => {
   const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
   const titleId = React.useId();
   const descriptionId = React.useId();
@@ -84,6 +85,18 @@ export const CreateProjectModal: React.FC<{
     visibility: 'private' as const,
   });
   const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!open || !initialDraft) return;
+    if (initialDraft.name || initialDraft.description || initialDraft.techStack) {
+      setForm((prev) => ({
+        ...prev,
+        name: initialDraft.name ?? prev.name,
+        description: initialDraft.description ?? prev.description,
+        techStack: initialDraft.techStack ?? prev.techStack,
+      }));
+    }
+  }, [open, initialDraft]);
 
   if (!open) return null;
 
@@ -790,11 +803,23 @@ const ProjectsPage: React.FC = () => {
       {/* ─── Create Modal ─── */}
       <CreateProjectModal
         open={createOpen}
+        initialDraft={
+          createRequested
+            ? {
+                name: searchParams.get('title') ?? undefined,
+                description: searchParams.get('description') ?? undefined,
+                techStack: searchParams.get('tech') ?? undefined,
+              }
+            : undefined
+        }
         onClose={() => {
           setShowCreate(false);
           if (createRequested) {
             const next = new URLSearchParams(searchParams);
             next.delete('create');
+            next.delete('title');
+            next.delete('description');
+            next.delete('tech');
             setSearchParams(next, { replace: true });
           }
         }}

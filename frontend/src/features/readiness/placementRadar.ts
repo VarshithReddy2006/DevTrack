@@ -24,6 +24,7 @@ export interface PlacementRadarReport {
   }>;
   signals: {
     contestRatings: number[];
+    contestPlatforms?: Array<{ platform: string; rating: number }>;
     retentionPercent: number | null;
     reviews7d: number;
     consistencyPercent: number | null;

@@ -26,12 +26,12 @@ export async function loadReadinessScoreInputs(userId: string, at: Date): Promis
   const [dsa, projects, contests, revision, interviews] = await Promise.all([
     ReadinessDsa.findOne({ userId }).select('computedAt difficultyDistribution').lean(),
     ReadinessProjects.findOne({ userId }).select('computedAt evidenceCoverage projectCredibilityScore infrastructureSophistication deploymentEvidence complexityMetrics communicationSignals.documentationQuality').lean(),
-    DsaContest.aggregate<{ rating: number; observedAt: Date }>([
+    DsaContest.aggregate<{ platform?: string; rating: number; observedAt: Date }>([
       { $match: { userId: owner, kind: 'participated', platform: { $in: ['leetcode', 'codeforces', 'codechef', 'atcoder'] },
         participatedAt: { $gte: new Date(at.getTime() - CONTEST_LOOKBACK_MS), $lte: at }, ratingAfter: { $type: 'number', $gte: 0, $lte: 10_000 } } },
       { $sort: { participatedAt: -1, _id: -1 } },
       { $group: { _id: '$platform', rating: { $first: '$ratingAfter' }, observedAt: { $first: '$participatedAt' } } },
-      { $project: { _id: 0, rating: 1, observedAt: 1 } },
+      { $project: { _id: 0, platform: '$_id', rating: 1, observedAt: 1 } },
     ]),
     ReadinessInput.findOne({ userId: owner }).select('revisionDays'),
     readinessScoreSources.loadInterviewScores(userId, new Date(at.getTime() - INTERVIEW_LOOKBACK_MS), MAX_INTERVIEW_SAMPLES),

@@ -6,6 +6,7 @@ import { rateLimiters } from '../../middleware/rateLimitAdvanced.js';
 import { withAuth } from '../../shared/controllerUtils.js';
 import { ApiResponse, errorResponse, successResponse } from '../../shared/response.js';
 import { generateRoadmap, generateRoadmapSchema, getRoadmap, RoadmapError, setTaskCompletion } from './roadmapGenerator.service.js';
+import { getResourceForSkill } from './resources/learningResources.js';
 
 const taskParamsSchema = z.object({
   milestoneId: z.string().min(1).max(40),
@@ -27,6 +28,15 @@ const router = Router();
 
 router.get('/', withAuth('[roadmap]', 'get roadmap', (userId, _req, res) =>
   respond(res, async () => ApiResponse.success(res, await getRoadmap(userId)))));
+
+router.get('/resource', withAuth('[roadmap]', 'get skill resource', async (_userId, req, res) => {
+  const skill = typeof req.query.skill === 'string' ? req.query.skill.trim() : '';
+  if (!skill) {
+    ApiResponse.badRequest(res, 'Query parameter "skill" is required');
+    return;
+  }
+  ApiResponse.success(res, getResourceForSkill(skill));
+}));
 
 router.post('/generate', rateLimiters.ai, withAuth('[roadmap]', 'generate roadmap', async (userId, req, res) => {
   const parsed = generateRoadmapSchema.safeParse(req.body ?? {});

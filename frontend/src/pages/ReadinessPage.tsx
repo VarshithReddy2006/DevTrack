@@ -99,7 +99,9 @@ const ReadinessPage: React.FC = () => {
       accentColor: '#8B5CF6',
       gradientFrom: '#F5F3FF',
       gradientTo: '#EDE9FE',
-      summary: data.rawMetrics?.dsa ? `${data.rawMetrics.dsa.totalSolved || 0} problems solved, ${data.rawMetrics.dsa.consistencyScore || 0}% consistency` : undefined,
+      summary: data.rawMetrics?.dsa
+        ? `${data.rawMetrics.dsa.totalSolved ?? data.rawMetrics.dsa.totalSolves ?? 0} problems solved, ${data.rawMetrics.dsa.consistencyScore ?? data.rawMetrics.dsa.solveConsistency ?? 0}% consistency`
+        : undefined,
       nextAction: dsaAction?.title,
     },
     {
@@ -149,7 +151,7 @@ const ReadinessPage: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col gap-8 max-w-[1400px] mx-auto w-full pb-16 px-4 md:px-0">
+    <div className="flex flex-col gap-6 max-w-[1400px] mx-auto w-full pb-16 px-4 md:px-6 overflow-x-hidden">
       {/* ─── PAGE HEADER ─── */}
       <motion.div
         initial={{ opacity: 0, y: -8 }}
@@ -219,38 +221,40 @@ const ReadinessPage: React.FC = () => {
         </div>
 
         {/* 3 & 4. BLOCKERS + ACTIONS + EVOLUTION */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Left Column: Blockers + Actions */}
-          <div className="lg:col-span-7 flex flex-col gap-6">
+          <div className="lg:col-span-7 flex flex-col gap-6 min-w-0">
             <ActiveBlockersPanel blockers={allBlockers} />
             <NextBestActionsPanel data={data} />
           </div>
 
-          {/* Right Column: Evolution + Trust */}
-          <div className="lg:col-span-5 flex flex-col gap-6">
+          {/* Right Column: Evolution */}
+          <div className="lg:col-span-5 flex flex-col gap-6 min-w-0">
             <EvolutionPreviewPanel milestones={milestones} />
-            <TrustConfidenceLayer
-              confidence={data.dynamicState?.confidence || 0}
-              isDegraded={data.rawMetrics?.dsa?.isDegraded || false}
-              lastSyncedAt={
-                data.rawMetrics?.dsa?.computedAt ||
-                data.rawMetrics?.projects?.computedAt ||
-                data.rawMetrics?.core?.computedAt ||
-                null
-              }
-              providerCount={Object.values(data.rawMetrics || {}).filter(Boolean).length}
-              verificationCoverage={Math.min(
-                Math.round(
-                  ((data.rawMetrics?.dsa ? 25 : 0) +
-                    (data.rawMetrics?.projects ? 25 : 0) +
-                    (data.rawMetrics?.skills ? 25 : 0) +
-                    (data.rawMetrics?.benchmarks ? 25 : 0))
-                ),
-                100
-              )}
-            />
           </div>
         </div>
+
+        {/* 5. FULL-WIDTH TRUST & CONFIDENCE STRIP */}
+        <TrustConfidenceLayer
+          confidence={data.dynamicState?.confidence || 0}
+          isDegraded={data.rawMetrics?.dsa?.isDegraded || false}
+          lastSyncedAt={
+            data.rawMetrics?.dsa?.computedAt ||
+            data.rawMetrics?.projects?.computedAt ||
+            data.rawMetrics?.core?.computedAt ||
+            null
+          }
+          providerCount={Object.values(data.rawMetrics || {}).filter(Boolean).length}
+          verificationCoverage={Math.min(
+            Math.round(
+              ((data.rawMetrics?.dsa ? 25 : 0) +
+                (data.rawMetrics?.projects ? 25 : 0) +
+                (data.rawMetrics?.skills ? 25 : 0) +
+                (data.rawMetrics?.benchmarks ? 25 : 0))
+            ),
+            100
+          )}
+        />
       </motion.div>
     </div>
   );

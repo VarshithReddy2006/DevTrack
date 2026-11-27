@@ -15,6 +15,7 @@ export interface RadarInput {
   topics: TopicEvidence[];
   architecture: { score: number; observedAt: Date; coverage: number } | null;
   contestRatings: number[];
+  contestPlatforms?: Array<{ platform: string; rating: number }>;
   revision: { reviews: number; lapses: number };
   solveConsistency: number | null;
 }
@@ -172,6 +173,9 @@ export function calculatePlacementRadar(input: RadarInput, now: Date) {
   const validRatings = input.contestRatings.filter(
     (n) => Number.isFinite(n) && n >= 0 && n <= 10000,
   );
+  const validPlatforms = (input.contestPlatforms ?? []).filter(
+    (c) => Number.isFinite(c.rating) && c.rating >= 0 && c.rating <= 10000,
+  );
   const r = input.revision;
   return {
     version: RADAR_VERSION,
@@ -181,6 +185,7 @@ export function calculatePlacementRadar(input: RadarInput, now: Date) {
     coverage: axes.filter((a) => a.score !== null).length,
     signals: {
       contestRatings: validRatings,
+      ...(validPlatforms.length > 0 ? { contestPlatforms: validPlatforms } : {}),
       retentionPercent:
         Number.isInteger(r.reviews) &&
         r.reviews > 0 &&

@@ -7,19 +7,13 @@
 // template fills the same structure.
 import { z } from 'zod';
 import { Types } from 'mongoose';
-import {
-  CareerRoadmap,
-  type ICareerRoadmap,
-  type ICareerRoadmapMilestone,
-  type ICareerRoadmapTask,
-  type RoadmapDegradedReason,
-  type RoadmapSource,
-  type RoadmapTargetSource,
-} from '../../db/models/careerRoadmap.model.js';
+import { CareerRoadmap, type ICareerRoadmap, type ICareerRoadmapMilestone, type ICareerRoadmapTask, type RoadmapDegradedReason, type RoadmapSource, type RoadmapTargetSource } from '../../db/models/careerRoadmap.model.js';
+import { Project } from '../../db/models/project.model.js';
 import { ReadinessInput } from '../../db/models/readinessInput.model.js';
 import { ReadinessCore } from '../../db/models/readinessCore.model.js';
 import { ResumeProfile } from '../../db/models/resumeProfile.model.js';
 import { UserSkillProgress } from '../../db/models/userSkillProgress.model.js';
+import { VerifiedProject } from '../../db/models/verifiedProject.model.js';
 import { llmGateway } from '../ai/provider/LLMGateway.js';
 import { AIQuotaExceededError } from '../ai/quota.service.js';
 import { boundedText, parseModelOutput } from '../job-targets/prompts/modelOutput.js';
@@ -79,13 +73,27 @@ async function resolveTarget(userId: string, targetRoleId: string): Promise<Reso
   throw new RoadmapError('Target role not found', 'TARGET_ROLE_NOT_FOUND', 404);
 }
 
-/** Required skills the user has neither on their resume nor marked complete, in priority order. */
+/** Required skills the user has on resume, verified projects, or marked complete, in priority order. */
 async function findMissingSkills(userId: string, requiredSkills: string[]): Promise<string[]> {
-  const [profile, progress] = await Promise.all([
+  const [profile, progress, verifiedProjects, projects] = await Promise.all([
     ResumeProfile.findOne({ userId }, { selectedSkills: 1 }).lean(),
     UserSkillProgress.find({ userId, completed: true }, { skill: 1 }).lean(),
+    VerifiedProject.find({ userId, 'verification.status': 'verified' }, { techStack: 1, 'metrics.primaryLanguage': 1, 'metrics.languages': 1 }).lean(),
+    Project.find({ userId }, { techStack: 1 }).lean(),
   ]);
-  const owned = new Set([...(profile?.selectedSkills ?? []), ...progress.map(p => p.skill)].map(normalizeSkill));
+  const projectTechs = [
+    ...verifiedProjects.flatMap(vp => [
+      ...(vp.techStack ?? []),
+      ...(vp.metrics?.primaryLanguage ? [vp.metrics.primaryLanguage] : []),
+      ...Object.keys(vp.metrics?.languages ?? {}),
+    ]),
+    ...projects.flatMap(p => p.techStack ?? []),
+  ];
+  const owned = new Set([
+    ...(profile?.selectedSkills ?? []),
+    ...progress.map(p => p.skill),
+    ...projectTechs,
+  ].map(normalizeSkill));
   const seen = new Set<string>();
   return requiredSkills.filter(skill => {
     const key = normalizeSkill(skill);
