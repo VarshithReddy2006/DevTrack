@@ -176,7 +176,7 @@ describe('LLMGateway.streamCompletion', () => {
     await drain(call());
 
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(userId, 'interview');
+    expect(spy).toHaveBeenCalledWith(userId, 'interview', expect.any(Date));
   });
 
   it('writes an audit log with the cost and prompt hash', async () => {

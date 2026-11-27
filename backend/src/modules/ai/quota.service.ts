@@ -39,6 +39,18 @@ export interface QuotaCheckResult {
   resetAt: Date;
 }
 
+/**
+ * Give one unit back. KEYS[1] = quota key.
+ * Never goes below zero and never creates the key (so it keeps its TTL or stays absent).
+ */
+export const REFUND_QUOTA_SCRIPT = `
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+if current > 0 then
+  return redis.call('DECR', KEYS[1])
+end
+return 0
+`;
+
 export class QuotaService {
   private quotas: Record<string, number>;
 
@@ -173,6 +185,27 @@ export class QuotaService {
     }
 
     return result;
+  }
+
+  /**
+   * Gives back a unit taken by checkAndConsumeQuota when the request ended without a
+   * provider answer (e.g. the heuristic fallback ran). Pass the same `now` that was used
+   * to consume so the refund lands on the same day's counter. Never throws.
+   */
+  async refundQuota(userId: string, feature: string = 'default', now: Date = new Date()): Promise<void> {
+    if (!isRedisConfigured()) return;
+    const { yyyymmdd } = this.getUtcDayBounds(now);
+    const key = this.getQuotaKey(userId, feature, yyyymmdd);
+
+    try {
+      await getRedisClient().eval(REFUND_QUOTA_SCRIPT, 1, key);
+    } catch (err) {
+      logger.warn('[QuotaService] Redis quota refund failed', {
+        userId,
+        feature,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
