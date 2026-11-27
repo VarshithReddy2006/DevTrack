@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowRight, Sparkles, WifiOff } from 'lucide-react';
+import { ArrowRight, Sparkles, WifiOff, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { reconnectNow, useSse } from '../../hooks/useSse';
 import { useUserStore } from '../../store/userStore';
@@ -38,19 +38,23 @@ export function ConnectionRecoveryBanner() {
   // so the first connect after page load (status 'connecting') never shows a banner.
   const [interrupted, setInterrupted] = useState(false);
   const [recovered, setRecovered] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (!isAuthenticated) {
       setInterrupted(false);
       setRecovered(false);
+      setDismissed(false);
       return;
     }
     if (connectionStatus === 'reconnecting') {
+      if (!interrupted) setDismissed(false);
       setInterrupted(true);
       setRecovered(false);
     } else if (connectionStatus === 'connected' && interrupted && !recovered) {
       setRecovered(true);
+      setDismissed(false);
       // Events missed while offline are gone, so pull the runtime state fresh.
       void queryClient.invalidateQueries({ queryKey: RUNTIME_STATE_QUERY_KEY });
     }
@@ -75,13 +79,13 @@ export function ConnectionRecoveryBanner() {
 
   if (!isAuthenticated) return null;
 
-  const showBanner = interrupted && (recovered || connectionStatus !== 'connected');
+  const showBanner = interrupted && !dismissed && (recovered || connectionStatus !== 'connected');
   const seconds = waiting && nextReconnectAt !== null ? secondsUntil(nextReconnectAt, now) : 0;
   const attemptInFlight = connectionStatus === 'connecting' || (waiting && seconds === 0);
 
   // The live region stays mounted so screen readers pick up the text changes inside it.
   return (
-    <div role="status" aria-live="polite" aria-atomic="true" className="pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 px-4">
+    <div role="status" aria-live="polite" aria-atomic="true" className="pointer-events-none fixed bottom-20 md:bottom-5 left-1/2 z-50 -translate-x-1/2 px-4 w-full max-w-md flex justify-center">
       <AnimatePresence>
         {showBanner && (
           <motion.div
@@ -90,7 +94,7 @@ export function ConnectionRecoveryBanner() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
             transition={{ duration: 0.25 }}
-            className="pointer-events-auto flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm shadow-lg"
+            className="pointer-events-auto flex items-center gap-3 rounded-xl border border-zinc-200 bg-white/95 backdrop-blur-md px-4 py-2.5 text-sm shadow-lg"
           >
             {recovered ? (
               <p className="font-medium text-[#12B76A]">Connected!</p>
@@ -114,9 +118,17 @@ export function ConnectionRecoveryBanner() {
                   type="button"
                   onClick={reconnectNow}
                   disabled={attemptInFlight}
-                  className="rounded-lg border border-zinc-200 px-3 py-1.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-50"
+                  className="shrink-0 rounded-lg border border-zinc-200 px-3 py-1.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-50"
                 >
                   Reconnect Now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDismissed(true)}
+                  aria-label="Dismiss reconnect notice"
+                  className="shrink-0 rounded-lg p-1 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               </>
             )}

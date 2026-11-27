@@ -44,10 +44,20 @@ export const DifficultyDistributionSchema = z.object({
   total: z.number().int().min(0),
 });
 
+export const TopicTierSchema = z.enum(['Novice', 'Proficient', 'Advanced', 'Mastery']);
+
+export const TopicDifficultyBreakdownSchema = z.object({
+  easy: z.number().int().min(0),
+  medium: z.number().int().min(0),
+  hard: z.number().int().min(0),
+});
+
 export const TopicAnalysisSchema = z.object({
   topic: z.string(),
   solved: z.number().int().min(0),
   mastery: z.number().min(0).max(100),
+  tier: TopicTierSchema.optional(),
+  difficulty: TopicDifficultyBreakdownSchema.optional(),
 });
 
 export const DSAIntelligenceResponseSchema = z.object({
@@ -147,6 +157,12 @@ export const RecommendationInputSchema = z.object({
     greedy: z.number().int().min(0),
     binarySearch: z.number().int().min(0),
   }),
+  difficultyDistribution: z.object({
+    easy: z.number().int().min(0),
+    medium: z.number().int().min(0),
+    hard: z.number().int().min(0),
+  }).optional(),
+  topicDifficultyBreakdown: z.record(z.string(), TopicDifficultyBreakdownSchema).optional(),
 });
 
 export type RecommendationInput = z.infer<typeof RecommendationInputSchema>;

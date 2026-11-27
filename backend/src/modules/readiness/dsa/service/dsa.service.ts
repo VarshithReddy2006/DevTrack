@@ -70,6 +70,12 @@ export class DSAService {
     const { strongTopics, weakTopics, nextTopics } = recommendationEngine.generateRecommendations({
       targetRole,
       topicBreakdown: dsaData.topicBreakdown,
+      difficultyDistribution: {
+        easy: dsaData.easySolved,
+        medium: dsaData.mediumSolved,
+        hard: dsaData.hardSolved,
+      },
+      topicDifficultyBreakdown: dsaData.topicDifficultyBreakdown,
     });
 
     // Calculate readiness impact (contribution to overall readiness)

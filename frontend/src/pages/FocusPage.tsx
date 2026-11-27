@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion as framerMotion } from 'framer-motion';
+import { useLocation } from 'react-router-dom';
 import { useRuntimeState } from '../hooks/useRuntimeState';
 import { useCoachingStore } from '../store/coachingStore';
+import { useMissionStore } from '../store/missionStore';
 import { ErrorBoundary } from '../components/ui/ErrorBoundary';
 import { MomentumHero } from '../features/dashboard/MomentumHero';
 import { CoachingWidget } from '../features/coaching/CoachingWidget';
@@ -17,9 +19,40 @@ import type { FocusSessionModel } from '../features/focus/services/focusService'
 
 const FocusPage: React.FC = () => {
   console.log('[FocusPage] mounted and rendering.');
+  const location = useLocation();
   const { data: runtimeState } = useRuntimeState();
   const { momentum } = useCoachingStore();
   const streak = runtimeState?.streak ?? 0;
+
+  const searchParams = new URLSearchParams(location.search);
+  const missionParam = searchParams.get('mission')?.trim() || '';
+  const durationParam = Number(searchParams.get('duration'));
+  const initialDuration = Number.isFinite(durationParam) && durationParam > 0 ? Math.min(180, Math.round(durationParam)) : undefined;
+  const initialModeId = searchParams.get('mode')?.trim() || (missionParam ? 'dsa' : undefined);
+
+  const appliedMissionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!missionParam || appliedMissionRef.current === missionParam) return;
+    appliedMissionRef.current = missionParam;
+
+    const store = useMissionStore.getState();
+    const existing = store.missions.find(
+      (m) => m.title.trim().toLowerCase() === missionParam.toLowerCase()
+    );
+    if (existing) {
+      store.setActiveMission(existing.id);
+    } else {
+      store.createMission({
+        title: missionParam,
+        description: 'Targeted algorithmic mastery sprint launched from DSA Intelligence.',
+        category: 'dsa',
+        priority: 'high',
+        status: 'active',
+        estimatedHours: 1,
+        tags: ['dsa', 'readiness'],
+      });
+    }
+  }, [missionParam]);
 
   const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
   const [completedResult, setCompletedResult] = useState<FocusSessionModel | null>(null);
@@ -103,6 +136,8 @@ const FocusPage: React.FC = () => {
             <framerMotion.section variants={itemVariants} className="w-full">
               <PomodoroTimer
                 showAmbientSound
+                initialModeId={initialModeId}
+                initialDuration={initialDuration}
                 onSessionComplete={handleSessionComplete}
               />
             </framerMotion.section>

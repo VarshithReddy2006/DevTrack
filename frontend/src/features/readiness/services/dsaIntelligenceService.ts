@@ -1,5 +1,21 @@
 import axiosClient from '../../../utils/axiosClient';
 
+export type TopicTier = 'Novice' | 'Proficient' | 'Advanced' | 'Mastery';
+
+export interface TopicDifficultyBreakdown {
+  easy: number;
+  medium: number;
+  hard: number;
+}
+
+export interface DsaTopicAnalysisItem {
+  topic: string;
+  solved: number;
+  mastery: number;
+  tier?: TopicTier;
+  difficulty?: TopicDifficultyBreakdown;
+}
+
 export interface DsaIntelligenceResponse {
   readinessScore: number;
   consistencyScore: number;
@@ -11,8 +27,8 @@ export interface DsaIntelligenceResponse {
     hard: number;
     total: number;
   };
-  strongTopics: Array<{ topic: string; solved: number; mastery: number }>;
-  weakTopics: Array<{ topic: string; solved: number; mastery: number }>;
+  strongTopics: DsaTopicAnalysisItem[];
+  weakTopics: DsaTopicAnalysisItem[];
   nextTopics: string[];
   confidenceScore: number;
   verificationCoverage: number;

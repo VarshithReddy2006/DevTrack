@@ -95,12 +95,24 @@ describe('readiness DSA intelligence', () => {
   it('uses topic mastery and prefers career intent over the profile target role', async () => {
     const owner = new Types.ObjectId();
     const userId = owner.toHexString();
-    await DSAProfile.create({ userId, platform: 'leetcode', topicBreakdown: { arrays: 12, graphs: 4 } });
+    await DSAProfile.create({ userId, platform: 'leetcode', easySolved: 0, mediumSolved: 16, hardSolved: 0, topicBreakdown: { arrays: 12, graphs: 4 } });
     await UserProfile.create({ userId: owner, targetRole: ' Frontend Engineer ' });
 
     const frontend = await dsaService.generateDSAIntelligence({ userId });
-    expect(frontend.strongTopics).toContainEqual({ topic: 'arrays', solved: 12, mastery: 60 });
-    expect(frontend.weakTopics).toContainEqual({ topic: 'graphs', solved: 4, mastery: 20 });
+    expect(frontend.strongTopics).toContainEqual({
+      topic: 'arrays',
+      solved: 12,
+      mastery: 67,
+      tier: 'Proficient',
+      difficulty: { easy: 0, medium: 12, hard: 0 },
+    });
+    expect(frontend.weakTopics).toContainEqual({
+      topic: 'graphs',
+      solved: 4,
+      mastery: 20,
+      tier: 'Novice',
+      difficulty: { easy: 0, medium: 4, hard: 0 },
+    });
     expect(frontend.nextTopics).not.toContain('arrays');
     expect(frontend.nextTopics.slice(0, 2)).toEqual(['trees', 'strings']);
 
@@ -156,8 +168,26 @@ describe('readiness DSA intelligence', () => {
     expect(intelligence.readinessScore).toBeGreaterThan(0);
     expect(intelligence.confidenceScore).toBeGreaterThan(50);
     expect(intelligence.verificationCoverage).toBe(100);
-    expect(intelligence.strongTopics).toContainEqual({ topic: 'arrays', solved: 30, mastery: 100 });
-    expect(intelligence.strongTopics).toContainEqual({ topic: 'hashing', solved: 16, mastery: 100 });
-    expect(intelligence.weakTopics).toContainEqual({ topic: 'dp', solved: 8, mastery: 32 });
+    expect(intelligence.strongTopics).toContainEqual({
+      topic: 'arrays',
+      solved: 30,
+      mastery: 100,
+      tier: 'Mastery',
+      difficulty: { easy: 14, medium: 12, hard: 4 },
+    });
+    expect(intelligence.strongTopics).toContainEqual({
+      topic: 'hashing',
+      solved: 16,
+      mastery: 99,
+      tier: 'Mastery',
+      difficulty: { easy: 7, medium: 7, hard: 2 },
+    });
+    expect(intelligence.weakTopics).toContainEqual({
+      topic: 'dp',
+      solved: 8,
+      mastery: 28,
+      tier: 'Novice',
+      difficulty: { easy: 4, medium: 3, hard: 1 },
+    });
   });
 });

@@ -16,7 +16,7 @@ export const RealtimeMeshReconnecting: React.FC<RealtimeMeshReconnectingProps> =
 
   return (
     <div
-      className="fixed bottom-6 right-6 overflow-hidden z-50 flex items-center gap-4 px-5 py-3 rounded-xl transition-all duration-[800ms]"
+      className="fixed bottom-20 md:bottom-6 right-4 md:right-6 overflow-hidden z-40 flex items-center gap-4 px-5 py-3 rounded-xl transition-all duration-[800ms]"
       style={{
         background: colors.surface.floating,
         backdropFilter: depth.glass.heavy,

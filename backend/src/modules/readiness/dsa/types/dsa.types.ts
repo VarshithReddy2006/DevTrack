@@ -19,6 +19,16 @@ export interface TopicBreakdown {
   binarySearch: number;
 }
 
+export type TopicTier = 'Novice' | 'Proficient' | 'Advanced' | 'Mastery';
+
+export interface TopicDifficultyBreakdown {
+  easy: number;
+  medium: number;
+  hard: number;
+}
+
+export type TopicDifficultyBreakdownMap = Partial<Record<keyof TopicBreakdown, TopicDifficultyBreakdown>>;
+
 export interface DifficultyDistribution {
   easy: number;
   medium: number;
@@ -30,6 +40,8 @@ export interface TopicAnalysis {
   topic: string;
   solved: number;
   mastery: number; // 0-100
+  tier: TopicTier;
+  difficulty: TopicDifficultyBreakdown;
 }
 
 export interface DSAIntelligenceInput {
@@ -91,4 +103,10 @@ export interface TrendInput {
 export interface RecommendationInput {
   targetRole?: string;
   topicBreakdown: TopicBreakdown;
+  difficultyDistribution?: {
+    easy: number;
+    medium: number;
+    hard: number;
+  };
+  topicDifficultyBreakdown?: TopicDifficultyBreakdownMap;
 }

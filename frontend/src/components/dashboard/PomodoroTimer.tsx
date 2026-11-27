@@ -69,26 +69,44 @@ export function focusRemainingSeconds(session: FocusSessionState, now = Date.now
 export const PomodoroTimer = ({
   showAmbientSound = false,
   onSessionComplete,
+  initialModeId,
+  initialDuration,
 }: {
   showAmbientSound?: boolean;
   onSessionComplete?: (session: any) => void;
+  initialModeId?: string;
+  initialDuration?: number;
 }) => {
   const { data: runtimeState } = useRuntimeState();
   const queryClient = useQueryClient();
   const getActiveMission = useMissionStore(state => state.getActiveMission);
   const activeMission = getActiveMission();
 
-  const [activeMode, setActiveMode] = useState(SESSION_MODES[0]);
-  const [selectedDuration, setSelectedDuration] = useState<number>(SESSION_MODES[0].dur);
-  const [timeLeft, setTimeLeft] = useState<number>(SESSION_MODES[0].dur * 60);
+  const resolvedInitialMode = SESSION_MODES.find(m => m.id === initialModeId) || SESSION_MODES[0];
+  const resolvedInitialDuration = initialDuration && initialDuration > 0 ? initialDuration : resolvedInitialMode.dur;
+
+  const [activeMode, setActiveMode] = useState(resolvedInitialMode);
+  const [selectedDuration, setSelectedDuration] = useState<number>(resolvedInitialDuration);
+  const [timeLeft, setTimeLeft] = useState<number>(resolvedInitialDuration * 60);
   const [status, setStatus] = useState<'idle' | 'running' | 'paused' | 'finished'>('idle');
   const [changing, setChanging] = useState(false);
-  
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  
+
   const [modeConfirmOpen, setModeConfirmOpen] = useState(false);
   const [pendingMode, setPendingMode] = useState<typeof SESSION_MODES[0] | null>(null);
+
+  // Apply deep-linked focus parameters while timer is idle and no active server session overrides them
+  useEffect(() => {
+    if (runtimeState?.sessionContext?.isActive || status !== 'idle') return;
+    if (!initialModeId && !initialDuration) return;
+    const nextMode = SESSION_MODES.find(m => m.id === initialModeId) || SESSION_MODES[0];
+    const nextDuration = initialDuration && initialDuration > 0 ? initialDuration : nextMode.dur;
+    setActiveMode(nextMode);
+    setSelectedDuration(nextDuration);
+    setTimeLeft(nextDuration * 60);
+  }, [initialModeId, initialDuration, runtimeState?.sessionContext?.isActive, status]);
 
   // Recovery logic: Sync with backend session state
   useEffect(() => {

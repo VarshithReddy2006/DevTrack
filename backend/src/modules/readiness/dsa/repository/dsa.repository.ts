@@ -9,7 +9,7 @@ import { PlatformStats } from '../../../../db/models/platformStats.model.js';
 import { ReadinessDsa } from '../../../../db/models/readinessDsa.model.js';
 import { UserProfile } from '../../../../db/models/userProfile.model.js';
 import { reconcileUserDsaSummary } from '../../../dsa/dsa-reconciliation.js';
-import { Platform, TopicBreakdown } from '../types/dsa.types';
+import { Platform, TopicBreakdown, TopicDifficultyBreakdown, TopicDifficultyBreakdownMap } from '../types/dsa.types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WINDOW_DAYS = 14;
@@ -180,6 +180,7 @@ export interface AggregatedDSAData {
   longestStreak: number;
   lastSolvedDate: Date | null;
   topicBreakdown: TopicBreakdown;
+  topicDifficultyBreakdown?: TopicDifficultyBreakdownMap;
   isVerified: boolean;
   lastSyncedAt: Date | null;
   platforms: Platform[];
@@ -296,7 +297,7 @@ export class DSARepository implements IDSARepository {
             .select('platformName username lastSyncedAt')
             .lean(),
           ReadinessDsa.findOne({ userId }).lean(),
-          DsaProblem.find({ userId: owner }).select('tags category status').lean(),
+          DsaProblem.find({ userId: owner }).select('tags category status difficulty difficultyKnown').lean(),
           DsaSubmission.find({ userId: owner, status: 'accepted' })
             .select('problemId submittedAt topicTags platform')
             .sort({ submittedAt: -1 })
@@ -348,17 +349,28 @@ export class DSARepository implements IDSARepository {
       }
 
       const problemTopicCounts = createEmptyTopicBreakdown();
+      const problemTopicDifficultyCounts: TopicDifficultyBreakdownMap = {};
+      for (const key of Object.keys(topicBreakdown) as Array<keyof TopicBreakdown>) {
+        problemTopicDifficultyCounts[key] = { easy: 0, medium: 0, hard: 0 };
+      }
       for (const prob of allProblems) {
         const pid = prob._id.toString();
         const isSolved = prob.status === 'solved' || acceptedByProblem.has(pid);
         if (!isSolved) continue;
         const subTags = acceptedByProblem.get(pid) ?? [];
+        const diff = prob.difficultyKnown !== false &&
+          (prob.difficulty === 'easy' || prob.difficulty === 'medium' || prob.difficulty === 'hard')
+          ? prob.difficulty
+          : null;
         const seenForProblem = new Set<keyof TopicBreakdown>();
         for (const tag of [...(prob.tags ?? []), ...subTags, ...(prob.category ? [prob.category] : [])]) {
           const mapped = mapTagToTopicKey(tag);
           if (mapped && !seenForProblem.has(mapped)) {
             seenForProblem.add(mapped);
             problemTopicCounts[mapped] += 1;
+            if (diff && problemTopicDifficultyCounts[mapped]) {
+              problemTopicDifficultyCounts[mapped]![diff] += 1;
+            }
           }
         }
       }
@@ -467,6 +479,7 @@ export class DSARepository implements IDSARepository {
         longestStreak: streakInfo.longestStreak,
         lastSolvedDate,
         topicBreakdown,
+        topicDifficultyBreakdown: problemTopicDifficultyCounts,
         isVerified: connectedPlatforms.length > 0 || platformStats.length > 0 || acceptedSubmissions.length > 0,
         lastSyncedAt,
         platforms: Array.from(platformSet),

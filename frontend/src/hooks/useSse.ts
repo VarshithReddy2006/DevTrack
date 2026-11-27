@@ -752,6 +752,28 @@ export function useSse(options: UseSseOptions = {}): UseSseResult {
 }
 
 /**
+ * Lightweight read-only SSE status selector that does not open or tear down a stream.
+ * `isManaged` is true when a live `useSse` subscriber (e.g. AppProviders) owns the connection.
+ */
+export function useSseConnectionState(): {
+  connectionStatus: ConnectionStatus;
+  isManaged: boolean;
+} {
+  const { connectionStatus } = useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot
+  );
+
+  return {
+    connectionStatus,
+    isManaged: activeCallbacks.size > 0,
+  };
+}
+
+/**
  * Current stream timings and counters. Heartbeats update these without notifying
  * subscribers, so UI that shows "last heartbeat" should read this on its own timer.
  */

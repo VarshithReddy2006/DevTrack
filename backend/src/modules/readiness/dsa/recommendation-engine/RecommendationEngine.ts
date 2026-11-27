@@ -1,4 +1,11 @@
-import { RecommendationInput, TopicAnalysis, TopicBreakdown } from '../types/dsa.types';
+import {
+  RecommendationInput,
+  TopicAnalysis,
+  TopicBreakdown,
+  TopicDifficultyBreakdown,
+  TopicDifficultyBreakdownMap,
+  TopicTier,
+} from '../types/dsa.types';
 
 // Interview-critical topics with priority weights
 const INTERVIEW_CRITICAL_TOPICS: Record<string, number> = {
@@ -18,6 +25,107 @@ const INTERVIEW_CRITICAL_TOPICS: Record<string, number> = {
   binarySearch: 0.75,
 };
 
+// Realistic weighted-point target benchmarks by topic interview importance
+export const BASELINE_PROBLEMS: Record<string, number> = {
+  arrays: 45,
+  hashing: 35,
+  strings: 35,
+  linkedList: 30,
+  stack: 25,
+  queue: 25,
+  trees: 50,
+  graphs: 50,
+  heaps: 25,
+  recursion: 30,
+  backtracking: 30,
+  dp: 60,
+  greedy: 30,
+  binarySearch: 30,
+};
+
+const DIFFICULTY_WEIGHTS = {
+  easy: 1.0,
+  medium: 2.5,
+  hard: 5.0,
+} as const;
+
+export function getTopicTier(mastery: number): TopicTier {
+  if (mastery >= 90) return 'Mastery';
+  if (mastery >= 70) return 'Advanced';
+  if (mastery >= 35) return 'Proficient';
+  return 'Novice';
+}
+
+function allocateByDistribution(
+  count: number,
+  dist?: { easy: number; medium: number; hard: number }
+): TopicDifficultyBreakdown {
+  if (count <= 0) return { easy: 0, medium: 0, hard: 0 };
+
+  const easyWeight = Math.max(0, dist?.easy ?? 0);
+  const mediumWeight = Math.max(0, dist?.medium ?? 0);
+  const hardWeight = Math.max(0, dist?.hard ?? 0);
+  const weightSum = easyWeight + mediumWeight + hardWeight;
+
+  if (weightSum <= 0) {
+    return { easy: count, medium: 0, hard: 0 };
+  }
+
+  const keys = ['easy', 'medium', 'hard'] as const;
+  const weights = { easy: easyWeight, medium: mediumWeight, hard: hardWeight };
+  const exact = {
+    easy: (count * easyWeight) / weightSum,
+    medium: (count * mediumWeight) / weightSum,
+    hard: (count * hardWeight) / weightSum,
+  };
+
+  const result: TopicDifficultyBreakdown = {
+    easy: Math.floor(exact.easy),
+    medium: Math.floor(exact.medium),
+    hard: Math.floor(exact.hard),
+  };
+
+  let remainder = count - (result.easy + result.medium + result.hard);
+  const sortedRemainders = [...keys].sort((a, b) => {
+    const diff = (exact[b] - result[b]) - (exact[a] - result[a]);
+    return diff !== 0 ? diff : weights[b] - weights[a];
+  });
+
+  for (let i = 0; i < remainder; i++) {
+    result[sortedRemainders[i % keys.length]] += 1;
+  }
+
+  return result;
+}
+
+function resolveTopicDifficulty(
+  solved: number,
+  explicit?: TopicDifficultyBreakdown,
+  globalDist?: { easy: number; medium: number; hard: number }
+): TopicDifficultyBreakdown {
+  const totalSolved = Math.max(0, Math.floor(solved));
+  if (totalSolved === 0) return { easy: 0, medium: 0, hard: 0 };
+
+  const expEasy = Math.max(0, Math.floor(explicit?.easy ?? 0));
+  const expMedium = Math.max(0, Math.floor(explicit?.medium ?? 0));
+  const expHard = Math.max(0, Math.floor(explicit?.hard ?? 0));
+  const expSum = expEasy + expMedium + expHard;
+
+  if (expSum === totalSolved) {
+    return { easy: expEasy, medium: expMedium, hard: expHard };
+  }
+  if (expSum > totalSolved) {
+    return allocateByDistribution(totalSolved, { easy: expEasy, medium: expMedium, hard: expHard });
+  }
+
+  const remaining = allocateByDistribution(totalSolved - expSum, globalDist);
+  return {
+    easy: expEasy + remaining.easy,
+    medium: expMedium + remaining.medium,
+    hard: expHard + remaining.hard,
+  };
+}
+
 export class RecommendationEngine {
   /**
    * Generate topic analysis (strong/weak topics)
@@ -28,10 +136,14 @@ export class RecommendationEngine {
     weakTopics: TopicAnalysis[];
     nextTopics: string[];
   } {
-    const { targetRole, topicBreakdown } = input;
+    const { targetRole, topicBreakdown, difficultyDistribution, topicDifficultyBreakdown } = input;
 
-    // Calculate topic mastery for all topics
-    const allTopics = this.calculateAllTopicMastery(topicBreakdown);
+    // Calculate difficulty-weighted topic mastery for all topics
+    const allTopics = this.calculateAllTopicMastery(
+      topicBreakdown,
+      difficultyDistribution,
+      topicDifficultyBreakdown
+    );
 
     // Separate into strong and weak topics
     const strong = allTopics.filter(t => t.mastery >= 60);
@@ -48,38 +160,35 @@ export class RecommendationEngine {
   }
 
   /**
-   * Calculate mastery for all topics
-   * Mastery is based on solve count relative to expected baseline
+   * Calculate difficulty-weighted mastery and tier for all topics.
+   * Formula: Weighted Solves = (1.0 * Easy) + (2.5 * Medium) + (5.0 * Hard)
    */
-  private calculateAllTopicMastery(topicBreakdown: TopicBreakdown): TopicAnalysis[] {
+  private calculateAllTopicMastery(
+    topicBreakdown: TopicBreakdown,
+    difficultyDistribution?: { easy: number; medium: number; hard: number },
+    topicDifficultyBreakdown?: TopicDifficultyBreakdownMap
+  ): TopicAnalysis[] {
     const topics: TopicAnalysis[] = [];
 
-    // Expected baseline for each topic (minimum problems for mastery)
-    const BASELINE_PROBLEMS: Record<string, number> = {
-      arrays: 20,
-      hashing: 15,
-      strings: 20,
-      linkedList: 15,
-      stack: 15,
-      queue: 15,
-      trees: 25,
-      graphs: 20,
-      heaps: 10,
-      recursion: 15,
-      backtracking: 15,
-      dp: 25,
-      greedy: 15,
-      binarySearch: 10,
-    };
-
     Object.entries(topicBreakdown).forEach(([topic, solved]) => {
-      const baseline = BASELINE_PROBLEMS[topic] || 15;
-      const mastery = Math.min(100, (solved / baseline) * 100);
+      const difficulty = resolveTopicDifficulty(
+        solved,
+        topicDifficultyBreakdown?.[topic as keyof TopicBreakdown],
+        difficultyDistribution
+      );
+      const weightedSolves =
+        DIFFICULTY_WEIGHTS.easy * difficulty.easy +
+        DIFFICULTY_WEIGHTS.medium * difficulty.medium +
+        DIFFICULTY_WEIGHTS.hard * difficulty.hard;
+      const baseline = BASELINE_PROBLEMS[topic] || 30;
+      const mastery = Math.min(100, Math.round((weightedSolves / baseline) * 100));
 
       topics.push({
         topic,
         solved,
-        mastery: Math.round(mastery),
+        mastery,
+        tier: getTopicTier(mastery),
+        difficulty,
       });
     });
 

@@ -1,10 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useInRouterContext } from 'react-router-dom';
 import {
   ArrowLeft,
+  ArrowUpRight,
   CheckCircle,
+  Clock,
   Code2,
   Cpu,
+  HelpCircle,
   Layers,
   RefreshCw,
   Target,
@@ -14,23 +17,17 @@ import {
 import { useDSAIntelligence, useSyncDSAIntelligence } from '../../features/readiness/hooks/useDSAIntelligence';
 import { TrustConfidenceLayer } from '../../features/readiness/components/TrustConfidenceLayer';
 import { EmptyState } from '../../components/shared/EmptyState';
-
-const TOPIC_LABELS: Record<string, string> = {
-  arrays: 'Arrays & Sliding Window',
-  hashing: 'Hashing & Maps',
-  strings: 'Strings',
-  linkedList: 'Linked Lists',
-  stack: 'Stacks',
-  queue: 'Queues',
-  trees: 'Trees & Tries',
-  graphs: 'Graphs & Traversal',
-  heaps: 'Heaps & Priority Queues',
-  dp: 'Dynamic Programming',
-  greedy: 'Greedy Algorithms',
-  binarySearch: 'Binary Search',
-  backtracking: 'Backtracking',
-  recursion: 'Recursion & Divide-and-Conquer',
-};
+import type {
+  TopicDifficultyBreakdown,
+  TopicTier,
+} from '../../features/readiness/services/dsaIntelligenceService';
+import {
+  deriveTopicTier,
+  estimateProblemsToBridge,
+  formatTopicLabel,
+  getProblemSearchUrl,
+  TOPIC_CATALOG,
+} from '../../features/readiness/dsaTopicCatalog';
 
 const DATA_STRUCTURE_KEYS = [
   'arrays',
@@ -52,9 +49,12 @@ const ALGORITHM_KEYS = [
   'recursion',
 ] as const;
 
-function formatTopicLabel(topic: string): string {
-  return TOPIC_LABELS[topic] ?? topic;
-}
+const TIER_BADGE_CLASSES: Record<TopicTier, string> = {
+  Mastery: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+  Advanced: 'text-sky-700 bg-sky-50 border-sky-200',
+  Proficient: 'text-indigo-700 bg-indigo-50 border-indigo-200',
+  Novice: 'text-amber-700 bg-amber-50 border-amber-200',
+};
 
 function barFillClass(mastery: number): string {
   if (mastery >= 70) return 'bg-emerald-500';
@@ -70,11 +70,14 @@ function badgeTextClass(mastery: number): string {
   return 'text-slate-500 bg-slate-50 border-slate-200';
 }
 
+const UNRATED_TOOLTIP =
+  'Problems solved in unrated platforms or contests without standard LeetCode difficulty tags';
+
 const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: number; total: number } }> = ({ dist }) => {
   const isZeroState = dist.total === 0;
   const knownSum = dist.easy + dist.medium + dist.hard;
-  const denom = dist.total || 1;
-  const unclassified = Math.max(0, dist.total - knownSum);
+  const unrated = Math.max(0, dist.total - knownSum);
+  const denom = Math.max(1, dist.total, knownSum + unrated);
 
   const buckets = [
     {
@@ -83,6 +86,7 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
       pct: Math.round((dist.easy / denom) * 100),
       barClass: 'bg-emerald-500',
       badgeClass: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+      tooltip: 'Solved Easy problems tagged on synced platforms',
     },
     {
       label: 'Medium',
@@ -90,6 +94,7 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
       pct: Math.round((dist.medium / denom) * 100),
       barClass: 'bg-amber-500',
       badgeClass: 'text-amber-700 bg-amber-50 border-amber-200',
+      tooltip: 'Solved Medium problems tagged on synced platforms',
     },
     {
       label: 'Hard',
@@ -97,6 +102,15 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
       pct: Math.round((dist.hard / denom) * 100),
       barClass: 'bg-rose-500',
       badgeClass: 'text-rose-700 bg-rose-50 border-rose-200',
+      tooltip: 'Solved Hard problems tagged on synced platforms',
+    },
+    {
+      label: 'Unrated / Contest',
+      value: unrated,
+      pct: Math.round((unrated / denom) * 100),
+      barClass: 'bg-slate-400',
+      badgeClass: 'text-slate-600 bg-slate-100 border-slate-200',
+      tooltip: UNRATED_TOOLTIP,
     },
   ];
 
@@ -105,12 +119,14 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
       <div className="flex flex-wrap items-center justify-between gap-2 mb-5">
         <div>
           <h2 className="text-base font-bold text-slate-900">Difficulty Distribution</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Breakdown of solved problems across difficulty tiers</p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Breakdown of solved problems across difficulty tiers and unrated contests
+          </p>
         </div>
         {!isZeroState && (
           <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
             <span className="text-xs font-medium text-slate-500">Total Analyzed</span>
-            <span className="text-sm font-bold text-slate-900">{dist.total}</span>
+            <span className="text-sm font-bold text-slate-900 tabular-nums">{dist.total}</span>
           </div>
         )}
       </div>
@@ -128,17 +144,30 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
                 key={b.label}
                 className={`${b.barClass} h-full transition-all duration-500`}
                 style={{ width: `${(b.value / denom) * 100}%` }}
-                title={`${b.label}: ${b.value} (${b.pct}%)`}
+                title={`${b.label}: ${b.value} (${b.pct}%) — ${b.tooltip}`}
               />
             ))}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {buckets.map((d) => (
-              <div key={d.label} className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-4">
+              <div
+                key={d.label}
+                title={d.tooltip}
+                className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-4"
+              >
                 <div className="flex items-baseline justify-between gap-2 mb-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">{d.label}</span>
-                  <span className="text-2xl font-bold text-slate-900">{d.value}</span>
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    {d.label}
+                    {d.label === 'Unrated / Contest' && (
+                      <HelpCircle
+                        size={12}
+                        className="text-slate-400 shrink-0"
+                        aria-label={UNRATED_TOOLTIP}
+                      />
+                    )}
+                  </span>
+                  <span className="text-2xl font-bold text-slate-900 tabular-nums">{d.value}</span>
                 </div>
                 <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden mb-2">
                   <div className={`h-full ${d.barClass} rounded-full`} style={{ width: `${d.pct}%` }} />
@@ -152,12 +181,6 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
               </div>
             ))}
           </div>
-
-          {unclassified > 0 && (
-            <p className="mt-4 text-xs text-slate-500">
-              Includes {unclassified} unrated or unclassified platform problems in the analyzed total.
-            </p>
-          )}
         </>
       )}
     </section>
@@ -169,6 +192,8 @@ interface CategoryTopicItem {
   label: string;
   solved: number;
   mastery: number;
+  tier: TopicTier;
+  difficulty?: TopicDifficultyBreakdown;
 }
 
 const CategoryBreakdownCard: React.FC<{
@@ -201,11 +226,34 @@ const CategoryBreakdownCard: React.FC<{
       <div className="space-y-3.5">
         {items.map((item) => (
           <div key={item.topic}>
-            <div className="flex items-center justify-between text-sm mb-1.5">
-              <span className="font-medium text-slate-800">{item.label}</span>
-              <div className="flex items-center gap-2.5">
-                <span className="text-xs text-slate-500">{item.solved} solved</span>
-                <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${badgeTextClass(item.mastery)}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm mb-1.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-medium text-slate-800 truncate">{item.label}</span>
+                {item.solved > 0 && (
+                  <span
+                    className={`hidden sm:inline-flex text-[10px] font-semibold px-1.5 py-0.5 rounded border ${TIER_BADGE_CLASSES[item.tier]}`}
+                  >
+                    {item.tier}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-slate-500 tabular-nums">{item.solved} solved</span>
+                {item.difficulty && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200/80 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold tabular-nums"
+                    aria-label={`Easy ${item.difficulty.easy}, Medium ${item.difficulty.medium}, Hard ${item.difficulty.hard}`}
+                  >
+                    <span className="text-slate-400">[</span>
+                    <span className="text-emerald-600">E: {item.difficulty.easy}</span>
+                    <span className="text-slate-300">|</span>
+                    <span className="text-amber-600">M: {item.difficulty.medium}</span>
+                    <span className="text-slate-300">|</span>
+                    <span className="text-rose-600">H: {item.difficulty.hard}</span>
+                    <span className="text-slate-400">]</span>
+                  </span>
+                )}
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded border tabular-nums ${badgeTextClass(item.mastery)}`}>
                   {item.mastery}%
                 </span>
               </div>
@@ -225,6 +273,7 @@ const CategoryBreakdownCard: React.FC<{
 
 const DSAIntelligencePage: React.FC = () => {
   const inRouter = useInRouterContext();
+  const [showAllStrong, setShowAllStrong] = useState(false);
   const { data, isLoading, isFetching, isRefetchError, error } = useDSAIntelligence();
   const syncMutation = useSyncDSAIntelligence();
   const isSyncing = isFetching || syncMutation.isPending;
@@ -232,7 +281,7 @@ const DSAIntelligencePage: React.FC = () => {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-6 max-w-[1400px] mx-auto w-full pb-16 px-4 pt-6 animate-pulse">
+      <div className="flex flex-col gap-6 max-w-[1400px] mx-auto w-full pb-28 px-4 pt-6 animate-pulse">
         <div className="h-14 w-72 bg-slate-200 rounded-xl" />
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
@@ -272,28 +321,41 @@ const DSAIntelligencePage: React.FC = () => {
     data.difficultyDistribution.total === 0;
 
   // Merge strongTopics + weakTopics into a single map for categorized rendering
-  const topicMap = new Map<string, { solved: number; mastery: number }>();
+  const topicMap = new Map<
+    string,
+    { solved: number; mastery: number; tier: TopicTier; difficulty?: TopicDifficultyBreakdown }
+  >();
   for (const t of [...(data.strongTopics ?? []), ...(data.weakTopics ?? [])]) {
     if (typeof t === 'string') {
-      if (!topicMap.has(t)) topicMap.set(t, { solved: 0, mastery: 0 });
+      if (!topicMap.has(t)) topicMap.set(t, { solved: 0, mastery: 0, tier: 'Novice' });
     } else {
-      topicMap.set(t.topic, { solved: t.solved, mastery: t.mastery });
+      topicMap.set(t.topic, {
+        solved: t.solved,
+        mastery: t.mastery,
+        tier: deriveTopicTier(t.mastery, t.tier),
+        difficulty: t.difficulty,
+      });
     }
   }
 
   const buildCategoryItems = (keys: readonly string[]): CategoryTopicItem[] =>
     keys.map((key) => {
-      const entry = topicMap.get(key) ?? { solved: 0, mastery: 0 };
+      const entry = topicMap.get(key) ?? { solved: 0, mastery: 0, tier: 'Novice' as TopicTier };
       return {
         topic: key,
         label: formatTopicLabel(key),
         solved: entry.solved,
         mastery: entry.mastery,
+        tier: entry.tier,
+        difficulty: entry.difficulty,
       };
     });
 
   const dataStructureItems = buildCategoryItems(DATA_STRUCTURE_KEYS);
   const algorithmItems = buildCategoryItems(ALGORITHM_KEYS);
+  const strongTopics = data.strongTopics ?? [];
+  const visibleStrongTopics = showAllStrong ? strongTopics : strongTopics.slice(0, 6);
+  const weakTopics = data.weakTopics ?? [];
 
   const statusMeta: Record<string, { label: string; className: string }> = {
     improving: { label: 'Improving Trend', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
@@ -356,7 +418,7 @@ const DSAIntelligencePage: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50/40 text-slate-900 pb-16">
+    <div className="min-h-screen bg-slate-50/40 text-slate-900 pb-28 md:pb-24">
       <div className="max-w-[1400px] mx-auto w-full px-4 md:px-6 pt-4 flex flex-col gap-6">
         {/* Header */}
         <header className="flex flex-wrap items-end justify-between gap-4">
@@ -462,105 +524,222 @@ const DSAIntelligencePage: React.FC = () => {
           />
         </div>
 
-        {/* Strengths, Gaps, and Recommended Focus */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
-            <div className="flex items-center gap-2.5 mb-4">
-              <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-100">
-                <CheckCircle size={16} className="text-emerald-600" />
-              </div>
-              <div>
-                <h2 className="text-sm font-bold text-slate-900">Strong Topics</h2>
-                <p className="text-xs text-slate-500">Topics with 60%+ mastery</p>
-              </div>
-            </div>
-            {data.strongTopics && data.strongTopics.length > 0 ? (
-              <div className="space-y-2.5">
-                {data.strongTopics.map((t, i) => (
-                  <div
-                    key={typeof t === 'string' ? t : t.topic || i}
-                    className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-emerald-50/40 border border-emerald-100"
-                  >
-                    <span className="text-sm font-medium text-slate-800">
-                      {formatTopicLabel(typeof t === 'string' ? t : t.topic)}
-                    </span>
-                    {typeof t !== 'string' && (
-                      <span className="text-xs font-bold text-emerald-700">
-                        {t.solved} solved ({t.mastery}%)
-                      </span>
-                    )}
+        {/* Balanced Bottom Workspace: Topic Health Summary (Left) + Actionable Practice Cards (Right) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Left Column: Strong Topics + Needs Practice */}
+          <div className="lg:col-span-5 flex flex-col gap-6">
+            <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
+              <div className="flex items-center justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-100">
+                    <CheckCircle size={16} className="text-emerald-600" />
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-6 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-                <p className="text-xs text-slate-500 font-medium">Solve more tagged problems to unlock strong domains.</p>
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
-            <div className="flex items-center gap-2.5 mb-4">
-              <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
-                <Target size={16} className="text-amber-600" />
-              </div>
-              <div>
-                <h2 className="text-sm font-bold text-slate-900">Needs Practice</h2>
-                <p className="text-xs text-slate-500">Topics below 60% benchmark</p>
-              </div>
-            </div>
-            {data.weakTopics && data.weakTopics.length > 0 ? (
-              <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                {data.weakTopics.map((t, i) => (
-                  <div
-                    key={typeof t === 'string' ? t : t.topic || i}
-                    className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200/70"
-                  >
-                    <span className="text-sm font-medium text-slate-800">
-                      {formatTopicLabel(typeof t === 'string' ? t : t.topic)}
-                    </span>
-                    {typeof t !== 'string' && (
-                      <span className="text-xs font-semibold text-amber-700">
-                        {t.solved} solved ({t.mastery}%)
-                      </span>
-                    )}
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">Strong Topics</h2>
+                    <p className="text-xs text-slate-500">Topics with 60%+ difficulty-weighted mastery</p>
                   </div>
-                ))}
+                </div>
+                {strongTopics.length > 6 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllStrong((prev) => !prev)}
+                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors shrink-0"
+                  >
+                    {showAllStrong ? 'Show top 6' : `Show all (${strongTopics.length})`}
+                  </button>
+                )}
               </div>
-            ) : (
-              <div className="py-6 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-                <p className="text-xs text-slate-500 font-medium">All tracked topics meet benchmark mastery.</p>
-              </div>
-            )}
-          </section>
+              {strongTopics.length > 0 ? (
+                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                  {visibleStrongTopics.map((t, i) => {
+                    const topicKey = typeof t === 'string' ? t : t.topic;
+                    const tier = typeof t === 'string' ? 'Novice' : deriveTopicTier(t.mastery, t.tier);
+                    return (
+                      <div
+                        key={topicKey || i}
+                        className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-emerald-50/40 border border-emerald-100"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium text-slate-800 truncate">
+                            {formatTopicLabel(topicKey)}
+                          </span>
+                          {typeof t !== 'string' && (
+                            <span
+                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${TIER_BADGE_CLASSES[tier]}`}
+                            >
+                              {tier}
+                            </span>
+                          )}
+                        </div>
+                        {typeof t !== 'string' && (
+                          <span className="text-xs font-bold text-emerald-700 tabular-nums">
+                            {t.solved} solved ({t.mastery}%)
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="py-6 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                  <p className="text-xs text-slate-500 font-medium">Solve more weighted problems to unlock strong domains.</p>
+                </div>
+              )}
+            </section>
 
-          <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
-            <div className="flex items-center gap-2.5 mb-4">
-              <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100">
-                <Zap size={16} className="text-indigo-600" />
+            <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
+              <div className="flex items-center gap-2.5 mb-4">
+                <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
+                  <Target size={16} className="text-amber-600" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900">Needs Practice</h2>
+                  <p className="text-xs text-slate-500">Topics below 60% benchmark</p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-sm font-bold text-slate-900">Recommended Next Topics</h2>
-                <p className="text-xs text-slate-500">Prioritized for your target role</p>
+              {weakTopics.length > 0 ? (
+                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                  {weakTopics.map((t, i) => {
+                    const topicKey = typeof t === 'string' ? t : t.topic;
+                    const tier = typeof t === 'string' ? 'Novice' : deriveTopicTier(t.mastery, t.tier);
+                    return (
+                      <div
+                        key={topicKey || i}
+                        className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200/70"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium text-slate-800 truncate">
+                            {formatTopicLabel(topicKey)}
+                          </span>
+                          {typeof t !== 'string' && (
+                            <span
+                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${TIER_BADGE_CLASSES[tier]}`}
+                            >
+                              {tier}
+                            </span>
+                          )}
+                        </div>
+                        {typeof t !== 'string' && (
+                          <span className="text-xs font-semibold text-amber-700 tabular-nums">
+                            {t.solved} solved ({t.mastery}%)
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="py-6 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                  <p className="text-xs text-slate-500 font-medium">All tracked topics meet benchmark mastery.</p>
+                </div>
+              )}
+            </section>
+          </div>
+
+          {/* Right Column: Actionable Next Topic Practice Cards */}
+          <section className="lg:col-span-7 rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-5">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-indigo-50 border border-indigo-100">
+                  <Zap size={16} className="text-indigo-600" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">Recommended Next Topics</h2>
+                  <p className="text-xs text-slate-500">
+                    Actionable practice plan prioritized for your target role
+                  </p>
+                </div>
               </div>
+              {data.nextTopics && data.nextTopics.length > 0 && (
+                <span className="text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-md">
+                  {data.nextTopics.length} High-Leverage Targets
+                </span>
+              )}
             </div>
+
             {data.nextTopics && data.nextTopics.length > 0 ? (
-              <div className="space-y-2.5">
-                {data.nextTopics.map((topic, i) => (
-                  <div
-                    key={topic}
-                    className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl bg-indigo-50/50 border border-indigo-100"
-                  >
-                    <span className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
-                      {i + 1}
-                    </span>
-                    <span className="text-sm font-semibold text-slate-800">{formatTopicLabel(topic)}</span>
-                  </div>
-                ))}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-4">
+                {data.nextTopics.map((topic, i) => {
+                  const catalog = TOPIC_CATALOG[topic];
+                  const topicLabel = formatTopicLabel(topic);
+                  const entry = topicMap.get(topic);
+                  const currentMastery = entry?.mastery ?? 0;
+                  const gapEstimate = estimateProblemsToBridge(topic, currentMastery);
+                  const priorityLabel = i === 0 ? 'Top Priority · High Impact' : catalog?.priorityBadge ?? 'High Impact';
+                  const curated = catalog?.curatedProblem;
+                  const problemText = curated
+                    ? `${curated.title} (${curated.difficulty})`
+                    : `${topicLabel} Practice Set`;
+                  const problemUrl = getProblemSearchUrl(topic);
+                  const focusMission = `Master ${topicLabel}`;
+                  const focusPath = `/focus?mission=${encodeURIComponent(focusMission)}&duration=25&mode=dsa`;
+
+                  return (
+                    <article
+                      key={topic}
+                      className="rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50/40 via-white to-slate-50/60 p-4 flex flex-col justify-between gap-3.5 hover:border-indigo-200 transition-colors"
+                    >
+                      <div className="space-y-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+                              {i + 1}
+                            </span>
+                            <h3 className="text-sm font-bold text-slate-900 truncate">{topicLabel}</h3>
+                          </div>
+                          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700">
+                            {priorityLabel}
+                          </span>
+                        </div>
+
+                        <div className="rounded-lg bg-white/90 border border-slate-200/80 px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                            Recommended Problem
+                          </p>
+                          <p className="text-xs font-semibold text-slate-800 mt-0.5">{problemText}</p>
+                        </div>
+
+                        <div className="flex items-center justify-between text-xs text-slate-500">
+                          <span>Mastery: <strong className="text-slate-700">{currentMastery}%</strong></span>
+                          <span className="font-medium text-amber-700">{gapEstimate}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <a
+                          href={problemUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex flex-1 min-w-[130px] items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition-colors"
+                        >
+                          Solve Problem
+                          <ArrowUpRight size={13} aria-hidden="true" />
+                        </a>
+                        {inRouter ? (
+                          <Link
+                            to={focusPath}
+                            className="inline-flex flex-1 min-w-[155px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                          >
+                            <Clock size={13} aria-hidden="true" className="text-indigo-600" />
+                            Start 25m Focus Block
+                          </Link>
+                        ) : (
+                          <a
+                            href={focusPath}
+                            className="inline-flex flex-1 min-w-[155px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                          >
+                            <Clock size={13} aria-hidden="true" className="text-indigo-600" />
+                            Start 25m Focus Block
+                          </a>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             ) : (
-              <div className="py-6 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-                <p className="text-xs text-slate-500 font-medium">No pending topic recommendations.</p>
+              <div className="py-10 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                <p className="text-xs text-slate-500 font-medium">No pending topic recommendations — you are on track!</p>
               </div>
             )}
           </section>
@@ -570,6 +749,7 @@ const DSAIntelligencePage: React.FC = () => {
         <TrustConfidenceLayer
           confidence={data.confidenceScore}
           isDegraded={data.confidenceScore < 40}
+          isSyncError={hasSyncError}
           lastSyncedAt={data.lastUpdated || null}
           verificationCoverage={data.verificationCoverage}
         />

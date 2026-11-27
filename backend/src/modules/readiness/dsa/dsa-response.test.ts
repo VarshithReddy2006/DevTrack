@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextFunction, Request, Response } from 'express';
 import { DifficultyDistributionSchema, DSAIntelligenceResponseSchema } from './dto/dsa.dto.js';
+import type { TopicAnalysis } from './types/dsa.types.js';
 import { dsaController } from './controller/dsa.controller.js';
 import { dsaService } from './service/dsa.service.js';
 
@@ -16,8 +17,8 @@ function intelligence() {
     readinessScore: 50, consistencyScore: 50, hardProgressScore: 50,
     readinessImpact: 10, confidenceScore: 50, verificationCoverage: 100,
     difficultyDistribution: { easy: 0, medium: 0, hard: 0, total: 0 },
-    strongTopics: [] as { topic: string; solved: number; mastery: number }[],
-    weakTopics: [] as { topic: string; solved: number; mastery: number }[],
+    strongTopics: [] as TopicAnalysis[],
+    weakTopics: [] as TopicAnalysis[],
     nextTopics: [] as string[], status: 'stable' as const,
     lastUpdated: new Date('2026-10-30T00:00:00Z'),
   };
