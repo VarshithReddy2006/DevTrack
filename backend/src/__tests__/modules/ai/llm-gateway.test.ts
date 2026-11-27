@@ -14,6 +14,7 @@ import { AIProviderAdapter } from '../../../modules/ai/provider/AIProviderAdapte
 import { semanticCacheService } from '../../../shared/ai/semanticCache.service.js';
 import { aiQuotaRoutes } from '../../../modules/ai/quota.routes.js';
 import { errorHandler } from '../../../middleware/error.js';
+import { quotaEval } from '../../fixtures/quotaRedis.js';
 
 // In-memory Redis simulation for stateful quota and caching tests
 const redisStore = new Map<string, string>();
@@ -51,6 +52,7 @@ const mockRedis = {
     return next;
   }),
   expire: vi.fn(async () => 1),
+  eval: vi.fn(quotaEval(redisStore)),
   del: vi.fn(async (...keys: string[]) => {
     let count = 0;
     for (const k of keys) {
@@ -154,11 +156,14 @@ describe('LLMGateway & QuotaService', () => {
       expect(res3.used).toBe(3);
       expect(res3.remaining).toBe(0);
 
-      // Call 4 exceeds limit
+      // Call 4 is over the limit and must not bump the counter
       const res4 = await customQuota.checkAndConsumeQuota(userId, 'test_feature');
       expect(res4.allowed).toBe(false);
-      expect(res4.used).toBe(4);
+      expect(res4.used).toBe(3);
       expect(res4.remaining).toBe(0);
+
+      const status = await customQuota.getQuotaStatus(userId, ['test_feature']);
+      expect(status.test_feature.used).toBe(3);
     });
 
     it('returns structured quota status across features', async () => {
@@ -382,12 +387,14 @@ describe('LLMGateway & QuotaService', () => {
         feature: 'tight_feature',
       });
 
-      // Request 2 rejected with AIQuotaExceededError
+      // Request 2 needs the provider and is rejected with AIQuotaExceededError.
+      // bypassCache keeps it a miss: cache hits are free and would still be served.
       await expect(
         llmGateway.generateCompletion({
           userId,
           prompt: 'Quota call 2',
           feature: 'tight_feature',
+          bypassCache: true,
         })
       ).rejects.toThrow(AIQuotaExceededError);
     });

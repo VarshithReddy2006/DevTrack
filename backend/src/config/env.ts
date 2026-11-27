@@ -108,6 +108,11 @@ export const env = {
 
 
 
+  // Slow query log: queries at or over the threshold are logged with their winning plan
+  // (IXSCAN or COLLSCAN). On by default outside production; set to true to use it in staging.
+  SLOW_QUERY_PROFILING: getEnvVar('SLOW_QUERY_PROFILING', IS_PROD ? 'false' : 'true') === 'true',
+  SLOW_QUERY_THRESHOLD_MS: getEnvVarNumber('SLOW_QUERY_THRESHOLD_MS', 100),
+
   // Platform Tokens
   GITHUB_TOKEN: getEnvVar('GITHUB_TOKEN', ''),
   GITHUB_TOKENS: (process.env.GITHUB_TOKENS || process.env.GITHUB_TOKEN || '')

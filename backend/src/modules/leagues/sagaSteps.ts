@@ -7,7 +7,11 @@ import { Types } from 'mongoose';
 import { LeagueStanding, XpTransaction } from '../../db/models/index.js';
 import { appendChainedAuditEvent } from '../audit/auditLedger.service.js';
 import type { LeagueDivision, LeagueOutcome, LeagueStandingStatus } from '../../db/models/index.js';
-import type { ILeagueRolloverLog, SagaCohortStep } from '../../db/models/leagueRolloverLog.model.js';
+import type {
+  ILeagueRolloverLog,
+  ILeagueRolloverPreviousStanding,
+  SagaCohortStep,
+} from '../../db/models/leagueRolloverLog.model.js';
 import { logger } from '../../shared/logger.js';
 import { FINISHED_WEEK_TTL_SECONDS, cohortKey } from './leagues.constants.js';
 import { readCohortBoard, type RankedMember } from './leagues.service.js';
@@ -18,6 +22,8 @@ import { weekRange } from './weeks.js';
 
 export interface PreviousStandingState {
   userId: string;
+  division: LeagueDivision;
+  cohortId: string;
   status: LeagueStandingStatus;
   points: number;
   rank: number | null;
@@ -25,6 +31,7 @@ export interface PreviousStandingState {
   outcome: LeagueOutcome | null;
   nextDivision: LeagueDivision | null;
   finalizedAt: Date | null;
+  notifiedAt: Date | null;
 }
 
 export interface SagaCohortContext {
@@ -188,12 +195,15 @@ export const sagaCohortSteps: ISagaStep[] = [
         return;
       }
 
-      // Capture pre-mutation state to support exact compensation restoration
+      // Capture pre-mutation state (including division & cohortId) in memory and saga log
+      // before mutating MongoDB so both in-process and crash-recovery compensation can restore exact state.
       const currentRows = await LeagueStanding.find({
         weekKey: ctx.weekKey,
         userId: { $in: ctx.outcomes.map(s => new Types.ObjectId(s.userId)) },
       }).lean<Array<{
         userId: Types.ObjectId;
+        division: LeagueDivision;
+        cohortId: string;
         status: LeagueStandingStatus;
         points: number;
         rank: number | null;
@@ -201,22 +211,36 @@ export const sagaCohortSteps: ISagaStep[] = [
         outcome: LeagueOutcome | null;
         nextDivision: LeagueDivision | null;
         finalizedAt: Date | null;
+        notifiedAt: Date | null;
       }>>();
 
       const prevMap = new Map<string, PreviousStandingState>();
+      const prevLogEntries: ILeagueRolloverPreviousStanding[] = [];
       for (const r of currentRows) {
-        prevMap.set(r.userId.toString(), {
+        const prev: PreviousStandingState = {
           userId: r.userId.toString(),
+          division: r.division,
+          cohortId: r.cohortId,
           status: r.status,
           points: r.points,
-          rank: r.rank,
-          cohortSize: r.cohortSize,
-          outcome: r.outcome,
-          nextDivision: r.nextDivision,
-          finalizedAt: r.finalizedAt,
-        });
+          rank: r.rank ?? null,
+          cohortSize: r.cohortSize ?? null,
+          outcome: r.outcome ?? null,
+          nextDivision: r.nextDivision ?? null,
+          finalizedAt: r.finalizedAt ?? null,
+          notifiedAt: r.notifiedAt ?? null,
+        };
+        prevMap.set(prev.userId, prev);
+        prevLogEntries.push(prev);
       }
       ctx.previousStandings = prevMap;
+
+      if (!ctx.log.snapshot) {
+        ctx.log.snapshot = { board: [], standings: [], previousStandings: prevLogEntries };
+      } else {
+        ctx.log.snapshot.previousStandings = prevLogEntries;
+      }
+      await ctx.log.save();
 
       const ops = ctx.outcomes.map(s => ({
         updateOne: {
@@ -239,19 +263,27 @@ export const sagaCohortSteps: ISagaStep[] = [
       ctx.modifiedCount = writes.modifiedCount;
     },
     async compensate(ctx: SagaCohortContext): Promise<void> {
-      if (ctx.previousStandings && ctx.previousStandings.size > 0) {
-        const ops = [...ctx.previousStandings.values()].map(prev => ({
+      const priorStates: ILeagueRolloverPreviousStanding[] =
+        ctx.previousStandings && ctx.previousStandings.size > 0
+          ? [...ctx.previousStandings.values()]
+          : (ctx.log.snapshot?.previousStandings ?? []);
+
+      if (priorStates.length > 0) {
+        const ops = priorStates.map(prev => ({
           updateOne: {
             filter: { weekKey: ctx.weekKey, userId: new Types.ObjectId(prev.userId) },
             update: {
               $set: {
+                division: prev.division,
+                cohortId: prev.cohortId,
                 status: prev.status,
                 points: prev.points,
-                rank: prev.rank,
-                cohortSize: prev.cohortSize,
-                outcome: prev.outcome,
-                nextDivision: prev.nextDivision,
-                finalizedAt: prev.finalizedAt,
+                rank: prev.rank ?? null,
+                cohortSize: prev.cohortSize ?? null,
+                outcome: prev.outcome ?? null,
+                nextDivision: prev.nextDivision ?? null,
+                finalizedAt: prev.finalizedAt ?? null,
+                notifiedAt: prev.notifiedAt ?? null,
               },
             },
           },

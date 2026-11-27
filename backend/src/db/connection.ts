@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { env } from '../config/index.js';
 import { logger } from '../shared/index.js';
 import { setMongoStatus, setApiStatus } from '../shared/runtime/infrastructureRegistry.js';
+import { attachSlowQueryProfiler, type SlowQueryProfiler } from './slowQueryProfiler.js';
 
 export function sanitizeMongoError(error: string): string {
   return error
@@ -18,7 +19,19 @@ export const MONGO_OPTIONS: mongoose.ConnectOptions = {
   minPoolSize: 1,
   retryWrites: true,
   retryReads: true,
+  // Command events feed the slow query log (off in production unless SLOW_QUERY_PROFILING=true).
+  monitorCommands: env.SLOW_QUERY_PROFILING,
 };
+
+let slowQueryProfiler: { client: mongoose.mongo.MongoClient; profiler: SlowQueryProfiler } | null = null;
+
+function profileSlowQueries(): void {
+  if (!env.SLOW_QUERY_PROFILING) return;
+  const client = mongoose.connection.getClient();
+  if (slowQueryProfiler?.client === client) return;
+  slowQueryProfiler?.profiler.detach();
+  slowQueryProfiler = { client, profiler: attachSlowQueryProfiler(mongoose.connection, { thresholdMs: env.SLOW_QUERY_THRESHOLD_MS }) };
+}
 
 let reconnectTimer: NodeJS.Timeout | null = null;
 let disconnecting = false;
@@ -48,6 +61,7 @@ export async function connectDatabase(): Promise<void> {
       readyState: mongoose.connection.readyState,
     });
     await mongoose.connect(env.MONGODB_URI, MONGO_OPTIONS);
+    profileSlowQueries();
     setMongoStatus('healthy');
     setApiStatus('healthy');
     logger.info('Connected to MongoDB successfully', {
@@ -68,6 +82,8 @@ export async function disconnectDatabase(): Promise<void> {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  slowQueryProfiler?.profiler.detach();
+  slowQueryProfiler = null;
   try {
     await mongoose.disconnect();
     setMongoStatus('stopped');

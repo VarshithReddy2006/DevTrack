@@ -4,6 +4,8 @@ import { Types } from 'mongoose';
 import { DsaProblem, DsaTopicProgress, DsaSubmission, DsaContest, DailyActivity, PlatformStats } from '../../db/models/index.js';
 import { logger } from '../../shared/logger.js';
 import { escapeRegExp } from '../../shared/regex.js';
+import { localDateString, localDayBounds, resolveTimezone } from '../../shared/date.js';
+import { getUserTimezone } from '../../shared/userTimezone.js';
 import { dsaProblemIdentity } from './dsa-problem-identity.js';
 import { reconcileUserDsaSummary } from './dsa-reconciliation.js';
 import { isReservedPlatformTopic } from './dsa.constants.js';
@@ -88,19 +90,26 @@ export function parseLeetCodeCalendar(rawData: Record<string, unknown>): Record<
   return calendar;
 }
 
+async function resolveHeatmapTimezone(userId: string, timeZone?: string): Promise<string> {
+  return timeZone !== undefined ? resolveTimezone(timeZone) : getUserTimezone(userId);
+}
+
 /**
- * Generate a rolling 365-day heatmap (today-364 through today).
+ * Generate a rolling 365-day heatmap (today-364 through today) in the user's timezone.
  * Per day = LeetCode calendar count + Codeforces DsaSubmission count.
  */
 export async function generateRollingHeatmap(
-  userId: string
+  userId: string,
+  timeZone?: string
 ): Promise<Array<{ date: string; count: number }>> {
   const userObjId = new Types.ObjectId(userId);
-  const today = new Date();
-  today.setUTCHours(23, 59, 59, 999);
-  const start = new Date(today);
-  start.setUTCDate(start.getUTCDate() - 364);
-  start.setUTCHours(0, 0, 0, 0);
+  const tz = await resolveHeatmapTimezone(userId, timeZone);
+  const todayDateStr = localDateString(new Date(), tz);
+  const todayCalendarMs = Date.parse(`${todayDateStr}T00:00:00.000Z`);
+  const startCalendarMs = todayCalendarMs - 364 * 86_400_000;
+  const startDateStr = new Date(startCalendarMs).toISOString().slice(0, 10);
+  const { start: windowStart } = localDayBounds(startDateStr, tz);
+  const { end: windowEnd } = localDayBounds(todayDateStr, tz);
 
   // 1. Get Codeforces submissions grouped by day (from DsaSubmission)
   const t0 = Date.now();
@@ -109,12 +118,12 @@ export async function generateRollingHeatmap(
       $match: {
         userId: userObjId,
         platform: 'codeforces',
-        submittedAt: { $gte: start, $lte: today },
+        submittedAt: { $gte: windowStart, $lt: windowEnd },
       },
     },
     {
       $group: {
-        _id: { $dateToString: { format: '%Y-%m-%d', date: '$submittedAt', timezone: 'UTC' } },
+        _id: { $dateToString: { format: '%Y-%m-%d', date: '$submittedAt', timezone: tz } },
         count: { $sum: 1 },
       },
     },
@@ -140,13 +149,11 @@ export async function generateRollingHeatmap(
 
   // 3. Build rolling 365-day array
   const heatmap: Array<{ date: string; count: number }> = [];
-  const cursor = new Date(start);
-  while (cursor <= today) {
-    const dateStr = cursor.toISOString().split('T')[0];
+  for (let i = 0; i < 365; i++) {
+    const dateStr = new Date(startCalendarMs + i * 86_400_000).toISOString().slice(0, 10);
     const cfCount = cfMap.get(dateStr) ?? 0;
     const lcCount = lcCalendar[dateStr] ?? 0;
     heatmap.push({ date: dateStr, count: cfCount + lcCount });
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
   return heatmap;
@@ -156,7 +163,8 @@ export async function generateRollingHeatmap(
  * Calculate current and longest streaks from a rolling heatmap array.
  */
 export function calculateStreaksFromHeatmap(
-  heatmap: Array<{ date: string; count: number }>
+  heatmap: Array<{ date: string; count: number }>,
+  timeZone = 'UTC'
 ): { current: number; longest: number } {
   let longest = 0;
   let tempStreak = 0;
@@ -172,10 +180,9 @@ export function calculateStreaksFromHeatmap(
   }
 
   // Current streak — walk backwards from today (or yesterday)
-  const todayStr = new Date().toISOString().split('T')[0];
-  const yesterday = new Date();
-  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-  const yesterdayStr = yesterday.toISOString().split('T')[0];
+  const tz = resolveTimezone(timeZone);
+  const todayStr = localDateString(new Date(), tz);
+  const yesterdayStr = new Date(Date.parse(`${todayStr}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
 
   let current = 0;
   const todayIdx = heatmap.findIndex(h => h.date === todayStr);
@@ -196,8 +203,9 @@ export function calculateStreaksFromHeatmap(
   return { current, longest };
 }
 
-export async function getDashboard(userId: string): Promise<ApiDsaDashboardResponse> {
+export async function getDashboard(userId: string, timeZone?: string): Promise<ApiDsaDashboardResponse> {
   const userObjId = new Types.ObjectId(userId);
+  const tz = await resolveHeatmapTimezone(userId, timeZone);
 
   // Rolling 365-day DSA-only heatmap (LeetCode + Codeforces)
   const t0 = Date.now();
@@ -208,12 +216,12 @@ export async function getDashboard(userId: string): Promise<ApiDsaDashboardRespo
       .limit(20)
       .populate('problemId', 'title category difficulty')
       .lean(),
-    generateRollingHeatmap(userId),
+    generateRollingHeatmap(userId, tz),
   ]);
   logger.perf('getDashboard_parallel_queries', Date.now() - t0, { userId });
 
   // Streaks derived from the DSA-only rolling heatmap
-  const streaks = calculateStreaksFromHeatmap(heatmapData);
+  const streaks = calculateStreaksFromHeatmap(heatmapData, tz);
 
   // Build heatmap count array (rolling 365 days)
   const heatmap: number[] = heatmapData.map((day) => day.count);
@@ -937,10 +945,15 @@ function mapProblemToApi(problem: Record<string, unknown> & { _id: { toString():
 // HEATMAP - Rolling 365-day DSA-only heatmap (LeetCode + Codeforces)
 // ---------------------------------------------------------------------------
 
-export async function getHeatmap(userId: string, _year?: number): Promise<ApiDsaHeatmapResponse> {
+export async function getHeatmap(
+  userId: string,
+  _year?: number,
+  timeZone?: string
+): Promise<ApiDsaHeatmapResponse> {
   // Always use rolling 365-day window regardless of year param
-  const heatmapData = await generateRollingHeatmap(userId);
-  const streaks = calculateStreaksFromHeatmap(heatmapData);
+  const tz = await resolveHeatmapTimezone(userId, timeZone);
+  const heatmapData = await generateRollingHeatmap(userId, tz);
+  const streaks = calculateStreaksFromHeatmap(heatmapData, tz);
 
   const totalSubmissions = heatmapData.reduce((sum: number, day: { count: number }) => sum + day.count, 0);
   const activeDays = heatmapData.filter((day: { count: number }) => day.count > 0).length;

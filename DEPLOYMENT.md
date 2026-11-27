@@ -118,6 +118,33 @@ For custom process entry points, preload the built SDK with `node --import ./dis
 
 The transactional outbox stores the active W3C `traceparent` when writing an event. The relay restores that parent around each enqueue so BullMQ carries the trace into the consumer job. Existing events without a valid parent start their own queue trace.
 
+### Dead-lettered outbox events
+
+After 10 failed publishes the relay marks an outbox event `dead`. Admins can recover them through `/api/v1/ops/outbox/dlq` (also served on `/api/v2`):
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /ops/outbox/dlq?type=&status=dead\|archived&page=&pageSize=` | Dead events, oldest first, with failure reason, last attempt time and a payload snippet |
+| `GET /ops/outbox/dlq/:eventId` | Full payload and the change history |
+| `POST /ops/outbox/dlq/:eventId/retry` | Back to `pending` with `attempts: 0`; the relay publishes it on its next poll |
+| `POST /ops/outbox/dlq/retry` | Batch retry: `{ "eventIds": [...] }`, `{ "type": "..." }` or `{ "all": true }`, up to 500 per call |
+| `PATCH /ops/outbox/dlq/:eventId` | Replace the payload of a dead event (`{ "payload": {...} }`). Types with a known schema are validated against it |
+| `DELETE /ops/outbox/dlq/:eventId` | Archive an event that cannot be recovered. Archived events are never published |
+
+Every change only applies while the event is still in the expected state (a second concurrent retry gets `409`) and writes an `OutboxAuditLog` row in the same transaction. All write bodies accept an optional `note`.
+
+From `backend/` with `MONGODB_URI` exported:
+
+```bash
+npm run outbox:dlq -- list [--type <type>] [--archived] [--limit <n>]
+npm run outbox:dlq -- retry <eventId>
+npm run outbox:dlq -- retry-all [--type <type>]
+npm run outbox:dlq -- archive <eventId>
+npm run outbox:dlq -- purge [--older-than <days>]   # deletes archived events, default 30 days after archiving
+```
+
+The CLI uses the same service, so its changes are audited too (actor `via: cli` with the OS user name). A purged event's last state is kept in its `purged` audit row.
+
 
 ---
 

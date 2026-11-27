@@ -31,6 +31,31 @@ export class AIQuotaExceededError extends Error {
   }
 }
 
+/**
+ * Check and consume one quota unit in a single round-trip.
+ * KEYS[1] = quota key, ARGV[1] = limit, ARGV[2] = ttl seconds.
+ * Returns { allowed (1/0), counter value }.
+ * - Never increments once the counter has reached the limit.
+ * - Sets the expiry in the same script, and re-applies it to a key left
+ *   without one (TTL -1) so a stuck counter still resets.
+ */
+export const CONSUME_QUOTA_SCRIPT = `
+local limit = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+if current >= limit then
+  if redis.call('TTL', KEYS[1]) == -1 then
+    redis.call('EXPIRE', KEYS[1], ttl)
+  end
+  return {0, current}
+end
+local used = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) == -1 then
+  redis.call('EXPIRE', KEYS[1], ttl)
+end
+return {1, used}
+`;
+
 export interface QuotaCheckResult {
   allowed: boolean;
   used: number;
@@ -38,6 +63,18 @@ export interface QuotaCheckResult {
   limit: number;
   resetAt: Date;
 }
+
+/**
+ * Give one unit back. KEYS[1] = quota key.
+ * Never goes below zero and never creates the key (so it keeps its TTL or stays absent).
+ */
+export const REFUND_QUOTA_SCRIPT = `
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+if current > 0 then
+  return redis.call('DECR', KEYS[1])
+end
+return 0
+`;
 
 export class QuotaService {
   private quotas: Record<string, number>;
@@ -78,7 +115,7 @@ export class QuotaService {
 
   /**
    * Checks and atomically increments the user's daily usage quota.
-   * If usage exceeds the limit, returns allowed=false with current count and reset time.
+   * Once the limit is reached it returns allowed=false without touching the counter.
    */
   async checkAndConsumeQuota(
     userId: string,
@@ -96,24 +133,24 @@ export class QuotaService {
 
     try {
       const redis = getRedisClient();
-      const used = await redis.incr(key);
-
-      // Set TTL only on the first increment
-      if (used === 1) {
-        await redis.expire(key, ttlSeconds);
+      const reply = await redis.eval(CONSUME_QUOTA_SCRIPT, 1, key, limit, ttlSeconds);
+      if (!Array.isArray(reply) || reply.length < 2) {
+        throw new Error('Unexpected quota script reply');
       }
+      const allowed = Number(reply[0]) === 1;
+      const used = Number(reply[1]);
 
-      if (used > limit) {
+      if (!allowed) {
         logger.warn('[QuotaService] User exceeded daily AI quota', {
           userId,
           feature,
-          used,
+          used: limit,
           limit,
           resetAt: resetAt.toISOString(),
         });
         return {
           allowed: false,
-          used,
+          used: limit,
           remaining: 0,
           limit,
           resetAt,
@@ -173,6 +210,27 @@ export class QuotaService {
     }
 
     return result;
+  }
+
+  /**
+   * Gives back a unit taken by checkAndConsumeQuota when the request ended without a
+   * provider answer (e.g. the heuristic fallback ran). Pass the same `now` that was used
+   * to consume so the refund lands on the same day's counter. Never throws.
+   */
+  async refundQuota(userId: string, feature: string = 'default', now: Date = new Date()): Promise<void> {
+    if (!isRedisConfigured()) return;
+    const { yyyymmdd } = this.getUtcDayBounds(now);
+    const key = this.getQuotaKey(userId, feature, yyyymmdd);
+
+    try {
+      await getRedisClient().eval(REFUND_QUOTA_SCRIPT, 1, key);
+    } catch (err) {
+      logger.warn('[QuotaService] Redis quota refund failed', {
+        userId,
+        feature,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

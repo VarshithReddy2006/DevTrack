@@ -1,4 +1,5 @@
 import { PlacementRadarPanel } from '../features/readiness/components/PlacementRadarPanel';
+import { ArchitectureSignalsViewer } from '../features/readiness/components/ArchitectureSignalsViewer';
 import React from 'react';
 import { motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -196,6 +197,7 @@ const ReadinessPage: React.FC = () => {
         {/* 1. READINESS HERO */}
         <ReadinessHero data={data} />
         <PlacementRadarPanel />
+        <ArchitectureSignalsViewer snapshot={data} />
 
         {/* 2. CORE INTELLIGENCE DOMAINS */}
         <div>

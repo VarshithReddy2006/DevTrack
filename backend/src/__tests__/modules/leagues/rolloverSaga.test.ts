@@ -24,6 +24,8 @@ import {
 } from '../../../modules/leagues/rollover.js';
 import { eventBus } from '../../../shared/sse/index.js';
 import { auditRowsFor, decryptChainedAuditEvent } from '../../../modules/audit/auditLedger.service.js';
+import { logger } from '../../../shared/logger.js';
+import { leagueSagaRollbacks } from '../../../shared/observability/metrics.js';
 import { FakeScoreStore } from './fakeScoreStore.js';
 
 const WEEK = '2026-11-15';
@@ -606,5 +608,242 @@ describe('RolloverSagaOrchestrator — Adversarial Integration Tests', () => {
     expect(retryResult.assigned).toBe(20);
     expect(await store.exists(firstSeededKey)).toBe(true);
     expect(await LeagueStanding.find({ weekKey: NEXT })).toHaveLength(20);
+  });
+
+  it('partial cohort promotion rollback: purges partially seeded Redis members, reverts MongoDB promotions, records saga log, and emits alert telemetry on target capacity failure', async () => {
+    const goldIds = await makeCohort('gold', 'c1', 10);
+    const silverIds = await makeCohort('silver', 'c1', 10);
+    const allUserIds = [...goldIds, ...silverIds];
+
+    const rollbackEvents: any[] = [];
+    const rollbackListener = vi.fn((evt: any) => rollbackEvents.push(evt));
+    eventBus.on('league.saga_rollback', rollbackListener);
+    const loggerErrorSpy = vi.spyOn(logger, 'error');
+    const metricBefore = await leagueSagaRollbacks.get();
+    const initialCount = metricBefore.values.reduce((sum, v) => sum + v.value, 0);
+
+    // Simulate partial Redis seeding on target cohorts and failure on the 3rd cohort/member batch
+    // (e.g. target division cohort capacity exhaustion or Redis drop after writing first 2 members)
+    const originalSeed = store.seed.bind(store);
+    let nextSeedCalls = 0;
+    const partiallySeededKeys: string[] = [];
+
+    vi.spyOn(store, 'seed').mockImplementation(async (key: string, memberIds: string[]) => {
+      if (key.includes(NEXT)) {
+        nextSeedCalls++;
+        partiallySeededKeys.push(key);
+        if (nextSeedCalls < 3) {
+          return originalSeed(key, memberIds);
+        }
+        // Partially seed the first 2 members on the 3rd cohort before failing on member #3
+        await originalSeed(key, memberIds.slice(0, 2));
+        throw new Error('Target division cohort capacity reached during Redis seeding at member #3');
+      }
+      return originalSeed(key, memberIds);
+    });
+
+    await expect(runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT })).rejects.toThrow(
+      'Target division cohort capacity reached during Redis seeding at member #3',
+    );
+
+    // 1. All promoted/relegated next-week MongoDB documents must be rolled back (no split-brain)
+    expect(await LeagueStanding.find({ weekKey: NEXT })).toHaveLength(0);
+
+    // 2. All Redis keys (including the partially seeded 3rd cohort key) must be completely purged
+    expect(partiallySeededKeys.length).toBeGreaterThanOrEqual(3);
+    for (const key of partiallySeededKeys) {
+      expect(await store.exists(key)).toBe(false);
+      expect(await store.ranked(key, 0, -1)).toEqual([]);
+    }
+
+    // 3. Saga log records exact modified user IDs, prior states, placement audit, and rollback record
+    const logs = await LeagueRolloverLog.find({ weekKey: WEEK }).lean();
+    expect(logs).toHaveLength(2);
+    const loggedNextWeekUsers = new Set<string>();
+    const loggedPriorUsers = new Set<string>();
+    for (const log of logs) {
+      expect(log.status).toBe('committed');
+      expect(log.currentStep).toBe('persist_standings');
+      expect(log.snapshot?.previousStandings).toHaveLength(10);
+      for (const prev of log.snapshot?.previousStandings ?? []) {
+        loggedPriorUsers.add(prev.userId);
+        expect(prev.division).toBe(log.division);
+        expect(prev.cohortId).toBe(log.cohortId);
+        expect(prev.status).toBe('active');
+      }
+      for (const placement of log.snapshot?.nextWeekPlacements ?? []) {
+        loggedNextWeekUsers.add(placement.userId);
+        expect(placement.existedPrior).toBe(false);
+      }
+      expect(log.lastRollback?.phase).toBe('next_week_seeding');
+      expect(log.lastRollback?.step).toBe('seed_next_cohorts');
+      expect(log.lastRollback?.affectedUserIds).toHaveLength(20);
+      expect(log.lastRollback?.purgedRedisKeys).toEqual(expect.arrayContaining(partiallySeededKeys));
+    }
+    expect(loggedPriorUsers.size).toBe(20);
+    expect(loggedNextWeekUsers.size).toBe(20);
+    for (const uid of allUserIds) {
+      expect(loggedPriorUsers.has(uid)).toBe(true);
+      expect(loggedNextWeekUsers.has(uid)).toBe(true);
+    }
+
+    // 4. Structured error log and alert telemetry must be emitted
+    expect(loggerErrorSpy).toHaveBeenCalledWith(
+      '[saga] League rollover saga rollback executed',
+      expect.objectContaining({
+        event: 'league_saga_rollback',
+        phase: 'next_week_seeding',
+        weekKey: WEEK,
+        upcomingWeekKey: NEXT,
+        step: 'seed_next_cohorts',
+        affectedUsers: 20,
+      }),
+    );
+    expect(rollbackListener).toHaveBeenCalledTimes(1);
+    expect(rollbackEvents[0]).toMatchObject({
+      phase: 'next_week_seeding',
+      weekKey: WEEK,
+      upcomingWeekKey: NEXT,
+      step: 'seed_next_cohorts',
+      affectedUsers: 20,
+    });
+    const metricAfter = await leagueSagaRollbacks.get();
+    const afterCount = metricAfter.values.reduce((sum, v) => sum + v.value, 0);
+    expect(afterCount).toBe(initialCount + 1);
+
+    eventBus.off('league.saga_rollback', rollbackListener);
+
+    // 5. Re-running rollover after fixing Redis succeeds idempotently
+    vi.restoreAllMocks();
+    const retryResult = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT });
+    expect(retryResult.finalized).toBe(0);
+    expect(retryResult.assigned).toBe(20);
+    expect(await LeagueStanding.find({ weekKey: NEXT })).toHaveLength(20);
+    for (const key of partiallySeededKeys) {
+      expect(await store.exists(key)).toBe(true);
+    }
+  });
+
+  it('preserves pre-existing next-week early-joiner standings and Redis scores when seeding rollback occurs', async () => {
+    const goldIds = await makeCohort('gold', 'c1', 10);
+    const [earlyJoiner] = await makeUsers(1);
+
+    // Early joiner joins NEXT week in gold:c1 and earns 50 points before rollover runs
+    const nextMid = new Date('2026-11-22T00:00:01.000Z');
+    await LeagueStanding.create({
+      weekKey: NEXT,
+      userId: new Types.ObjectId(earlyJoiner),
+      division: 'gold',
+      cohortId: 'c1',
+      status: 'active',
+      joinedAt: nextMid,
+      points: 0,
+    });
+    const preExistingKey = cohortKey(NEXT, 'gold', 'c1');
+    await store.seed(preExistingKey, [earlyJoiner]);
+    await store.incrementOnce(preExistingKey, earlyJoiner, 50, {
+      setKey: `league:${NEXT}:applied`,
+      id: `${earlyJoiner}|dsa|early`,
+    });
+
+    // Fail Redis seeding on the 2nd NEXT cohort (e.g., platinum:c1)
+    const originalSeed = store.seed.bind(store);
+    let nextSeedCalls = 0;
+    vi.spyOn(store, 'seed').mockImplementation(async (key: string, memberIds: string[]) => {
+      if (key.includes(NEXT)) {
+        nextSeedCalls++;
+        if (nextSeedCalls === 2) {
+          throw new Error('Simulated Redis outage on second cohort');
+        }
+      }
+      return originalSeed(key, memberIds);
+    });
+
+    await expect(runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT })).rejects.toThrow(
+      'Simulated Redis outage on second cohort',
+    );
+
+    // Rolled-back users from WEEK must be removed from NEXT, but earlyJoiner remains intact
+    const remainingNext = await LeagueStanding.find({ weekKey: NEXT }).lean();
+    expect(remainingNext).toHaveLength(1);
+    expect(remainingNext[0].userId.toString()).toBe(earlyJoiner);
+
+    // Pre-existing Redis sorted set must keep earlyJoiner with score 50, while rolled-back members are removed
+    expect(await store.exists(preExistingKey)).toBe(true);
+    expect(store.score(preExistingKey, earlyJoiner)).toBe(50);
+    for (const gid of goldIds) {
+      expect(store.score(preExistingKey, gid)).toBeUndefined();
+    }
+
+    vi.restoreAllMocks();
+    const retryResult = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT });
+    expect(retryResult.assigned).toBe(10);
+    expect(await LeagueStanding.find({ weekKey: NEXT })).toHaveLength(11);
+    expect(store.score(preExistingKey, earlyJoiner)).toBe(50);
+  });
+
+  it('crash recovery restores original division and cohortId from persisted saga log previousStandings and emits telemetry', async () => {
+    const ids = await makeCohort('gold', 'c1', 10);
+
+    const rollbackListener = vi.fn();
+    eventBus.on('league.saga_rollback', rollbackListener);
+
+    // Simulate a crashed worker that persisted previousStandings in LeagueRolloverLog,
+    // partially mutated user[0]'s division/cohortId/status, and died before committing
+    await LeagueRolloverLog.create({
+      weekKey: WEEK,
+      division: 'gold',
+      cohortId: 'c1',
+      idempotencyKey: `rollover:${WEEK}:gold:c1`,
+      status: 'in_progress',
+      currentStep: 'persist_standings',
+      attempts: 1,
+      startedAt: new Date('2026-11-22T00:00:01.000Z'),
+      snapshot: {
+        board: [],
+        standings: ids.map((id, i) => ({ userId: id, points: (i + 1) * 10 })),
+        previousStandings: ids.map(id => ({
+          userId: id,
+          division: 'gold' as const,
+          cohortId: 'c1',
+          status: 'active' as const,
+          points: 0,
+          rank: null,
+          cohortSize: null,
+          outcome: null,
+          nextDivision: null,
+          finalizedAt: null,
+          notifiedAt: null,
+        })),
+      },
+    });
+
+    await LeagueStanding.updateOne(
+      { weekKey: WEEK, userId: new Types.ObjectId(ids[0]) },
+      { $set: { division: 'platinum', cohortId: 'c99', status: 'finalized', finalizedAt: ROLLOVER_AT } },
+    );
+
+    const result = await runWeeklyRollover(WEEK, { store, now: ROLLOVER_AT, stalledLeaseTimeoutMs: 0 });
+    expect(result.stalledRecovered).toBe(1);
+    expect(result.finalized).toBe(10);
+    expect(result.assigned).toBe(10);
+
+    // Rollback telemetry emitted during stalled crash recovery
+    expect(rollbackListener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: 'cohort_finalization',
+        weekKey: WEEK,
+        division: 'gold',
+        cohortId: 'c1',
+      }),
+    );
+
+    // user[0] was restored to original division 'gold' and cohortId 'c1' before re-finalization
+    const restored = await row(ids[0], WEEK);
+    expect(restored?.division).toBe('gold');
+    expect(restored?.cohortId).toBe('c1');
+    expect(restored?.status).toBe('finalized');
+
+    eventBus.off('league.saga_rollback', rollbackListener);
   });
 });

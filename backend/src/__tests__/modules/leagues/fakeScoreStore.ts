@@ -32,7 +32,23 @@ export class FakeScoreStore implements LeagueScoreStore {
   }
 
   async remove(key: string, member: string) {
-    this.sets.get(key)?.delete(member);
+    const set = this.sets.get(key);
+    if (!set) return;
+    set.delete(member);
+    if (set.size === 0) {
+      this.sets.delete(key);
+      this.ttls.delete(key);
+    }
+  }
+
+  async removeMany(key: string, members: string[]) {
+    const set = this.sets.get(key);
+    if (!set) return;
+    for (const member of members) set.delete(member);
+    if (set.size === 0) {
+      this.sets.delete(key);
+      this.ttls.delete(key);
+    }
   }
 
   async ranked(key: string, start: number, stop: number) {

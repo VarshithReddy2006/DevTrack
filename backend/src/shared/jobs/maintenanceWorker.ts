@@ -166,9 +166,14 @@ export async function runStreakAtRiskCheck(): Promise<void> {
         const { end } = localDayBounds(dateKey, timezone);
         // Streak logs store the local calendar date at UTC midnight.
         const today = new Date(`${dateKey}T00:00:00.000Z`);
+        // Previous local calendar date as UTC midnight, to match log storage format
+        // Parse today's date key and decrement day (handles month/year boundaries)
+        const [year, month, day] = dateKey.split('-').map(Number);
+        const prevDate = new Date(Date.UTC(year, month - 1, day - 1));
+        const yesterday = new Date(prevDate.toISOString().slice(0, 10) + 'T00:00:00.000Z');
         window = {
           today,
-          yesterday: new Date(today.getTime() - 24 * HOUR_MS),
+          yesterday,
           withinWindow: end.getTime() - now.getTime() <= 6 * HOUR_MS,
         };
         windows.set(timezone, window);
@@ -176,8 +181,13 @@ export async function runStreakAtRiskCheck(): Promise<void> {
       if (!window.withinWindow) continue;
 
       const freezeActive = candidate.streakFreezeUntil && candidate.streakFreezeUntil >= now;
+      // When freeze is active, look for logs from 2 local days ago
+      // Calculate as two decrements of the date key (to handle month/year boundaries correctly)
       const oldestActiveDay = freezeActive
-        ? new Date(window.yesterday.getTime() - 24 * HOUR_MS)
+        ? (() => {
+          const [year, month, day] = window.yesterday.toISOString().slice(0, 10).split('-').map(Number);
+          return new Date(Date.UTC(year, month - 1, day - 1));
+        })()
         : window.yesterday;
       const lastLog = await UserStreakLog.findOne({
         userId: candidate.userId,

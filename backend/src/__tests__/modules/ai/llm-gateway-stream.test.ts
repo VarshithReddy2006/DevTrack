@@ -7,6 +7,7 @@ import { AIProviderAdapter, type AIStreamEvent } from '../../../modules/ai/provi
 import { AIStreamInterruptedError } from '../../../modules/ai/provider/AIStreamInterruptedError.js';
 import { AIQuotaExceededError, QuotaService, quotaService } from '../../../modules/ai/quota.service.js';
 import { semanticCacheService } from '../../../shared/ai/semanticCache.service.js';
+import { quotaEval } from '../../fixtures/quotaRedis.js';
 
 const redisStore = new Map<string, string>();
 const mockRedis = {
@@ -19,6 +20,7 @@ const mockRedis = {
     return next;
   }),
   expire: vi.fn(async () => 1),
+  eval: vi.fn(quotaEval(redisStore)),
 };
 
 vi.mock('../../../shared/redis/client.js', () => ({
@@ -176,7 +178,7 @@ describe('LLMGateway.streamCompletion', () => {
     await drain(call());
 
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(userId, 'interview');
+    expect(spy).toHaveBeenCalledWith(userId, 'interview', expect.any(Date));
   });
 
   it('writes an audit log with the cost and prompt hash', async () => {
