@@ -21,6 +21,7 @@ import {
   PublicProfile,
   UserXp,
   ProfileAuditLog,
+  CustomDomain,
 } from '../../../db/models/index.js';
 import { executeAccountErasure } from '../../../modules/privacy/accountErasure.worker.js';
 import {
@@ -186,6 +187,13 @@ describe('GDPR Privacy: Cascading Account Erasure with Crypto-Shredding & Audit 
       totalXp: 1200,
       currentLevel: 5,
     });
+
+    await CustomDomain.create({
+      userId: user._id,
+      domain: `${testUsername.replace(/_/g, '-')}.example.com`,
+      verificationToken: 'devtrack-verification=test-token',
+      status: 'active',
+    });
   });
 
   it('generates 10 audit events, crypto-shreds user PII on erasure, appends tombstone, and passes verifyAuditChain()', async () => {
@@ -258,6 +266,9 @@ describe('GDPR Privacy: Cascading Account Erasure with Crypto-Shredding & Audit 
     expect(result.shreddedAuditKeys).toBe(1);
     expect(result.deletedCounts.User).toBe(1);
     expect(await User.findById(testUserId)).toBeNull();
+    // The erased user's custom domain is gone, so it stops routing and can be claimed again.
+    expect(result.deletedCounts.CustomDomain).toBe(1);
+    expect(await CustomDomain.countDocuments({ userId: testUserId })).toBe(0);
 
     // 1. User's encryption key is permanently deleted (crypto-shredded)
     expect(await AuditEncryptionKey.countDocuments({ userId: new Types.ObjectId(testUserId) })).toBe(0);

@@ -2,7 +2,7 @@ import type { Express, Router } from 'express';
 import { API_BASE_PATH } from '../config/constants.js';
 
 export function mountApiRoutes(app: Express, routes: Router): void {
-  // Expose the v2 revision, resume revision, portfolio, push, readiness score, roadmap, search and outbox DLQ
+  // Expose the v2 revision, resume revision, portfolio (incl. custom domains), push, readiness score, roadmap, search, and outbox DLQ
   // APIs through shared middleware, including the global rate limit. Other modules remain on v1.
   app.use('/api/v2', (req, res, next) => {
     const quests = ((req.method === 'GET' || req.method === 'HEAD') && /^\/quests\/?$/i.test(req.path)) || (req.method === 'POST' && /^\/quests\/[^/]+\/claim\/?$/i.test(req.path));
@@ -16,6 +16,8 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const pushSubscription = req.method === 'POST' && /^\/notifications\/(subscribe|unsubscribe)\/?$/i.test(req.path);
     const portfolio = ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/[^/]+(\/dossier\.pdf)?\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/portfolio\/[^/]+\/dossier\/token\/?$/i.test(req.path));
+    const customDomain = (req.method === 'POST' && /^\/portfolio\/custom-domain(\/verify)?\/?$/i.test(req.path))
+      || ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/custom-domain\/status\/?$/i.test(req.path));
     const readinessScore = (req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/score\/?$/i.test(req.path);
     const readinessZkp = /^\/readiness\/zkp(\/.*)?$/i.test(req.path);
     const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap\/?$/i.test(req.path))
@@ -27,7 +29,7 @@ export function mountApiRoutes(app: Express, routes: Router): void {
     const outboxDlq = ((req.method === 'GET' || req.method === 'HEAD') && /^\/ops\/outbox\/dlq(\/[^/]+)?\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/ops\/outbox\/dlq\/(retry|[^/]+\/retry)\/?$/i.test(req.path))
       || ((req.method === 'PATCH' || req.method === 'DELETE') && /^\/ops\/outbox\/dlq\/[^/]+\/?$/i.test(req.path));
-    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || readinessScore || readinessZkp || roadmap || search || interview || privacy || outboxDlq ? routes(req, res, next) : next();
+    return quests || revision || history || restore || save || bulletSuggest || diffScore || pushKey || pushSubscription || portfolio || customDomain || readinessScore || readinessZkp || roadmap || search || interview || privacy || outboxDlq ? routes(req, res, next) : next();
   });
   // Handle versioned requests first so /api does not run their middleware twice.
   app.use(API_BASE_PATH, routes);
