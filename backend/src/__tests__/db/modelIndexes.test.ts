@@ -25,6 +25,7 @@ import '../../db/models/betaUser.model.js';
 import '../../db/models/careerIntent.model.js';
 import '../../db/models/careerRoadmap.model.js';
 import '../../db/models/connectedPlatform.model.js';
+import '../../db/models/customDomain.model.js';
 import '../../db/models/dailyActivity.model.js';
 import '../../db/models/dailyChallenge.model.js';
 import '../../db/models/datasetIngestion.model.js';

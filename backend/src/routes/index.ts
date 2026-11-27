@@ -12,6 +12,7 @@ import { projectsRoutes } from '../modules/projects/index.js';
 import { profileRoutes } from '../modules/profile/index.js';
 import dossierDownloadRoutes from '../modules/profile/dossierDownload.routes.js';
 import { publicPortfolioRoutes } from '../modules/profile/publicProfile.routes.js';
+import customDomainRoutes from '../modules/profile/customDomain.routes.js';
 import { settingsRoutes } from '../modules/settings/index.js';
 import { syncRoutes } from '../modules/platform-sync/index.js';
 import contestRoutes from '../modules/platform-sync/contest.routes.js';
@@ -81,6 +82,8 @@ router.use('/activity', activityRoutes);
 router.use('/focus/sessions', focusRoutes);
 router.use('/projects', projectsRoutes);
 router.use('/profile', profileRoutes);
+// Before the /portfolio/:username routers so "custom-domain" is not read as a handle.
+router.use('/portfolio/custom-domain', customDomainRoutes);
 router.use('/portfolio', dossierDownloadRoutes);
 router.use('/portfolio', publicPortfolioRoutes);
 router.use('/settings', settingsRoutes);
