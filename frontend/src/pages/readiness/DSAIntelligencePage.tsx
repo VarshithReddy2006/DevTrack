@@ -548,13 +548,13 @@ const DSAIntelligencePage: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Left Column: Strong Topics + Remaining Topics Below 60% */}
           <div className="lg:col-span-5 flex flex-col gap-6 min-w-0">
-            <section className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs">
+            <section className="rounded-2xl bg-white border border-slate-200/80 p-6 shadow-xs min-w-0">
               <div className="flex items-center justify-between gap-2 mb-4">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-100">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-100 shrink-0">
                     <CheckCircle size={16} className="text-emerald-600" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h2 className="text-sm font-bold text-slate-900">Strong Topics</h2>
                     <p className="text-xs text-slate-500">Topics with 60%+ difficulty-weighted mastery</p>
                   </div>
@@ -563,38 +563,36 @@ const DSAIntelligencePage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setShowAllStrong((prev) => !prev)}
-                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors shrink-0"
+                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors shrink-0 whitespace-nowrap cursor-pointer"
                   >
                     {showAllStrong ? 'Show top 6' : `Show all (${strongTopics.length})`}
                   </button>
                 )}
               </div>
               {strongTopics.length > 0 ? (
-                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                   {visibleStrongTopics.map((t, i) => {
                     const topicKey = typeof t === 'string' ? t : t.topic;
                     const tier = typeof t === 'string' ? 'Novice' : deriveTopicTier(t.mastery, t.tier);
                     return (
                       <div
                         key={topicKey || i}
-                        className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-emerald-50/40 border border-emerald-100"
+                        className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-emerald-50/40 border border-emerald-100"
                       >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm font-medium text-slate-800 truncate">
-                            {formatTopicLabel(topicKey)}
-                          </span>
-                          {typeof t !== 'string' && (
+                        <span className="text-sm font-medium text-slate-800 truncate min-w-0">
+                          {formatTopicLabel(topicKey)}
+                        </span>
+                        {typeof t !== 'string' && (
+                          <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
+                            <span className="text-xs font-bold text-emerald-700 tabular-nums">
+                              {t.solved} solved ({t.mastery}%)
+                            </span>
                             <span
                               className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${TIER_BADGE_CLASSES[tier]}`}
                             >
                               {tier}
                             </span>
-                          )}
-                        </div>
-                        {typeof t !== 'string' && (
-                          <span className="text-xs font-bold text-emerald-700 tabular-nums">
-                            {t.solved} solved ({t.mastery}%)
-                          </span>
+                          </div>
                         )}
                       </div>
                     );
@@ -607,57 +605,47 @@ const DSAIntelligencePage: React.FC = () => {
               )}
             </section>
 
-            <section className="rounded-2xl bg-white border border-slate-200/80 p-6 shadow-xs">
-              <div className="flex items-center gap-2.5 mb-4">
-                <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
-                  <Target size={16} className="text-amber-600" />
+            {remainingWeakTopics.length > 0 && (
+              <section className="rounded-2xl bg-white border border-slate-200/80 p-6 shadow-xs min-w-0">
+                <div className="flex items-center gap-2.5 mb-4">
+                  <div className="p-2 rounded-lg bg-amber-50 border border-amber-100 shrink-0">
+                    <Target size={16} className="text-amber-600" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-sm font-bold text-slate-900">Additional Gaps Below 60%</h2>
+                    <p className="text-xs text-slate-500">Secondary topics outside your top action cards</p>
+                  </div>
                 </div>
-                <div>
-                  <h2 className="text-sm font-bold text-slate-900">Additional Gaps Below 60%</h2>
-                  <p className="text-xs text-slate-500">Secondary topics outside your top action cards</p>
-                </div>
-              </div>
-              {remainingWeakTopics.length > 0 ? (
-                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                   {remainingWeakTopics.map((t, i) => {
                     const topicKey = typeof t === 'string' ? t : t.topic;
                     const tier = typeof t === 'string' ? 'Novice' : deriveTopicTier(t.mastery, t.tier);
                     return (
                       <div
                         key={topicKey || i}
-                        className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200/70"
+                        className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200/70"
                       >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm font-medium text-slate-800 truncate">
-                            {formatTopicLabel(topicKey)}
-                          </span>
-                          {typeof t !== 'string' && (
+                        <span className="text-sm font-medium text-slate-800 truncate min-w-0">
+                          {formatTopicLabel(topicKey)}
+                        </span>
+                        {typeof t !== 'string' && (
+                          <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
+                            <span className="text-xs font-semibold text-amber-700 tabular-nums">
+                              {t.solved} solved ({t.mastery}%)
+                            </span>
                             <span
                               className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${TIER_BADGE_CLASSES[tier]}`}
                             >
                               {tier}
                             </span>
-                          )}
-                        </div>
-                        {typeof t !== 'string' && (
-                          <span className="text-xs font-semibold text-amber-700 tabular-nums">
-                            {t.solved} solved ({t.mastery}%)
-                          </span>
+                          </div>
                         )}
                       </div>
                     );
                   })}
                 </div>
-              ) : (
-                <div className="py-6 px-4 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-                  <p className="text-xs text-slate-600 font-medium">
-                    {weakTopics.length > 0
-                      ? 'All priority gaps are featured in your Recommended Next Topics action cards →'
-                      : 'All tracked topics meet benchmark mastery.'}
-                  </p>
-                </div>
-              )}
-            </section>
+              </section>
+            )}
           </div>
 
           {/* Right Column: Actionable Next Topic Practice Cards */}
@@ -703,15 +691,15 @@ const DSAIntelligencePage: React.FC = () => {
                       key={topic}
                       className="rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50/40 via-white to-slate-50/60 p-4 flex flex-col justify-between gap-3.5 hover:border-indigo-200 transition-colors"
                     >
-                      <div className="space-y-2.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
+                      <div className="space-y-2.5 min-w-0">
+                        <div className="flex flex-col gap-2 min-w-0">
+                          <div className="flex items-center gap-2.5 min-w-0">
                             <span className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
                               {i + 1}
                             </span>
-                            <h3 className="text-sm font-bold text-slate-900 truncate">{topicLabel}</h3>
+                            <h3 className="text-sm font-bold text-slate-900 leading-snug break-words">{topicLabel}</h3>
                           </div>
-                          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700">
+                          <span className="inline-flex w-fit text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700">
                             {priorityLabel}
                           </span>
                         </div>
@@ -723,9 +711,11 @@ const DSAIntelligencePage: React.FC = () => {
                           <p className="text-xs font-semibold text-slate-800 mt-0.5">{problemText}</p>
                         </div>
 
-                        <div className="flex items-center justify-between text-xs text-slate-500">
-                          <span>Mastery: <strong className="text-slate-700">{currentMastery}%</strong></span>
-                          <span className="font-medium text-amber-700">{gapEstimate}</span>
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                          <span className="whitespace-nowrap">
+                            Mastery: <strong className="text-slate-700 tabular-nums">{currentMastery}%</strong>
+                          </span>
+                          <span className="font-medium text-amber-700 whitespace-nowrap">{gapEstimate}</span>
                         </div>
                       </div>
 
