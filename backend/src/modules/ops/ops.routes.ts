@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { authMiddleware, adminMiddleware, opsAuditorMiddleware } from '../../middleware/auth.js';
 import opsController from './ops.controller.js';
 import { opsFlagRoutes } from '../flags/flags.routes.js';
+import { adminAuditRoutes } from './adminAudit.routes.js';
 import { outboxAdminRoutes } from './outboxAdmin.routes.js';
 
 const router = Router();
@@ -11,6 +12,9 @@ const router = Router();
 router.get('/health', opsController.health);
 
 router.use('/flags', opsFlagRoutes);
+
+// Anti-gaming review: reads for ops auditors, pardon/penalize for admins
+router.use('/anti-gaming', adminAuditRoutes);
 
 // Dead-lettered outbox events: list, retry, edit payload, archive (admin only)
 router.use('/outbox/dlq', outboxAdminRoutes);

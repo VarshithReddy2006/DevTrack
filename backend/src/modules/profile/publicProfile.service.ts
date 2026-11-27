@@ -11,7 +11,8 @@ import { XpTransaction } from '../../db/models/xpTransaction.model.js';
 import { VerifiedProject } from '../../db/models/verifiedProject.model.js';
 import { UserXp } from '../../db/models/userXp.model.js';
 import { ProfileView } from '../../db/models/profileView.model.js';
-import { SUSPICION_FLAG_THRESHOLD, VerificationEngine } from './verification.engine.js';
+import { VerificationEngine } from './verification.engine.js';
+import { applyAntiGamingReview } from './antiGamingReview.js';
 import mongoose from 'mongoose';
 import { calculateStreaks, formatISODate, getStartOfDay, getStartOfYear, subtractDays } from '../../shared/date.js';
 import { getAchievements } from '../dashboard/dashboard.service.js';
@@ -262,7 +263,6 @@ export class PublicProfileService {
       snapshot: computedSnapshot,
       'antiGaming.suspicionScore': verificationScore.suspicionScore,
       'antiGaming.flags': verificationScore.flags,
-      'antiGaming.isFlagged': verificationScore.suspicionScore > SUSPICION_FLAG_THRESHOLD,
       seo: {
         ogTitle: `${user.username} | Verified Engineering Profile`,
         ogDescription: `View ${user.username}'s verified engineering metrics, projects, and proof of work on DevTrack.`,
@@ -276,6 +276,8 @@ export class PublicProfileService {
       { $set: profileData, $setOnInsert: { slug } },
       { upsert: true, new: true }
     );
+    // The flag itself is derived in a second, atomic step so a maintainer decision is honoured.
+    await applyAntiGamingReview(userId);
     await invalidateCacheTag(portfolioTag(String(userId)));
     return verificationScore;
   }

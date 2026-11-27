@@ -138,6 +138,19 @@ const MAX_ITEMS = 50;
 const PERSIST_COUNT = 20;
 let toastCounter = 0;
 let notifCounter = 0;
+let overlayTransitionTimer: ReturnType<typeof setTimeout> | null = null;
+let overlayAutoDismissTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearOverlayTimers() {
+  if (overlayTransitionTimer !== null) {
+    clearTimeout(overlayTransitionTimer);
+    overlayTransitionTimer = null;
+  }
+  if (overlayAutoDismissTimer !== null) {
+    clearTimeout(overlayAutoDismissTimer);
+    overlayAutoDismissTimer = null;
+  }
+}
 
 function loadFromStorage(): Notification[] {
   try {
@@ -163,8 +176,30 @@ function saveToStorage(notifications: Notification[]) {
 const initialNotifications = loadFromStorage();
 
 export function setNotificationAccount(userId: string | null) {
-  notificationStorageKey = userId ? `${STORAGE_KEY}:${encodeURIComponent(userId)}` : null;
-  const notifications = loadFromStorage();
+  const previousKey = notificationStorageKey;
+  const nextKey = userId ? `${STORAGE_KEY}:${encodeURIComponent(userId)}` : null;
+  notificationStorageKey = nextKey;
+
+  if (!nextKey) {
+    useAppStateStore.setState({ notifications: [], unreadCount: 0 });
+    return;
+  }
+
+  const stored = loadFromStorage();
+  const shouldPreserveInMemory = previousKey === null || previousKey === nextKey;
+  let notifications = stored;
+
+  if (shouldPreserveInMemory) {
+    const current = useAppStateStore.getState().notifications;
+    if (current.length > 0) {
+      const seen = new Set(current.map((n) => n.id));
+      notifications = [...current, ...stored.filter((n) => !seen.has(n.id))].slice(0, MAX_ITEMS);
+      if (previousKey === null) {
+        saveToStorage(notifications);
+      }
+    }
+  }
+
   useAppStateStore.setState({ notifications, unreadCount: notifications.filter(n => !n.read).length });
 }
 
@@ -286,25 +321,33 @@ export const useAppStateStore = create<AppState>()(
         }
       },
       dismiss: () => {
+        clearOverlayTimers();
         set({ activeOverlay: null });
-        setTimeout(() => {
+        overlayTransitionTimer = setTimeout(() => {
+          overlayTransitionTimer = null;
           get().processQueue();
         }, 300);
       },
       processQueue: () => {
         const { activeOverlay, queue } = get();
-        if (activeOverlay || queue.length === 0) return;
+        if (activeOverlay) return;
+        clearOverlayTimers();
+        if (queue.length === 0) return;
         const [nextItem, ...remainingQueue] = queue;
         set({ activeOverlay: nextItem, queue: remainingQueue });
         if (nextItem.duration) {
-          setTimeout(() => {
+          overlayAutoDismissTimer = setTimeout(() => {
+            overlayAutoDismissTimer = null;
             if (get().activeOverlay?.id === nextItem.id) {
               get().dismiss();
             }
           }, nextItem.duration);
         }
       },
-      clearQueue: () => set({ queue: [], activeOverlay: null }),
+      clearQueue: () => {
+        clearOverlayTimers();
+        set({ queue: [], activeOverlay: null });
+      },
 
       // --- Notifications ---
       notifications: initialNotifications,

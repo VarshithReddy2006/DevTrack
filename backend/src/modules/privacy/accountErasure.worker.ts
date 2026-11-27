@@ -38,6 +38,7 @@ import { runInTransaction } from '../../db/transaction.js';
 import { logger } from '../../shared/logger.js';
 import { getRedisClient, isRedisConfigured } from '../../shared/redis/index.js';
 import { appendErasureTombstone, destroyAuditKey } from '../audit/auditLedger.service.js';
+import { eraseAntiGamingDecisions } from '../../db/models/antiGamingDecision.model.js';
 
 export interface AccountErasureOptions {
   deleteClerkAccount?: boolean;
@@ -144,6 +145,9 @@ export async function executeAccountErasure(
     });
 
     await Promise.all(delPromises);
+    if (userObjectId) {
+      deletedCounts.AntiGamingDecision = await eraseAntiGamingDecisions(userObjectId, session);
+    }
 
     // Crypto-shred the user's audit encryption key and append an immutable
     // ACCOUNT_ERASURE_TOMBSTONE record without mutating existing ProfileAuditLog rows.

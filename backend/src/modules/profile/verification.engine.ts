@@ -9,16 +9,17 @@ import { XpTransaction } from '../../db/models/xpTransaction.model.js';
 export const SUSPICION_FLAG_THRESHOLD = 70;
 
 const MINUTE_MS = 60_000;
-const XP_VELOCITY_LOOKBACK_MS = 7 * 24 * 60 * MINUTE_MS;
+/** How far back the XP velocity check reads the ledger. */
+export const XP_VELOCITY_LOOKBACK_MS = 7 * 24 * 60 * MINUTE_MS;
 /** Upper bound on ledger rows read per user, so one runaway account cannot blow up a sweep. */
 const XP_VELOCITY_MAX_ROWS = 20_000;
 /** Bulk credits (a platform sync pays for every new solve at once, admin grants) say nothing about pace. */
-const XP_VELOCITY_IGNORED_SOURCES = ['sync_completed', 'manual'];
+export const XP_VELOCITY_IGNORED_SOURCES = ['sync_completed', 'manual'];
 
-const XP_BURST_WINDOW_MS = 10 * MINUTE_MS;
-const XP_BURST_LIMIT = 2_000;
-const XP_SUSTAINED_WINDOW_MS = 60 * MINUTE_MS;
-const XP_SUSTAINED_LIMIT = 1_000;
+export const XP_BURST_WINDOW_MS = 10 * MINUTE_MS;
+export const XP_BURST_LIMIT = 2_000;
+export const XP_SUSTAINED_WINDOW_MS = 60 * MINUTE_MS;
+export const XP_SUSTAINED_LIMIT = 1_000;
 
 /**
  * Largest XP total earned inside any sliding window of `windowMs`.
