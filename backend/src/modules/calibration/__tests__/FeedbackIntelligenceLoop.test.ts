@@ -1,6 +1,6 @@
 // src/modules/calibration/__tests__/FeedbackIntelligenceLoop.test.ts
 
-import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vitest';
 import { FeedbackIntelligenceLoop, type FeedbackReport } from '../FeedbackIntelligenceLoop.js';
 import { FeedbackReportModel } from '../../../db/models/feedbackReport.model.js';
 
@@ -9,6 +9,12 @@ class MockRedisClient {
   public lists = new Map<string, string[]>();
   public kv = new Map<string, string>();
   public ttls = new Map<string, number>();
+  public status = 'ready';
+
+  async mset(...pairs: string[]): Promise<'OK'> {
+    for (let i = 0; i < pairs.length; i += 2) this.kv.set(pairs[i], pairs[i + 1]);
+    return 'OK';
+  }
 
   async lpush(key: string, val: string): Promise<number> {
     const list = this.lists.get(key) || [];
@@ -78,19 +84,26 @@ class MockRedisClient {
     this.lists.clear();
     this.kv.clear();
     this.ttls.clear();
+    this.status = 'ready';
   }
 }
 
 const mockRedis = new MockRedisClient();
+const redisState = { configured: true };
 
 vi.mock('../../../shared/redis/client.js', () => ({
   getRedisClient: () => mockRedis,
-  isRedisConfigured: () => true,
+  isRedisConfigured: () => redisState.configured,
 }));
 
 describe('FeedbackIntelligenceLoop - Persistence, List Bounding & Distributed Recalibration Lock', () => {
   beforeAll(async () => {
     await FeedbackReportModel.init();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    redisState.configured = true;
   });
 
   beforeEach(async () => {
@@ -261,6 +274,135 @@ describe('FeedbackIntelligenceLoop - Persistence, List Bounding & Distributed Re
 
       // External lock should still be in place
       expect(await mockRedis.get(lockKey)).toBe('other-worker-token');
+      await mockRedis.del(lockKey);
+    });
+
+    const submit = async (count: number, category: FeedbackReport['category'], prefix = 'rep') => {
+      for (let i = 1; i <= count; i++) {
+        await FeedbackIntelligenceLoop.submitFeedback(createDummyReport({ reportId: `${prefix}-${i}`, category }));
+      }
+    };
+
+    it('runs the contended 10th-mismatch calibration once the lock clears, with no further feedback', async () => {
+      const lockKey = 'calibration:lock:semantic_mismatch';
+      await mockRedis.set(lockKey, 'other-worker-token', 'PX', 5000, 'NX');
+      await submit(10, 'semantic_mismatch');
+      expect(await mockRedis.get('calibration:weights:semantic_mismatch')).toBeNull();
+
+      await mockRedis.del(lockKey);
+
+      await vi.waitFor(async () => {
+        expect(await mockRedis.get('calibration:weights:semantic_mismatch')).toBe('0.95');
+      }, { timeout: 5000, interval: 100 });
+      expect(await mockRedis.get('calibration:last_count:semantic_mismatch')).toBe('10');
+    });
+
+    it('picks up a skipped cycle on the next submission and applies it only once', async () => {
+      const lockKey = 'calibration:lock:recommendation';
+      await mockRedis.set(lockKey, 'other-worker-token', 'PX', 5000, 'NX');
+      await submit(10, 'recommendation');
+      await mockRedis.del(lockKey);
+
+      await submit(2, 'recommendation', 'later');
+
+      expect(await mockRedis.get('calibration:weights:recommendation')).toBe('0.9');
+      expect(await mockRedis.get('calibration:last_count:recommendation')).toBe('10');
+    });
+
+    it('applies one step for every block of 10 that piled up behind the lock', async () => {
+      const lockKey = 'calibration:lock:ats';
+      await mockRedis.set(lockKey, 'other-worker-token', 'PX', 5000, 'NX');
+      await submit(20, 'ats');
+      await mockRedis.del(lockKey);
+
+      await submit(1, 'ats', 'later');
+
+      expect(await mockRedis.get('calibration:weights:ats')).toBe('1.1');
+      expect(await mockRedis.get('calibration:last_count:ats')).toBe('20');
+    });
+
+    it.each([
+      ['Redis is reconnecting at retry time', () => {
+        mockRedis.status = 'reconnecting';
+        return () => { mockRedis.status = 'ready'; };
+      }],
+      ['the retry itself hits a Redis error', () => {
+        const spy = vi.spyOn(mockRedis, 'set').mockRejectedValue(new Error('connection lost'));
+        return () => { spy.mockRestore(); };
+      }],
+    ])('keeps retrying when %s', async (_label, breakRedis) => {
+      const lockKey = 'calibration:lock:ats';
+      await mockRedis.set(lockKey, 'other-worker-token', 'PX', 5000, 'NX');
+      await submit(10, 'ats');
+      await mockRedis.del(lockKey);
+      const restore = breakRedis();
+
+      await new Promise((resolve) => setTimeout(resolve, 1300)); // first retry fails
+      expect(await mockRedis.get('calibration:weights:ats')).toBeNull();
+      restore();
+
+      await vi.waitFor(async () => {
+        expect(await mockRedis.get('calibration:weights:ats')).toBe('1.05');
+      }, { timeout: 5000, interval: 100 });
+    }, 15000);
+
+    it('calibrates again after the mismatch counter is reset', async () => {
+      await mockRedis.set('calibration:last_count:ats', '500');
+
+      await submit(10, 'ats');
+
+      expect(await mockRedis.get('calibration:weights:ats')).toBe('1.05');
+      expect(await mockRedis.get('calibration:last_count:ats')).toBe('10');
+    });
+
+    it('does not replay history for a counter that predates the last calibrated count', async () => {
+      await mockRedis.set('calibration:mismatches:ats', '509');
+      await mockRedis.set('calibration:weights:ats', '1.0');
+
+      await submit(1, 'ats');
+
+      expect(await mockRedis.get('calibration:weights:ats')).toBe('1.05');
+      expect(await mockRedis.get('calibration:last_count:ats')).toBe('510');
+    });
+  });
+
+  describe('Degraded Redis', () => {
+    it.each([
+      ['unconfigured', () => { redisState.configured = false; }],
+      ['not connected', () => { mockRedis.status = 'reconnecting'; }],
+      ['failing commands', () => {
+        vi.spyOn(mockRedis, 'lpush').mockRejectedValue(new Error('connection lost'));
+        vi.spyOn(mockRedis, 'get').mockRejectedValue(new Error('connection lost'));
+      }],
+    ])('persists feedback and counts stats from MongoDB when Redis is %s', async (_label, breakRedis) => {
+      breakRedis();
+
+      await FeedbackIntelligenceLoop.submitFeedback(createDummyReport({ reportId: 'rep-down-1', category: 'ats' }));
+      await FeedbackIntelligenceLoop.submitFeedback(createDummyReport({ reportId: 'rep-down-2', category: 'ats' }));
+
+      expect(await FeedbackReportModel.countDocuments({ category: 'ats' })).toBe(2);
+      expect(await FeedbackIntelligenceLoop.getFeedbackStats()).toEqual({
+        onboarding: 0, recommendation: 0, ats: 2, semantic_mismatch: 0, credibility: 0,
+      });
+      expect(mockRedis.lists.size).toBe(0);
+    });
+
+    it('does not hang when a Redis command never settles', async () => {
+      vi.spyOn(mockRedis, 'lpush').mockReturnValue(new Promise<number>(() => {}));
+      vi.spyOn(mockRedis, 'get').mockReturnValue(new Promise<string | null>(() => {}));
+
+      await FeedbackIntelligenceLoop.submitFeedback(createDummyReport({ reportId: 'rep-hang', category: 'ats' }));
+      const stats = await FeedbackIntelligenceLoop.getFeedbackStats();
+
+      expect(stats.ats).toBe(1);
+    }, 10000);
+
+    it('still rejects when MongoDB persistence fails', async () => {
+      redisState.configured = false;
+      await FeedbackIntelligenceLoop.submitFeedback(createDummyReport({ reportId: 'rep-dup' }));
+      await expect(
+        FeedbackIntelligenceLoop.submitFeedback(createDummyReport({ reportId: 'rep-dup' })),
+      ).rejects.toThrow(/duplicate key/);
     });
   });
 

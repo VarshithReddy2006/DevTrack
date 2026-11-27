@@ -15,6 +15,7 @@ vi.mock('../../shared/redis/client.js', () => {
   const mockRedis = {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue('OK'),
+    mset: vi.fn().mockResolvedValue('OK'),
     lpush: vi.fn(),
     ltrim: vi.fn(),
     expire: vi.fn(),
@@ -271,7 +272,7 @@ describe('FeedbackIntelligenceLoop', () => {
       await FeedbackIntelligenceLoop.submitFeedback(mockReport);
 
       // Calibration triggered!
-      expect(mockRedis.set).toHaveBeenCalledWith('calibration:weights:ats', '1.05');
+      expect(mockRedis.mset).toHaveBeenCalledWith('calibration:weights:ats', '1.05', 'calibration:last_count:ats', '10');
     });
 
     it('should calibrate semantic match threshold down when recruiter semantic mismatches occur', async () => {
@@ -294,7 +295,9 @@ describe('FeedbackIntelligenceLoop', () => {
       await FeedbackIntelligenceLoop.submitFeedback(mockReport);
 
       // Semantic matching threshold calibration reduces score threshold by 0.05
-      expect(mockRedis.set).toHaveBeenCalledWith('calibration:weights:semantic_mismatch', '0.8');
+      expect(mockRedis.mset).toHaveBeenCalledWith(
+        'calibration:weights:semantic_mismatch', '0.8', 'calibration:last_count:semantic_mismatch', '20',
+      );
     });
   });
 
