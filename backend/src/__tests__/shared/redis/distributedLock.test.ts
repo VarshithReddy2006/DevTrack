@@ -14,9 +14,12 @@ import {
   withDistributedLockRetry,
   clearTestFallbackLocks,
   formatJobLockKey,
+  formatFenceKey,
+  ACQUIRE_WITH_FENCE_LUA_SCRIPT,
   RELEASE_LOCK_LUA_SCRIPT,
   EXTEND_LOCK_LUA_SCRIPT,
   DEFAULT_LOCK_PREFIX,
+  DEFAULT_FENCE_PREFIX,
 } from '../../../shared/redis/distributedLock.js';
 
 interface RedisEntry {
@@ -46,6 +49,8 @@ describe('DistributedLock & withDistributedLock', () => {
       return entry;
     }
 
+    const fenceCounters = new Map<string, number>();
+
     mockRedis = {
       status: 'ready',
       set: vi.fn(async (key: string, value: string, pxFlag?: string, ttlMs?: number, nxFlag?: string) => {
@@ -62,6 +67,20 @@ describe('DistributedLock & withDistributedLock', () => {
       }),
 
       eval: vi.fn(async (script: string, numKeys: number, ...args: Array<string | number>) => {
+        if (script === ACQUIRE_WITH_FENCE_LUA_SCRIPT && numKeys === 2) {
+          const lockKey = String(args[0]);
+          const fenceKey = String(args[1]);
+          const ownerToken = String(args[2]);
+          const ttlMs = Number(args[3]);
+          const res = await (mockRedis.set as Function)(lockKey, ownerToken, 'PX', ttlMs, 'NX');
+          if (res !== 'OK') {
+            return 0;
+          }
+          const next = (fenceCounters.get(fenceKey) ?? 0) + 1;
+          fenceCounters.set(fenceKey, next);
+          return next;
+        }
+
         const key = String(args[0]);
         const entry = getLiveEntry(key);
 
@@ -640,7 +659,11 @@ describe('DistributedLock & withDistributedLock', () => {
           return status;
         },
         set: vi.fn().mockResolvedValue('OK'),
-        eval: vi.fn().mockRejectedValue(new Error('ECONNRESET')),
+        eval: vi.fn(async (script: string) =>
+          script === ACQUIRE_WITH_FENCE_LUA_SCRIPT
+            ? 1
+            : Promise.reject(new Error('ECONNRESET'))
+        ),
       } as unknown as Redis;
 
       let capturedHandle: any = null;
@@ -901,6 +924,223 @@ describe('DistributedLock & withDistributedLock', () => {
       expect(await abortPromise).toEqual({ executed: false, reason: 'aborted' });
 
       randomSpy.mockRestore();
+    });
+  });
+
+  describe('Monotonic Fencing Tokens & Redlock Multi-Node Quorum', () => {
+    function createInMemoryRedisNode(): {
+      redis: Redis;
+      store: Map<string, RedisEntry>;
+      counters: Map<string, number>;
+    } {
+      const store = new Map<string, RedisEntry>();
+      const counters = new Map<string, number>();
+      const live = (key: string) => {
+        const entry = store.get(key);
+        if (!entry) return null;
+        if (entry.expiresAt <= currentTime) {
+          store.delete(key);
+          return null;
+        }
+        return entry;
+      };
+      const redis = {
+        status: 'ready',
+        set: vi.fn(async (key: string, value: string, px?: string, ttlMs?: number, nx?: string) => {
+          if (nx === 'NX' && live(key)) return null;
+          store.set(key, {
+            value,
+            expiresAt: px === 'PX' && typeof ttlMs === 'number' ? currentTime + ttlMs : Infinity,
+          });
+          return 'OK';
+        }),
+        incr: vi.fn(async (key: string) => {
+          const next = (counters.get(key) ?? 0) + 1;
+          counters.set(key, next);
+          return next;
+        }),
+        eval: vi.fn(async (script: string, _numKeys: number, ...args: Array<string | number>) => {
+          if (script === ACQUIRE_WITH_FENCE_LUA_SCRIPT) {
+            const lockKey = String(args[0]);
+            const fenceKey = String(args[1]);
+            const owner = String(args[2]);
+            const ttlMs = Number(args[3]);
+            if (live(lockKey)) return 0;
+            store.set(lockKey, { value: owner, expiresAt: currentTime + ttlMs });
+            const next = (counters.get(fenceKey) ?? 0) + 1;
+            counters.set(fenceKey, next);
+            return next;
+          }
+          const key = String(args[0]);
+          const entry = live(key);
+          if (script === RELEASE_LOCK_LUA_SCRIPT) {
+            if (entry && entry.value === String(args[1])) {
+              store.delete(key);
+              return 1;
+            }
+            return 0;
+          }
+          if (script === EXTEND_LOCK_LUA_SCRIPT) {
+            if (entry && entry.value === String(args[1])) {
+              entry.expiresAt = currentTime + Number(args[2]);
+              return 1;
+            }
+            return 0;
+          }
+          return 0;
+        }),
+      } as unknown as Redis;
+      return { redis, store, counters };
+    }
+
+    it('formats lock:fence:<resource> keys and issues strictly increasing fencing tokens', async () => {
+      expect(formatFenceKey('xp_ledger')).toBe(`${DEFAULT_FENCE_PREFIX}xp_ledger`);
+      expect(formatFenceKey(`${DEFAULT_LOCK_PREFIX}xp_ledger`)).toBe(`${DEFAULT_FENCE_PREFIX}xp_ledger`);
+
+      const lock1 = await acquireDistributedLock('xp_ledger', { redisClient: mockRedis as Redis, ttlMs: 5_000 });
+      expect(lock1?.fencingToken).toBe(1);
+
+      // Blocked acquire returns null
+      const blocked = await acquireDistributedLock('xp_ledger', { redisClient: mockRedis as Redis, ttlMs: 5_000 });
+      expect(blocked).toBeNull();
+
+      await lock1?.release();
+
+      const lock2 = await acquireDistributedLock('xp_ledger', { redisClient: mockRedis as Redis, ttlMs: 5_000 });
+      expect(lock2?.fencingToken).toBe(2);
+
+      // Even after TTL expiration without release, next token strictly increases
+      currentTime += 6_000;
+      vi.setSystemTime(currentTime);
+      const lock3 = await acquireDistributedLock('xp_ledger', { redisClient: mockRedis as Redis, ttlMs: 5_000 });
+      expect(lock3?.fencingToken).toBe(3);
+      expect(lock3!.fencingToken!).toBeGreaterThan(lock2!.fencingToken!);
+      await lock3?.release();
+    });
+
+    it('supports partial Redis mocks using set + incr when eval is unavailable on acquire', async () => {
+      const incrSpy = vi.fn().mockResolvedValueOnce(1041).mockResolvedValueOnce(1042);
+      const partialRedis = {
+        status: 'ready',
+        set: vi.fn().mockResolvedValue('OK'),
+        incr: incrSpy,
+      } as unknown as Redis;
+
+      const l1 = await acquireDistributedLock('profile_rebuild', { redisClient: partialRedis });
+      const l2 = await acquireDistributedLock('profile_rebuild', { redisClient: partialRedis });
+
+      expect(l1?.fencingToken).toBe(1041);
+      expect(l2?.fencingToken).toBe(1042);
+      expect(incrSpy).toHaveBeenCalledWith(`${DEFAULT_FENCE_PREFIX}profile_rebuild`);
+    });
+
+    it('auto-renews at default ttl/3 intervals when autoRenew is enabled', async () => {
+      const lock = await acquireDistributedLock('auto_renew_default', {
+        redisClient: mockRedis as Redis,
+        ttlMs: 3_000,
+        autoRenew: true,
+      });
+      expect(lock).not.toBeNull();
+
+      // Advance across multiple ttl/3 (1_000ms) heartbeats past original 3_000ms TTL
+      for (let i = 0; i < 4; i++) {
+        currentTime += 1_000;
+        vi.setSystemTime(currentTime);
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+
+      const competitor = await acquireDistributedLock('auto_renew_default', {
+        redisClient: mockRedis as Redis,
+      });
+      expect(competitor).toBeNull();
+
+      await lock?.release();
+      const afterRelease = await acquireDistributedLock('auto_renew_default', {
+        redisClient: mockRedis as Redis,
+      });
+      expect(afterRelease).not.toBeNull();
+      await afterRelease?.release();
+    });
+
+    it('acquires with majority Redlock quorum even when one of three nodes is down', async () => {
+      const n1 = createInMemoryRedisNode();
+      const n2 = createInMemoryRedisNode();
+      const n3 = createInMemoryRedisNode();
+      (n3.redis as { status: string }).status = 'reconnecting';
+
+      const handle = await acquireDistributedLock('redlock_quorum_job', {
+        redisClients: [n1.redis, n2.redis, n3.redis],
+        ttlMs: 10_000,
+      });
+
+      expect(handle).not.toBeNull();
+      expect(handle?.isHeld).toBe(true);
+      expect(handle?.fencingToken).toBe(1);
+      expect(n1.store.has(`${DEFAULT_LOCK_PREFIX}redlock_quorum_job`)).toBe(true);
+      expect(n2.store.has(`${DEFAULT_LOCK_PREFIX}redlock_quorum_job`)).toBe(true);
+
+      // Extend succeeds on 2/3 quorum
+      expect(await handle?.extend(12_000)).toBe(true);
+      // Release cleans both held nodes
+      expect(await handle?.release()).toBe(true);
+      expect(n1.store.size).toBe(0);
+      expect(n2.store.size).toBe(0);
+    });
+
+    it('fails Redlock acquisition and rolls back partial locks when quorum is not reached', async () => {
+      const n1 = createInMemoryRedisNode();
+      const n2 = createInMemoryRedisNode();
+      const n3 = createInMemoryRedisNode();
+
+      // Contend on n2 and n3 so only n1 is free (< quorum of 2)
+      n2.store.set(`${DEFAULT_LOCK_PREFIX}redlock_rollback`, { value: 'other', expiresAt: currentTime + 10_000 });
+      n3.store.set(`${DEFAULT_LOCK_PREFIX}redlock_rollback`, { value: 'other', expiresAt: currentTime + 10_000 });
+
+      const handle = await acquireDistributedLock('redlock_rollback', {
+        redisClients: [n1.redis, n2.redis, n3.redis],
+        ttlMs: 10_000,
+      });
+
+      expect(handle).toBeNull();
+      // Node 1 partial acquisition must have been rolled back
+      expect(n1.store.has(`${DEFAULT_LOCK_PREFIX}redlock_rollback`)).toBe(false);
+    });
+
+    it('rejects Redlock acquisition when clock drift leaves non-positive validity time', async () => {
+      const n1 = createInMemoryRedisNode();
+      const n2 = createInMemoryRedisNode();
+      const n3 = createInMemoryRedisNode();
+
+      const handle = await acquireDistributedLock('redlock_drift_expired', {
+        redisClients: [n1.redis, n2.redis, n3.redis],
+        ttlMs: 2, // driftMs = ceil + 2 leaves validityMs <= 0
+        clockDriftFactor: 0.5,
+      });
+
+      expect(handle).toBeNull();
+      expect(n1.store.size).toBe(0);
+      expect(n2.store.size).toBe(0);
+      expect(n3.store.size).toBe(0);
+    });
+
+    it('maintains mutual exclusion and strictly increasing tokens under concurrent worker contention', async () => {
+      const n1 = createInMemoryRedisNode();
+      const observedTokens: number[] = [];
+
+      const results = await Promise.all(
+        Array.from({ length: 8 }, async () => {
+          const lock = await acquireDistributedLock('stress_mutex', {
+            redisClient: n1.redis,
+            ttlMs: 5_000,
+          });
+          if (!lock) return false;
+          observedTokens.push(lock.fencingToken!);
+          return true;
+        })
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(observedTokens).toEqual([1]);
     });
   });
 });
