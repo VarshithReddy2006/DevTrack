@@ -176,3 +176,16 @@ export function createLocalHourReader(timezone: string): (date: Date) => number 
   });
   return date => Number(formatter.format(date));
 }
+
+/**
+ * Returns the UTC start of the previous calendar day in the given timezone.
+ * Used for timezone-aware streak and activity calculations.
+ */
+export function getPreviousLocalDay(date: Date, timezone: string): Date {
+  const todayStr = localDateString(date, timezone);
+  // Parse YYYY-MM-DD and decrement the day to get yesterday
+  const [year, month, day] = todayStr.split('-').map(Number);
+  const yesterday = new Date(Date.UTC(year, month - 1, day - 1));
+  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+  return localDayBounds(yesterdayStr, timezone).start;
+}
