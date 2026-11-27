@@ -69,14 +69,18 @@ privacyRoutes.post('/export', authMiddleware, async (req: AuthenticatedRequest, 
  * GET /api/v2/privacy/export/download/:token
  * Downloads the compiled GDPR ZIP data export archive.
  */
-privacyRoutes.get('/export/download/:token', async (req, res) => {
+privacyRoutes.get('/export/download/:token', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) {
+    return commonErrors.unauthorized(res);
+  }
   const { token } = req.params;
   if (!token) {
     return commonErrors.badRequest(res, 'Missing export download token');
   }
 
   try {
-    const archiveBuffer = await getExportArchiveByToken(token);
+    const archiveBuffer = await getExportArchiveByToken(token, userId);
     if (!archiveBuffer) {
       return res.status(404).json({
         success: false,

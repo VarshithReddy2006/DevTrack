@@ -12,6 +12,8 @@ import {
   generateDataExport,
   generateAndNotifyDataExport,
   getExportArchiveByToken,
+  storeExportArchive,
+  MAX_IN_MEMORY_EXPORTS,
 } from '../../../modules/privacy/dataExport.service.js';
 import { eventBus } from '../../../shared/sse/index.js';
 
@@ -274,5 +276,19 @@ describe('GDPR Privacy: Version-2 Collections in Data Portability Export', () =>
     );
 
     publishSpy.mockRestore();
+  });
+
+  it('enforces userId ownership verification on getExportArchiveByToken', async () => {
+    const { token } = await storeExportArchive(testUserId, Buffer.from('zip-bytes'));
+    expect(await getExportArchiveByToken(token, testUserId)).toEqual(Buffer.from('zip-bytes'));
+    expect(await getExportArchiveByToken(token, otherUserId)).toBeNull();
+  });
+
+  it('bounds in-memory export cache to MAX_IN_MEMORY_EXPORTS by evicting oldest entries', async () => {
+    const first = await storeExportArchive(testUserId, Buffer.from('first'));
+    for (let i = 0; i < MAX_IN_MEMORY_EXPORTS; i++) {
+      await storeExportArchive(testUserId, Buffer.from(`entry-${i}`));
+    }
+    expect(await getExportArchiveByToken(first.token, testUserId)).toBeNull();
   });
 });
