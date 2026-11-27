@@ -75,13 +75,15 @@ export async function getStats(req: AuthenticatedRequest, res: Response): Promis
 }
 
 export async function getDashboard(req: AuthenticatedRequest, res: Response): Promise<void> {
-  const data = await service.getDashboard(req.user!.id);
+  const timezone = typeof req.query.timezone === 'string' && req.query.timezone.length > 0 ? req.query.timezone : undefined;
+  const data = await service.getDashboard(req.user!.id, timezone);
   successResponse(res, data, 'Dashboard data retrieved successfully');
 }
 
 export async function getHeatmap(req: AuthenticatedRequest, res: Response): Promise<void> {
   const year = req.query.year ? parseInt(req.query.year as string, 10) : undefined;
-  const data = await service.getHeatmap(req.user!.id, year);
+  const timezone = typeof req.query.timezone === 'string' && req.query.timezone.length > 0 ? req.query.timezone : undefined;
+  const data = await service.getHeatmap(req.user!.id, year, timezone);
   successResponse(res, data, 'Heatmap data retrieved successfully');
 }
 
