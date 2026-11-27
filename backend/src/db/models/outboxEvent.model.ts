@@ -3,7 +3,9 @@
 // the relay in shared/events/outboxRelay.ts publishes them to BullMQ afterwards.
 import { Schema, model, type Document } from 'mongoose';
 
-export type OutboxStatus = 'pending' | 'processing' | 'published' | 'dead';
+/** `dead`: gave up after the maximum attempts. `archived`: a maintainer set a dead event aside (see modules/ops/outboxDlq.service.ts). */
+export type OutboxStatus = 'pending' | 'processing' | 'published' | 'dead' | 'archived';
+export const OUTBOX_STATUSES: OutboxStatus[] = ['pending', 'processing', 'published', 'dead', 'archived'];
 
 export interface IOutboxEvent extends Document {
   eventId: string;
@@ -21,8 +23,11 @@ export interface IOutboxEvent extends Document {
   /** Earliest time a `pending` event may be claimed again (exponential backoff). */
   nextAttemptAt: Date;
   lastError: string | null;
+  /** When the relay last tried to publish the event. */
+  lastAttemptAt: Date | null;
   traceContext: Record<string, string>;
   publishedAt: Date | null;
+  archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -36,13 +41,15 @@ const outboxEventSchema = new Schema<IOutboxEvent>(
     aggregateId: { type: String, required: true },
     userId: { type: String, required: true },
     payload: { type: Schema.Types.Mixed, required: true, default: {} },
-    status: { type: String, enum: ['pending', 'processing', 'published', 'dead'], default: 'pending', required: true },
+    status: { type: String, enum: OUTBOX_STATUSES, default: 'pending', required: true },
     attempts: { type: Number, default: 0 },
     leaseExpiresAt: { type: Date, default: null },
     nextAttemptAt: { type: Date, default: () => new Date() },
     lastError: { type: String, default: null },
+    lastAttemptAt: { type: Date, default: null },
     traceContext: { type: Schema.Types.Mixed, default: {} },
     publishedAt: { type: Date, default: null },
+    archivedAt: { type: Date, default: null },
   },
   { timestamps: true, minimize: false },
 );
