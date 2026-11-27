@@ -266,6 +266,40 @@ describe('Revision Radar Services & Transactions (Replica Set)', () => {
       ).rejects.toThrow(RevisionCardStaleError);
     });
 
+    it('serializes concurrent submitReview calls with the same reviewSeq so only one succeeds', async () => {
+      const userId = new Types.ObjectId().toString();
+      const userObjId = new Types.ObjectId(userId);
+      const now = new Date('2026-06-01T12:00:00.000Z');
+
+      const card = await RevisionCard.create({
+        userId: userObjId,
+        problemKey: 'leetcode:concurrent-review',
+        title: 'Concurrent Review Problem',
+        difficulty: 'medium',
+        repetitions: 0,
+        easeFactor: 2.5,
+        intervalDays: 1,
+        dueAt: now,
+        reviewSeq: 0,
+      });
+
+      const results = await Promise.allSettled([
+        RevisionService.submitReview({ userId, cardId: card._id.toString(), rating: 'easy', reviewSeq: 0, now }),
+        RevisionService.submitReview({ userId, cardId: card._id.toString(), rating: 'hard', reviewSeq: 0, now }),
+      ]);
+
+      const fulfilled = results.filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled');
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(fulfilled[0].value.reviewSeq).toBe(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0].reason).toBeInstanceOf(RevisionCardStaleError);
+
+      const persisted = await RevisionCard.findById(card._id).lean();
+      expect(persisted?.reviewSeq).toBe(1);
+    });
+
     it('throws RevisionCardNotFoundError for nonexistent card', async () => {
       const userId = new Types.ObjectId().toString();
       const fakeId = new Types.ObjectId().toString();
