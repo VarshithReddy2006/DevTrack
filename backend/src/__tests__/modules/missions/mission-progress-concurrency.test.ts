@@ -156,8 +156,28 @@ describe('Mission Progress Concurrency — Issue #85', () => {
 
     const finalDoc = await Mission.findById(mission._id).lean();
     expect(finalDoc!.status).toBe('completed');
+    expect(finalDoc!.currentCount).toBe(3);
     expect(processMissionReward).toHaveBeenCalledTimes(1);
     expect(processMissionReward).toHaveBeenCalledWith(userId, mission._id.toString());
     expect(eventBus.emitNotificationCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not increment or complete a mission that expires before findOneAndUpdate executes', async () => {
+    const mission = await createMission({
+      targetCount: 2,
+      currentCount: 1,
+      expiresAt: new Date(Date.now() + 5_000),
+    });
+
+    await Mission.updateOne({ _id: mission._id }, { $set: { expiresAt: new Date(Date.now() - 1_000) } });
+
+    // Simulate stale initial query returning the mission right before expiration took effect
+    vi.spyOn(Mission, 'find').mockResolvedValueOnce([mission] as any);
+    await updateMissionProgress(userId, 'dsa_solve', { difficulty: 'medium' });
+
+    const doc = await Mission.findById(mission._id).lean();
+    expect(doc!.currentCount).toBe(1);
+    expect(doc!.status).toBe('in_progress');
+    expect(processMissionReward).not.toHaveBeenCalled();
   });
 });

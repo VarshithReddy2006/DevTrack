@@ -26,11 +26,12 @@ export async function updateMissionProgress(
     const category = mapActivityToCategory(activityType);
     if (!category) return;
 
+    const now = new Date();
     const activeMissions = await Mission.find({
       userId: userObjId,
       category,
       status: { $in: ['pending', 'in_progress'] },
-      expiresAt: { $gte: new Date() },
+      expiresAt: { $gte: now },
     });
 
     if (activeMissions.length === 0) return;
@@ -41,9 +42,16 @@ export async function updateMissionProgress(
         continue;
       }
 
-      // Atomically increment progress on non-completed active missions
-      const updated = await Mission.findOneAndUpdate(
-        { _id: mission._id, status: { $in: ['pending', 'in_progress'] } },
+      const stepNow = new Date();
+      // Atomically increment only while non-expired and strictly below targetCount so concurrent updates never overshoot.
+      // If already at targetCount (e.g. retry after a rolled-back reward transaction), re-read the active non-expired doc.
+      let updated = await Mission.findOneAndUpdate(
+        {
+          _id: mission._id,
+          status: { $in: ['pending', 'in_progress'] },
+          expiresAt: { $gte: stepNow },
+          $expr: { $lt: ['$currentCount', '$targetCount'] },
+        },
         {
           $inc: { currentCount: 1 },
           $set: { status: 'in_progress' },
@@ -51,7 +59,16 @@ export async function updateMissionProgress(
         { new: true }
       );
 
-      // If already completed or not found, skip
+      if (!updated) {
+        updated = await Mission.findOne({
+          _id: mission._id,
+          status: { $in: ['pending', 'in_progress'] },
+          expiresAt: { $gte: stepNow },
+          $expr: { $gte: ['$currentCount', '$targetCount'] },
+        });
+      }
+
+      // If already completed, expired, or not found, skip
       if (!updated) continue;
 
       // Atomically commit completion status, XP reward, and outbox event in one transaction.
