@@ -43,13 +43,13 @@ export const ReadinessOrchestratorService = {
         readPillar('Benchmarks', ReadinessBenchmarks.findOne({ userId }).lean()),
       ]);
 
-      // Lazily materialize DSA readiness if the user has accepted submissions or synced stats
-      // but the background readiness worker has not yet run for this user.
-      if (!dsa && !unavailablePillars.includes('DSA') && isObjectIdOrHexString(userId)) {
+      // Lazily materialize or refresh DSA readiness if missing or empty when user has platform stats / accepted solves.
+      const dsaNeedsMaterialization = !dsa || dsa.totalSolves === 0 || (dsa.topics?.length ?? 0) === 0;
+      if (dsaNeedsMaterialization && !unavailablePillars.includes('DSA') && isObjectIdOrHexString(userId)) {
         try {
           const [hasSub, hasStats] = await Promise.all([
             DsaSubmission.exists({ userId, status: 'accepted' }),
-            PlatformStats.exists({ userId, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] } }),
+            PlatformStats.exists({ userId, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] }, totalSolved: { $gt: 0 } }),
           ]);
           if (hasSub || hasStats) {
             const { DsaIntelligenceEngine } = await import('../intelligence/DsaIntelligenceEngine.js');

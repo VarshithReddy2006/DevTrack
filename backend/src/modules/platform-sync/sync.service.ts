@@ -30,7 +30,7 @@ export interface SyncResult {
   error?: string;
 }
 
-export async function syncAllPlatforms(userId: string): Promise<SyncResult[]> {
+export async function syncAllPlatforms(userId: string, options?: { force?: boolean }): Promise<SyncResult[]> {
   const t0 = Date.now();
   const platforms = await ConnectedPlatform.find({
     userId: new Types.ObjectId(userId),
@@ -42,7 +42,7 @@ export async function syncAllPlatforms(userId: string): Promise<SyncResult[]> {
 
   for (const platform of platforms) {
     try {
-      const result = await syncPlatform(userId, platform.platformName);
+      const result = await syncPlatform(userId, platform.platformName, options);
       results.push(result);
     } catch (error) {
       logger.error(`Sync failed for ${platform.platformName}`, error);
@@ -78,7 +78,7 @@ export async function syncAllPlatforms(userId: string): Promise<SyncResult[]> {
   return results;
 }
 
-export async function syncPlatform(userId: string, platformName: string): Promise<SyncResult> {
+export async function syncPlatform(userId: string, platformName: string, options?: { force?: boolean }): Promise<SyncResult> {
   const lockAcquired = await acquireSyncLockWithRetry(userId, platformName, 10);
   
   if (!lockAcquired) {
@@ -95,7 +95,7 @@ export async function syncPlatform(userId: string, platformName: string): Promis
   }
 
   try {
-    const result = await syncPlatformWithLock(userId, platformName);
+    const result = await syncPlatformWithLock(userId, platformName, options);
     if (result.success && platformName === 'github') await VerifiedProjectIngestionService.queueRefresh(userId);
     if (result.success && ['leetcode', 'codeforces', 'codechef'].includes(platformName)) {
       let queued = false;
@@ -142,7 +142,7 @@ export async function syncPlatform(userId: string, platformName: string): Promis
  * Internal sync implementation — MUST be called with lock held
  * Do not call directly; use syncPlatform() which handles locking
  */
-async function syncPlatformWithLock(userId: string, platformName: string): Promise<SyncResult> {
+async function syncPlatformWithLock(userId: string, platformName: string, options?: { force?: boolean }): Promise<SyncResult> {
   const syncStartedAt = Date.now();
   const platform = await ConnectedPlatform.findOne({ userId: new Types.ObjectId(userId), platformName, isConnected: true });
 
@@ -150,10 +150,20 @@ async function syncPlatformWithLock(userId: string, platformName: string): Promi
     return { platform: platformName, success: false, error: 'Platform not connected' };
   }
 
+  const existingStats = await PlatformStats.findOne({
+    userId: new Types.ObjectId(userId),
+    platformName,
+  }).lean();
+
+  const missingLeetCodeTagCounts =
+    platformName === 'leetcode' &&
+    Boolean(existingStats && existingStats.totalSolved > 0) &&
+    !(existingStats?.rawData as Record<string, unknown> | undefined)?.tagProblemCounts;
+
   const COOLDOWN_MS = 5 * 60 * 1000;
   const timeSinceLastSync = platform.lastSyncedAt ? Date.now() - new Date(platform.lastSyncedAt).getTime() : Infinity;
 
-  if (timeSinceLastSync < COOLDOWN_MS && platform.syncStatus === 'success') {
+  if (!options?.force && !missingLeetCodeTagCounts && timeSinceLastSync < COOLDOWN_MS && platform.syncStatus === 'success') {
     const remainingSec = Math.ceil((COOLDOWN_MS - timeSinceLastSync) / 1000);
     logger.info(`Sync cooldown active for ${platformName}`, { userId, remainingSec });
     return {
@@ -164,10 +174,6 @@ async function syncPlatformWithLock(userId: string, platformName: string): Promi
   }
 
   await ConnectedPlatform.updateOne({ _id: platform._id }, { syncStatus: 'syncing', syncError: null });
-  const existingStats = await PlatformStats.findOne({
-    userId: new Types.ObjectId(userId),
-    platformName,
-  }).lean();
   const previousSolved = existingStats?.totalSolved ?? 0;
   const isFirstSync = !existingStats;
 

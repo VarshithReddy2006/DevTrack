@@ -159,7 +159,7 @@ export class DSAService {
    */
   async syncAndGenerateDSAIntelligence(userId: string, platform?: Platform): Promise<DSAIntelligenceOutput> {
     try {
-      await syncAllPlatforms(userId);
+      await syncAllPlatforms(userId, { force: true });
     } catch (error) {
       logger.warn('[dsaService] Platform sync during on-demand refresh failed (continuing with local data)', {
         userId,

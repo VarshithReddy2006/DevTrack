@@ -75,6 +75,23 @@ it('renders active metric values and all difficulty counts', async () => {
   }
 });
 
+it('renders categorized Data Structures and Algorithms sections with solved counts and mastery percentages', async () => {
+  fetchData.mockResolvedValueOnce({
+    ...activeState,
+    strongTopics: [{ topic: 'arrays', solved: 30, mastery: 100 }],
+    weakTopics: [{ topic: 'dp', solved: 5, mastery: 20 }],
+    nextTopics: ['dp', 'trees'],
+  });
+  renderPage();
+
+  expect(await screen.findByText('Data Structures Mastery')).toBeInTheDocument();
+  expect(screen.getByText('Algorithmic Paradigms')).toBeInTheDocument();
+  expect(screen.getAllByText('Arrays & Sliding Window').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText('Dynamic Programming').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getByText('30 solved')).toBeInTheDocument();
+  expect(screen.getByText('5 solved')).toBeInTheDocument();
+});
+
 it('keeps the zero state visible and makes Sync Data available after a failed sync', async () => {
   fetchData.mockResolvedValueOnce(zeroState);
   syncData.mockRejectedValueOnce(new Error('Offline'));

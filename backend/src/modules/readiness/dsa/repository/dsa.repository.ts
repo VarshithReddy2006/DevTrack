@@ -288,19 +288,19 @@ export class DSARepository implements IDSARepository {
       }
 
       const owner = new Types.ObjectId(userId);
-      const [summary, platformStats, connectedPlatforms, readinessDsa, solvedProblems, acceptedSubmissions, dailyActivities] =
+      const [summary, platformStats, connectedPlatforms, readinessDsa, allProblems, acceptedSubmissions, dailyActivities] =
         await Promise.all([
           reconcileUserDsaSummary(userId),
           PlatformStats.find({ userId: owner, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] } }).lean(),
           ConnectedPlatform.find({ userId: owner, isConnected: true, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] } })
-            .select('platformName lastSyncedAt')
+            .select('platformName username lastSyncedAt')
             .lean(),
           ReadinessDsa.findOne({ userId }).lean(),
-          DsaProblem.find({ userId: owner, status: 'solved' }).select('tags category').lean(),
+          DsaProblem.find({ userId: owner }).select('tags category status').lean(),
           DsaSubmission.find({ userId: owner, status: 'accepted' })
-            .select('submittedAt topicTags platform')
+            .select('problemId submittedAt topicTags platform')
             .sort({ submittedAt: -1 })
-            .limit(500)
+            .limit(1000)
             .lean(),
           DailyActivity.find({ userId: owner, totalActivities: { $gt: 0 } })
             .select('date')
@@ -309,13 +309,52 @@ export class DSARepository implements IDSARepository {
             .lean(),
         ]);
 
+      // Lazy backfill: if a LeetCode PlatformStats record predates tagProblemCounts extraction,
+      // fetch the user's tag counts once in production/dev and cache them on PlatformStats.
+      if (process.env.NODE_ENV !== 'test') {
+        for (const stat of platformStats) {
+          const raw = stat.rawData as Record<string, any> | undefined;
+          if (stat.platformName === 'leetcode' && stat.totalSolved > 0 && !raw?.tagProblemCounts && stat.username) {
+            try {
+              const { fetchLeetCodeTagProblemCounts } = await import('../../../platform-sync/adapters/leetcode.data.js');
+              const tagCounts = await fetchLeetCodeTagProblemCounts(stat.username);
+              if (tagCounts) {
+                stat.rawData = { ...(raw ?? {}), tagProblemCounts: tagCounts };
+                await PlatformStats.updateOne(
+                  { _id: stat._id },
+                  { $set: { 'rawData.tagProblemCounts': tagCounts } }
+                );
+              }
+            } catch {
+              // Non-fatal: external LeetCode GraphQL rate limit or offline fallback
+            }
+          }
+        }
+      }
+
       const topicBreakdown = createEmptyTopicBreakdown();
 
-      // 1) Map problem-level tags from solved problems and accepted submissions
+      // 1) Map problem-level and accepted-submission-level tags per unique solved problem
+      const acceptedByProblem = new Map<string, string[]>();
+      for (const sub of acceptedSubmissions) {
+        if (sub.problemId) {
+          const pid = sub.problemId.toString();
+          const list = acceptedByProblem.get(pid) ?? [];
+          if (Array.isArray(sub.topicTags) && sub.topicTags.length) {
+            list.push(...sub.topicTags);
+          }
+          acceptedByProblem.set(pid, list);
+        }
+      }
+
       const problemTopicCounts = createEmptyTopicBreakdown();
-      for (const prob of solvedProblems) {
+      for (const prob of allProblems) {
+        const pid = prob._id.toString();
+        const isSolved = prob.status === 'solved' || acceptedByProblem.has(pid);
+        if (!isSolved) continue;
+        const subTags = acceptedByProblem.get(pid) ?? [];
         const seenForProblem = new Set<keyof TopicBreakdown>();
-        for (const tag of [...(prob.tags ?? []), ...(prob.category ? [prob.category] : [])]) {
+        for (const tag of [...(prob.tags ?? []), ...subTags, ...(prob.category ? [prob.category] : [])]) {
           const mapped = mapTagToTopicKey(tag);
           if (mapped && !seenForProblem.has(mapped)) {
             seenForProblem.add(mapped);

@@ -2,6 +2,7 @@ import { ReadinessDsa } from '../../../db/models/readinessDsa.model.js';
 import { DsaSubmission } from '../../../db/models/dsaSubmission.model.js';
 import { DsaProblem } from '../../../db/models/dsaProblem.model.js';
 import { ConnectedPlatform } from '../../../db/models/connectedPlatform.model.js';
+import { PlatformStats } from '../../../db/models/platformStats.model.js';
 import { logger } from '../../../shared/logger.js';
 import { subDays, differenceInDays } from 'date-fns';
 
@@ -21,10 +22,12 @@ export const DsaIntelligenceEngine = {
       
       // Readiness is unique per user, so every trigger must read the whole user.
       const submissions = await DsaSubmission.find({ userId, status: 'accepted' }).sort({ submittedAt: -1 }).lean();
-      const [problems, providers] = await Promise.all([
+      const [problems, providers, platformStats] = await Promise.all([
         DsaProblem.find({ userId, _id: { $in: submissions.map(s => s.problemId) } }).select('difficulty tags').lean(),
         ConnectedPlatform.find({ userId, isConnected: true, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] } })
           .select('platformName lastSyncedAt').lean(),
+        PlatformStats.find({ userId, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] } })
+          .select('platformName totalSolved easySolved mediumSolved hardSolved rawData fetchedAt').lean(),
       ]);
       const problemMap = new Map(problems.map(p => [p._id.toString(), p]));
       const solves = new Map<string, { problemId: string; difficulty?: string; topics: string[]; submittedAt: Date }>();
@@ -39,19 +42,69 @@ export const DsaIntelligenceEngine = {
         else solves.set(key, { problemId: key, difficulty: problem?.difficulty, topics, submittedAt: submission.submittedAt });
       }
       const uniqueSolves = [...solves.values()];
-      const totalSolves = uniqueSolves.length;
+      const statTotals = platformStats.reduce(
+        (acc, stat) => {
+          acc.total += stat.totalSolved || 0;
+          acc.easy += stat.easySolved || 0;
+          acc.medium += stat.mediumSolved || 0;
+          acc.hard += stat.hardSolved || 0;
+          return acc;
+        },
+        { total: 0, easy: 0, medium: 0, hard: 0 }
+      );
+      const totalSolves = Math.max(uniqueSolves.length, statTotals.total);
       
       // Calculate difficulty distribution
-      const difficultyDistribution = this.calculateDifficultyDistribution(uniqueSolves);
+      const submissionDist = this.calculateDifficultyDistribution(uniqueSolves);
+      const difficultyDistribution = {
+        easy: Math.max(submissionDist.easy, statTotals.easy),
+        medium: Math.max(submissionDist.medium, statTotals.medium),
+        hard: Math.max(submissionDist.hard, statTotals.hard),
+      };
       
       // Calculate hard problem progression
-      const hardProblemProgression = this.calculateHardProblemProgression(uniqueSolves, totalSolves);
+      const hardProblemProgression = totalSolves > 0
+        ? Math.min(100, Math.floor(((difficultyDistribution.hard / totalSolves) / 0.1) * 100))
+        : 0;
       
       // Calculate solve consistency (streak-based)
       const solveConsistency = this.calculateSolveConsistency(submissions);
       
       // Process topic mastery with depth analysis
       const processedTopics = this.processTopicMastery([], uniqueSolves);
+
+      // Supplement topic mastery from LeetCode tagProblemCounts on PlatformStats when available
+      for (const stat of platformStats) {
+        const tagCounts = (stat.rawData as Record<string, any> | undefined)?.tagProblemCounts;
+        if (!tagCounts || typeof tagCounts !== 'object') continue;
+        const buckets = [
+          ...(Array.isArray(tagCounts.fundamental) ? tagCounts.fundamental : []),
+          ...(Array.isArray(tagCounts.intermediate) ? tagCounts.intermediate : []),
+          ...(Array.isArray(tagCounts.advanced) ? tagCounts.advanced : []),
+        ];
+        for (const item of buckets) {
+          const count = typeof item?.problemsSolved === 'number' ? item.problemsSolved : 0;
+          const name = typeof item?.tagName === 'string' ? item.tagName.toLowerCase() : typeof item?.tagSlug === 'string' ? item.tagSlug : '';
+          if (!name || count <= 0) continue;
+          const masteryLevel = Math.min(100, count * 5);
+          const existing = processedTopics.find(t => t.name.toLowerCase() === name);
+          if (existing) {
+            existing.masteryLevel = Math.max(existing.masteryLevel, masteryLevel);
+            existing.evidenceCoverage = Math.max(existing.evidenceCoverage, Math.min(100, (count / 50) * 100));
+          } else {
+            processedTopics.push({
+              name,
+              masteryLevel,
+              confidenceScore: 85,
+              evidenceCoverage: Math.min(100, (count / 50) * 100),
+              progressionTrend: 'stagnating',
+              hardLevelMaturity: 0,
+              recency: stat.fetchedAt ?? new Date(),
+              consistency: Math.min(100, count * 4),
+            });
+          }
+        }
+      }
       
       // Identify weak and neglected topics
       const weakTopics = processedTopics.filter(t => t.masteryLevel < 40).map(t => t.name);

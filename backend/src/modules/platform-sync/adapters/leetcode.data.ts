@@ -119,3 +119,23 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
     },
   };
 }
+
+export async function fetchLeetCodeTagProblemCounts(username: string): Promise<{
+  advanced?: Array<{ tagName: string; tagSlug: string; problemsSolved: number }>;
+  intermediate?: Array<{ tagName: string; tagSlug: string; problemsSolved: number }>;
+  fundamental?: Array<{ tagName: string; tagSlug: string; problemsSolved: number }>;
+} | null> {
+  const query = `
+    query userTagCounts($username: String!) {
+      matchedUser(username: $username) {
+        tagProblemCounts {
+          advanced { tagName tagSlug problemsSolved }
+          intermediate { tagName tagSlug problemsSolved }
+          fundamental { tagName tagSlug problemsSolved }
+        }
+      }
+    }
+  `;
+  const response = await fetchLeetCodeGraphQL(query, { username });
+  return response?.data?.matchedUser?.tagProblemCounts ?? null;
+}
