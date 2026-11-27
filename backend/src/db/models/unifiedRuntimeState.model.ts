@@ -140,6 +140,7 @@ export interface IUnifiedRuntimeState extends Document {
   // Metadata
   lastEventId: string; // For replay-safe rebuilding
   lastCalculatedAt: Date;
+  stateVersion?: number | null; // Monotonic fencing token of latest committed writer
   version: number; // For schema migrations
   updatedAt: Date;
 }
@@ -230,6 +231,7 @@ const unifiedRuntimeStateSchema = new Schema<IUnifiedRuntimeState>(
     // Metadata
     lastEventId: { type: String, default: '' },
     lastCalculatedAt: { type: Date, default: Date.now },
+    stateVersion: { type: Number, default: 0 },
     version: { type: Number, default: 1 },
   },
   { timestamps: { updatedAt: true } }
