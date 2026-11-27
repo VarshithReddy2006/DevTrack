@@ -23,6 +23,7 @@ import {
   type WeekFinalizedPayload,
 } from '../../../modules/leagues/rollover.js';
 import { eventBus } from '../../../shared/sse/index.js';
+import { auditRowsFor, decryptChainedAuditEvent } from '../../../modules/audit/auditLedger.service.js';
 import { FakeScoreStore } from './fakeScoreStore.js';
 
 const WEEK = '2026-11-15';
@@ -508,11 +509,11 @@ describe('RolloverSagaOrchestrator — Adversarial Integration Tests', () => {
 
     // ProfileAuditLog should have recorded the sniping detection
     const auditLog = await ProfileAuditLog.findOne({
-      userId: new Types.ObjectId(sniperId),
+      ...await auditRowsFor(new Types.ObjectId(sniperId)),
       eventType: 'anti_gaming_check',
     }).lean();
     expect(auditLog).not.toBeNull();
-    expect(auditLog!.details.reason).toBe('leaderboard_sniping_detected');
+    expect(await decryptChainedAuditEvent(auditLog!, sniperId)).toMatchObject({ reason: 'leaderboard_sniping_detected' });
   });
 
   it('TOCTOU protection: committed cohort is never reverted to in_progress and partial committed recovery is mutually exclusive', async () => {

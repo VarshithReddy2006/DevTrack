@@ -5,8 +5,9 @@
 // ============================================================================
 
 import { Types, type ClientSession, type HydratedDocument } from 'mongoose';
-import { FocusSession, ProfileAuditLog, UnifiedRuntimeState, User, UserXp, type IFocusSession } from '../../db/models/index.js';
+import { FocusSession, UnifiedRuntimeState, User, UserXp, type IFocusSession } from '../../db/models/index.js';
 import { runInTransaction } from '../../db/transaction.js';
+import { appendChainedAuditEvent } from '../audit/auditLedger.service.js';
 import { logger } from '../../shared/logger.js';
 import { writeOutboxEvent } from '../../shared/events/outbox.js';
 import { focusSessionCompletedV1Schema } from '../../shared/events/eventContract.js';
@@ -569,7 +570,7 @@ export class FocusEngine {
     let decision: ReturnType<typeof decideFocusXp>;
     if (analysis.verdict === 'synthetic_activity_detected') {
       decision = { qualified: false, xpAmount: 0, reason: 'anti_gaming', capApplied: false };
-      await ProfileAuditLog.create([{
+      await appendChainedAuditEvent({
         userId: session.userId,
         eventType: 'anti_gaming_check',
         triggeredBy: 'system',
@@ -583,7 +584,7 @@ export class FocusEngine {
         },
         suspicionScoreBefore: null,
         suspicionScoreAfter: null,
-      }], { session: dbSession });
+      }, dbSession);
       logger.info('[focus] Synthetic activity detected, XP denied', {
         userId: String(session.userId), sessionId: String(session._id), reason: analysis.reason,
       });

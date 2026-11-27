@@ -7,6 +7,7 @@ import { subtractDays } from '../../shared/date.js';
 import { createDomainEvent, type ProfileFlaggedPayload } from '../../shared/events/eventContract.js';
 import { runConsumersForEvent } from '../../shared/events/runConsumer.js';
 import { logger } from '../../shared/logger.js';
+import { appendChainedAuditEvent, auditRowsFor } from '../audit/auditLedger.service.js';
 import { PublicProfileService } from './publicProfile.service.js';
 import { SUSPICION_FLAG_THRESHOLD } from './verification.engine.js';
 
@@ -37,7 +38,7 @@ export class AntiGamingWorker {
 
           // The previous audit is the baseline, not the profile document: profile rebuilds
           // overwrite the score between sweeps and would hide a flag from the audit trail.
-          const previous = await ProfileAuditLog.findOne({ userId: _id, eventType: 'anti_gaming_check' })
+          const previous = await ProfileAuditLog.findOne({ ...await auditRowsFor(_id), eventType: 'anti_gaming_check' })
             .sort({ createdAt: -1 }).select('suspicionScoreAfter').lean();
           const before = previous?.suspicionScoreAfter ?? null;
 
@@ -51,20 +52,15 @@ export class AntiGamingWorker {
           }
 
           // Written last: it marks the user as done for this day, so a crash above is retried.
-          await ProfileAuditLog.updateOne(
-            { _id: auditId },
-            {
-              $setOnInsert: {
-                userId: _id,
-                eventType: 'anti_gaming_check',
-                triggeredBy: 'system',
-                details: score,
-                suspicionScoreBefore: before,
-                suspicionScoreAfter: score.suspicionScore,
-              },
-            },
-            { upsert: true }
-          );
+          await appendChainedAuditEvent({
+            _id: auditId,
+            userId: _id,
+            eventType: 'anti_gaming_check',
+            triggeredBy: 'system',
+            details: score,
+            suspicionScoreBefore: before,
+            suspicionScoreAfter: score.suspicionScore,
+          });
           audited++;
         } catch (error) {
           failed++;
@@ -87,20 +83,16 @@ export class AntiGamingWorker {
     score: { suspicionScore: number; flags: string[] },
   ): Promise<void> {
     const entryId = auditIdFor(isFlagged ? 'flag-raised' : 'flag-cleared', day, userId);
-    await ProfileAuditLog.updateOne(
-      { _id: entryId },
-      {
-        $setOnInsert: {
-          userId,
-          eventType: isFlagged ? 'flag_raised' : 'flag_cleared',
-          triggeredBy: 'system',
-          details: { flags: score.flags },
-          suspicionScoreBefore: before,
-          suspicionScoreAfter: score.suspicionScore,
-        },
-      },
-      { upsert: true }
-    );
+    // Fixed id, so a retried sweep finds the entry instead of logging it twice.
+    await appendChainedAuditEvent({
+      _id: entryId,
+      userId,
+      eventType: isFlagged ? 'flag_raised' : 'flag_cleared',
+      triggeredBy: 'system',
+      details: { flags: score.flags },
+      suspicionScoreBefore: before,
+      suspicionScoreAfter: score.suspicionScore,
+    });
     if (!isFlagged) return;
 
     const payload: ProfileFlaggedPayload = {

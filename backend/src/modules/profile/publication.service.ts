@@ -1,5 +1,4 @@
 import type { ClientSession, Types } from 'mongoose';
-import { ProfileAuditLog } from '../../db/models/profileAuditLog.model.js';
 import {
   DEFAULT_PUBLIC_PROFILE_THEME,
   PUBLIC_PROFILE_SECTIONS,
@@ -17,6 +16,7 @@ import { escapeRegExp } from '../../shared/regex.js';
 import type { PublishProfileInput } from './publication.schemas.js';
 import { PublicProfileService } from './publicProfile.service.js';
 import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
+import { appendChainedAuditEvent } from '../audit/auditLedger.service.js';
 
 export type PublicationErrorCode = 'INVALID_SLUG' | 'RESERVED_SLUG' | 'SLUG_TAKEN';
 
@@ -147,10 +147,10 @@ export class PublicationService {
           { new: true, session },
         );
         if (!updated) throw new Error('Public profile missing after rebuild');
-        await ProfileAuditLog.create([{
+        await appendChainedAuditEvent({
           userId, eventType: 'visibility_changed', triggeredBy: 'user',
           details: { published: true, slug, sections, consentVersion: input.consentVersion, publicationVersion: updated.publicationVersion },
-        }], { session });
+        }, session);
         return updated;
       });
     } catch (error) {
@@ -172,10 +172,10 @@ export class PublicationService {
         { new: true, session },
       );
       if (updated) {
-        await ProfileAuditLog.create([{
+        await appendChainedAuditEvent({
           userId, eventType: 'visibility_changed', triggeredBy: 'user',
           details: { published: false, slug: updated.slug, publicationVersion: updated.publicationVersion },
-        }], { session });
+        }, session);
       }
       return updated;
     });

@@ -19,6 +19,7 @@ import '../../db/models/aiConversation.model.js';
 import '../../db/models/aiResponseAuditLog.model.js';
 import '../../db/models/analyticsEvent.model.js';
 import '../../db/models/atsAnalysis.model.js';
+import '../../db/models/auditCheckpoint.model.js';
 import '../../db/models/behavioralTelemetry.model.js';
 import '../../db/models/betaCohort.model.js';
 import '../../db/models/betaUser.model.js';

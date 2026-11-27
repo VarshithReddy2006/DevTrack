@@ -18,6 +18,7 @@ import { getPublicProfile } from '../../../modules/profile/profile.controller.js
 import { PublicProfileService } from '../../../modules/profile/publicProfile.service.js';
 import { VerificationEngine } from '../../../modules/profile/verification.engine.js';
 import { getStartOfDay } from '../../../shared/date.js';
+import { auditRowsFor } from '../../../modules/audit/auditLedger.service.js';
 
 function userFixture() {
   const _id = new Types.ObjectId();
@@ -101,7 +102,7 @@ it('serves canonical metrics and immediately applies changes to public visibilit
   await UserSettings.updateOne({ userId }, { 'privacy.profileVisibility': 'private' });
   await getPublicProfile(request, response);
   expect(status).toHaveBeenLastCalledWith(404);
-  expect(await ProfileAuditLog.countDocuments({ userId })).toBe(0);
+  expect(await ProfileAuditLog.countDocuments()).toBe(0);
 });
 
 it('uses root LeetCode counts, supports legacy rows, and leaves repeated evaluations read-only', async () => {
@@ -139,13 +140,13 @@ it('paginates beyond 50 users, retries failures, and writes one audit per user a
   try {
     await expect(AntiGamingWorker.startAuditJob(scheduledAt)).rejects.toThrow('1 profiles');
     expect(await ProfileAuditLog.countDocuments()).toBe(51);
-    expect(await ProfileAuditLog.exists({ userId: failedId })).toBeNull();
+    expect(await ProfileAuditLog.exists(await auditRowsFor(failedId))).toBeNull();
 
     await AntiGamingWorker.startAuditJob(scheduledAt);
     await AntiGamingWorker.startAuditJob(scheduledAt);
     expect(recompute).toHaveBeenCalledTimes(53);
     expect(await ProfileAuditLog.countDocuments()).toBe(52);
-    expect(await ProfileAuditLog.exists({ userId: inactive._id })).toBeNull();
+    expect(await ProfileAuditLog.exists(await auditRowsFor(inactive._id))).toBeNull();
 
     await AntiGamingWorker.startAuditJob(new Date(scheduledAt.getTime() + 86_400_000));
     expect(await ProfileAuditLog.countDocuments()).toBe(104);

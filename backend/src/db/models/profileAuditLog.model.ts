@@ -12,6 +12,8 @@ export type ProfileAuditEventType =
   | 'dossier_downloaded'
   | 'ACCOUNT_ERASURE_TOMBSTONE';
 
+export const PROFILE_AUDIT_TTL_SECONDS = 90 * 24 * 60 * 60;
+
 export interface IProfileAuditLog extends Document {
   userId?: Types.ObjectId | null;
   subjectHash?: string | null;
@@ -79,8 +81,8 @@ ProfileAuditLogSchema.index(
   { sequenceNumber: 1 },
   { unique: true, partialFilterExpression: { sequenceNumber: { $type: 'number' } } }
 );
-// TTL: 90 days (auto-expire old audit logs)
-ProfileAuditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+// TTL: 90 days (auto-expire old audit logs). AuditCheckpoint keeps the chain verifiable past that.
+ProfileAuditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: PROFILE_AUDIT_TTL_SECONDS });
 
 export const ProfileAuditLog = mongoose.model<IProfileAuditLog>('ProfileAuditLog', ProfileAuditLogSchema);
 

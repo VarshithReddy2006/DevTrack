@@ -4,7 +4,8 @@
 // can trigger inverse compensation to cleanly revert mutations and maintain database consistency.
 
 import { Types } from 'mongoose';
-import { LeagueStanding, ProfileAuditLog, XpTransaction } from '../../db/models/index.js';
+import { LeagueStanding, XpTransaction } from '../../db/models/index.js';
+import { appendChainedAuditEvent } from '../audit/auditLedger.service.js';
 import type { LeagueDivision, LeagueOutcome, LeagueStandingStatus } from '../../db/models/index.js';
 import type { ILeagueRolloverLog, SagaCohortStep } from '../../db/models/leagueRolloverLog.model.js';
 import { logger } from '../../shared/logger.js';
@@ -142,9 +143,12 @@ export const sagaCohortSteps: ISagaStep[] = [
         finalBoard = adjustedBoard;
 
         if (auditEntries.length > 0) {
-          await ProfileAuditLog.insertMany(auditEntries, { ordered: false }).catch(err => {
-            logger.warn('[saga-step] Failed to persist entropy audit entries', { error: err });
-          });
+          // One at a time: each entry links to the one before it.
+          for (const entry of auditEntries) {
+            await appendChainedAuditEvent(entry).catch(err => {
+              logger.warn('[saga-step] Failed to persist entropy audit entry', { error: err });
+            });
+          }
         }
       } catch (entropyErr) {
         // Never crash rollover worker if entropy analysis fails
