@@ -286,9 +286,14 @@ describe('GDPR Privacy: Version-2 Collections in Data Portability Export', () =>
 
   it('bounds in-memory export cache to MAX_IN_MEMORY_EXPORTS by evicting oldest entries', async () => {
     const first = await storeExportArchive(testUserId, Buffer.from('first'));
+    let lastToken = '';
     for (let i = 0; i < MAX_IN_MEMORY_EXPORTS; i++) {
-      await storeExportArchive(testUserId, Buffer.from(`entry-${i}`));
+      const stored = await storeExportArchive(testUserId, Buffer.from(`entry-${i}`));
+      lastToken = stored.token;
     }
     expect(await getExportArchiveByToken(first.token, testUserId)).toBeNull();
+    expect(await getExportArchiveByToken(lastToken, testUserId)).toEqual(
+      Buffer.from(`entry-${MAX_IN_MEMORY_EXPORTS - 1}`)
+    );
   });
 });

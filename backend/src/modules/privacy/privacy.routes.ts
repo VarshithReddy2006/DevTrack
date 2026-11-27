@@ -74,7 +74,8 @@ privacyRoutes.get('/export/download/:token', authMiddleware, async (req: Authent
   if (!userId) {
     return commonErrors.unauthorized(res);
   }
-  const { token } = req.params;
+  const rawToken = req.params.token;
+  const token = Array.isArray(rawToken) ? rawToken[0] : rawToken;
   if (!token) {
     return commonErrors.badRequest(res, 'Missing export download token');
   }

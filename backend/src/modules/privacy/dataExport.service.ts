@@ -353,27 +353,23 @@ export async function storeExportArchive(userId: string, archiveBuffer: Buffer):
   const now = Date.now();
   const expiresAt = new Date(now + ttlSeconds * 1000);
 
-  let persistedInRedis = false;
   if (isRedisConfigured()) {
     try {
       const redis = getRedisClient();
       await redis.set(`privacy:export:${token}`, archiveBuffer.toString('base64'), 'EX', ttlSeconds);
       await redis.set(`privacy:export:user:${token}`, userId, 'EX', ttlSeconds);
-      persistedInRedis = true;
     } catch (err) {
       logger.warn('[privacy-export] Failed to persist export in Redis, relying on in-memory store', { error: err });
     }
   }
 
-  // Only retain in bounded in-memory store when Redis is unavailable or failed
-  if (!persistedInRedis) {
-    pruneInMemoryExports(now);
-    inMemoryExportStore.set(token, {
-      buffer: archiveBuffer,
-      expiresAt: expiresAt.getTime(),
-      userId,
-    });
-  }
+  // Retain in bounded in-memory L1/fallback store (evicting oldest beyond MAX_IN_MEMORY_EXPORTS)
+  pruneInMemoryExports(now);
+  inMemoryExportStore.set(token, {
+    buffer: archiveBuffer,
+    expiresAt: expiresAt.getTime(),
+    userId,
+  });
 
   return { token, expiresAt };
 }
