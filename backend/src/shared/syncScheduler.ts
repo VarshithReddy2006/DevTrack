@@ -6,7 +6,7 @@ import { Types } from 'mongoose';
 import { ConnectedPlatform } from '../db/models/index.js';
 import { syncState } from './syncState.js';
 import { getPlatformSyncQueue } from './jobs/index.js';
-import { PlatformSyncJobData, QueueNames } from './jobs/types.js';
+import { JobRetryConfig, PlatformSyncJobData, QueueNames } from './jobs/types.js';
 import { logger } from './logger.js';
 import { env } from '../config/env.js';
 import { acquireSchedulerLock, releaseSchedulerLock } from './redis/syncLock.service.js';
@@ -40,6 +40,38 @@ async function acquireLock(): Promise<boolean> {
 async function releaseLock(): Promise<void> {
   syncLock = false;
   await releaseSchedulerLock();
+}
+
+// ---------------------------------------------------------------------------
+// Job building
+// ---------------------------------------------------------------------------
+
+/** Jobs sent to Redis in one addBulk pipeline. */
+export const SYNC_BULK_CHUNK_SIZE = 500;
+
+/** Spreads retries out so a platform outage is not followed by every job retrying at once. */
+const RETRY_JITTER = 0.5;
+
+/** Index of the sync window containing `now`. A window is as long as the sweep interval. */
+function syncWindow(now: number): number {
+  return Math.floor(now / (env.SYNC_INTERVAL_MINUTES * 60_000));
+}
+
+function buildSyncJob(userId: string, platformName: string, window: number, requestId: string) {
+  const key = `sync-${platformName}-${userId}`;
+  const data: PlatformSyncJobData = { userId, platformName, requestId };
+  return {
+    name: key,
+    data,
+    opts: {
+      // One job per user and platform per window. BullMQ forbids ':' in custom ids.
+      jobId: `${key}-${window}`,
+      // Also hold back later windows while an earlier job is still waiting, delayed or active.
+      deduplication: { id: key },
+      attempts: JobRetryConfig.platformSync.attempts,
+      backoff: { ...JobRetryConfig.platformSync.backoff, jitter: RETRY_JITTER },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -95,41 +127,33 @@ async function runScheduledSync(): Promise<void> {
       platformCount: platforms.length,
     });
 
+    const window = syncWindow(startTime);
+    const jobs = [...userPlatformMap].flatMap(([userId, platformNames]) =>
+      [...new Set(platformNames)].map((platformName) => buildSyncJob(userId, platformName, window, jobId))
+    );
+
     const queue = getPlatformSyncQueue();
-    const enqueuedJobs: string[] = [];
+    let heldByEarlierJob = 0;
 
-    for (const [userId, platformNames] of userPlatformMap) {
-      for (const platformName of platformNames) {
-        const jobData: PlatformSyncJobData = {
-          userId,
-          platformName,
-          requestId: jobId,
-        };
-
-        await queue.add(
-          `sync-${platformName}-${userId}-${Date.now()}`,
-          jobData,
-          {
-            jobId: `sync-${platformName}-${userId}-${Date.now()}`,
-          }
-        );
-
-        enqueuedJobs.push(`${userId}:${platformName}`);
-        logger.info('[sync-scheduler] Job enqueued', {
-          event: 'job_enqueued',
-          queue: QueueNames.PLATFORM_SYNC,
-          jobId: `sync-${platformName}-${userId}-${Date.now()}`,
-          userId,
-          platform: platformName,
-          requestId: jobId,
-        });
-      }
+    for (let offset = 0; offset < jobs.length; offset += SYNC_BULK_CHUNK_SIZE) {
+      const chunk = jobs.slice(offset, offset + SYNC_BULK_CHUNK_SIZE);
+      const added = await queue.addBulk(chunk);
+      // When an unfinished job holds the deduplication key, BullMQ answers with that job's id.
+      // A repeat within the same window answers with the requested id, so it is not counted here.
+      heldByEarlierJob += added.filter((job, i) => job.id !== chunk[i].opts.jobId).length;
+      logger.debug('[sync-scheduler] Batch enqueued', {
+        event: 'jobs_enqueued',
+        queue: QueueNames.PLATFORM_SYNC,
+        batchSize: chunk.length,
+        requestId: jobId,
+      });
     }
 
     logger.info('[sync-scheduler] Scheduled sync complete', {
       job: 'platform-sync',
       jobId,
-      jobsEnqueued: enqueuedJobs.length,
+      jobsSubmitted: jobs.length,
+      jobsHeldByEarlierJob: heldByEarlierJob,
       durationMs: Date.now() - startTime,
     });
 
