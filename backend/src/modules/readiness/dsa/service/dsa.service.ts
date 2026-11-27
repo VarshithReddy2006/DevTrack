@@ -6,6 +6,10 @@ import { confidenceEngine } from '../scoring/ConfidenceEngine.js';
 import { trendEngine } from '../trend-engine/TrendEngine.js';
 import { recommendationEngine } from '../recommendation-engine/RecommendationEngine.js';
 import { DSAIntelligenceInput, DSAIntelligenceOutput, Platform, TopicBreakdown } from '../types/dsa.types';
+import { syncAllPlatforms } from '../../../platform-sync/sync.service.js';
+import { DsaIntelligenceEngine } from '../../intelligence/DsaIntelligenceEngine.js';
+import { TrustAwareReadinessScoringEngine } from '../../scoring/TrustAwareReadinessScoringEngine.js';
+import { logger } from '../../../../shared/logger.js';
 
 export class DSAService {
   /**
@@ -147,6 +151,34 @@ export class DSAService {
     }
 
     return await dsaRepository.aggregateByUserId(userId);
+  }
+
+  /**
+   * Synchronize connected DSA platforms, recompute readiness intelligence,
+   * and return the updated DSA intelligence snapshot.
+   */
+  async syncAndGenerateDSAIntelligence(userId: string, platform?: Platform): Promise<DSAIntelligenceOutput> {
+    try {
+      await syncAllPlatforms(userId);
+    } catch (error) {
+      logger.warn('[dsaService] Platform sync during on-demand refresh failed (continuing with local data)', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      const enginePlatform = platform === 'leetcode' || platform === 'codeforces' ? platform : undefined;
+      await DsaIntelligenceEngine.generateIntelligence({ userId, platform: enginePlatform });
+      await TrustAwareReadinessScoringEngine.calculateReadinessScore({ userId, persist: true });
+    } catch (error) {
+      logger.warn('[dsaService] On-demand readiness recalculation failed (non-fatal)', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return this.generateDSAIntelligence({ userId, platform });
   }
 }
 

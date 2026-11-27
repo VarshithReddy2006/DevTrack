@@ -98,11 +98,24 @@ export async function syncPlatform(userId: string, platformName: string): Promis
     const result = await syncPlatformWithLock(userId, platformName);
     if (result.success && platformName === 'github') await VerifiedProjectIngestionService.queueRefresh(userId);
     if (result.success && ['leetcode', 'codeforces', 'codechef'].includes(platformName)) {
+      let queued = false;
       try {
         await getReadinessDsaQueue().add('post-sync-readiness', { userId, platform: platformName });
+        queued = true;
       } catch (error) {
         logger.warn('[sync] DSA readiness enqueue failed (non-fatal)', {
           userId, platform: platformName, error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        const { isRedisConfigured } = await import('../../shared/redis/client.js');
+        if (!queued || !isRedisConfigured()) {
+          const { DsaIntelligenceEngine } = await import('../readiness/intelligence/DsaIntelligenceEngine.js');
+          await DsaIntelligenceEngine.generateIntelligence({ userId, platform: platformName as 'leetcode' | 'codeforces' | 'codechef' });
+        }
+      } catch (intelErr) {
+        logger.warn('[sync] Inline DSA readiness generation failed (non-fatal)', {
+          userId, platform: platformName, error: intelErr instanceof Error ? intelErr.message : String(intelErr),
         });
       }
     }

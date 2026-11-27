@@ -1,9 +1,11 @@
 import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 import { CareerIntent } from '../../../db/models/careerIntent.model.js';
+import { ConnectedPlatform } from '../../../db/models/connectedPlatform.model.js';
 import { DsaProblem } from '../../../db/models/dsaProblem.model.js';
 import { DSAProfile } from '../../../db/models/dsaProfile.model.js';
 import { DsaSubmission } from '../../../db/models/dsaSubmission.model.js';
+import { PlatformStats } from '../../../db/models/platformStats.model.js';
 import { UserProfile } from '../../../db/models/userProfile.model.js';
 import { dsaRepository } from './repository/dsa.repository.js';
 import { dsaService } from './service/dsa.service.js';
@@ -105,5 +107,57 @@ describe('readiness DSA intelligence', () => {
     await CareerIntent.create({ userId, dreamRole: 'Backend Engineer' });
     const backend = await dsaService.generateDSAIntelligence({ userId });
     expect(backend.nextTopics.slice(0, 3)).toEqual(['trees', 'dp', 'graphs']);
+  });
+
+  it('extracts dynamic DSA intelligence from PlatformStats, ConnectedPlatform, and submissions when DSAProfile is absent', async () => {
+    const owner = new Types.ObjectId();
+    const userId = owner.toHexString();
+    const now = new Date();
+    const todayKey = now.toISOString().split('T')[0];
+
+    await ConnectedPlatform.create({
+      userId: owner,
+      platformName: 'leetcode',
+      username: 'blackshadow8044',
+      profileUrl: 'https://leetcode.com/u/blackshadow8044/',
+      isConnected: true,
+      syncStatus: 'success',
+      lastSyncedAt: now,
+    });
+
+    await PlatformStats.create({
+      userId: owner,
+      platformName: 'leetcode',
+      username: 'blackshadow8044',
+      totalSolved: 85,
+      easySolved: 40,
+      mediumSolved: 35,
+      hardSolved: 10,
+      rawData: {
+        submissionCalendar: { [todayKey]: 2 },
+        tagProblemCounts: {
+          fundamental: [
+            { tagName: 'Array', tagSlug: 'array', problemsSolved: 30 },
+            { tagName: 'String', tagSlug: 'string', problemsSolved: 18 },
+          ],
+          intermediate: [
+            { tagName: 'Hash Table', tagSlug: 'hash-table', problemsSolved: 16 },
+          ],
+          advanced: [
+            { tagName: 'Dynamic Programming', tagSlug: 'dynamic-programming', problemsSolved: 8 },
+          ],
+        },
+      },
+      fetchedAt: now,
+    });
+
+    const intelligence = await dsaService.generateDSAIntelligence({ userId });
+    expect(intelligence.difficultyDistribution).toEqual({ easy: 40, medium: 35, hard: 10, total: 85 });
+    expect(intelligence.readinessScore).toBeGreaterThan(0);
+    expect(intelligence.confidenceScore).toBeGreaterThan(50);
+    expect(intelligence.verificationCoverage).toBe(100);
+    expect(intelligence.strongTopics).toContainEqual({ topic: 'arrays', solved: 30, mastery: 100 });
+    expect(intelligence.strongTopics).toContainEqual({ topic: 'hashing', solved: 16, mastery: 100 });
+    expect(intelligence.weakTopics).toContainEqual({ topic: 'dp', solved: 8, mastery: 32 });
   });
 });

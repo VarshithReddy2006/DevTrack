@@ -1,4 +1,7 @@
+import { isObjectIdOrHexString } from 'mongoose';
 import { logger } from '../../../shared/logger.js';
+import { DsaSubmission } from '../../../db/models/dsaSubmission.model.js';
+import { PlatformStats } from '../../../db/models/platformStats.model.js';
 import { ReadinessCore } from '../../../db/models/readinessCore.model.js';
 import { ReadinessDsa } from '../../../db/models/readinessDsa.model.js';
 import { ReadinessSkills } from '../../../db/models/readinessSkills.model.js';
@@ -31,7 +34,7 @@ export const ReadinessOrchestratorService = {
           return null;
         }
       };
-      const [core, dsa, skills, projects, roadmap, benchmarks] = await Promise.all([
+      let [core, dsa, skills, projects, roadmap, benchmarks] = await Promise.all([
         ReadinessCore.findOne({ userId }).lean(),
         readPillar('DSA', ReadinessDsa.findOne({ userId }).lean()),
         readPillar('Skills', ReadinessSkills.findOne({ userId }).lean()),
@@ -39,6 +42,27 @@ export const ReadinessOrchestratorService = {
         readPillar('Roadmap', ReadinessRoadmap.findOne({ userId }).lean()),
         readPillar('Benchmarks', ReadinessBenchmarks.findOne({ userId }).lean()),
       ]);
+
+      // Lazily materialize DSA readiness if the user has accepted submissions or synced stats
+      // but the background readiness worker has not yet run for this user.
+      if (!dsa && !unavailablePillars.includes('DSA') && isObjectIdOrHexString(userId)) {
+        try {
+          const [hasSub, hasStats] = await Promise.all([
+            DsaSubmission.exists({ userId, status: 'accepted' }),
+            PlatformStats.exists({ userId, platformName: { $in: ['leetcode', 'codeforces', 'codechef'] } }),
+          ]);
+          if (hasSub || hasStats) {
+            const { DsaIntelligenceEngine } = await import('../intelligence/DsaIntelligenceEngine.js');
+            await DsaIntelligenceEngine.generateIntelligence({ userId });
+            dsa = await readPillar('DSA', ReadinessDsa.findOne({ userId }).lean());
+          }
+        } catch (lazyErr) {
+          logger.warn('[ReadinessOrchestratorService] Lazy DSA readiness generation skipped', {
+            userId,
+            error: lazyErr instanceof Error ? lazyErr.message : String(lazyErr),
+          });
+        }
+      }
 
       const freshnessThreshold = Date.now() - READINESS_FRESHNESS_MS;
       const fragmentsChanged = core && [dsa, skills, projects, roadmap, benchmarks].some(fragment => {

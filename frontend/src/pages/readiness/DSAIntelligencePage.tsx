@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Code2, Target, CheckCircle, Zap, Cpu, RefreshCw } from 'lucide-react';
-import { useDSAIntelligence } from '../../features/readiness/hooks/useDSAIntelligence';
+import { useDSAIntelligence, useSyncDSAIntelligence } from '../../features/readiness/hooks/useDSAIntelligence';
 import { TrustConfidenceLayer } from '../../features/readiness/components/TrustConfidenceLayer';
 import { EmptyState } from '../../components/shared/EmptyState';
 
@@ -61,6 +61,9 @@ const DifficultyChart: React.FC<{ dist: { easy: number; medium: number; hard: nu
 // ─── Main Page ───
 const DSAIntelligencePage: React.FC = () => {
   const { data, isLoading, isFetching, isRefetchError, error, refetch } = useDSAIntelligence();
+  const syncMutation = useSyncDSAIntelligence();
+  const isSyncing = isFetching || syncMutation.isPending;
+  const hasSyncError = (isRefetchError || syncMutation.isError) && !isSyncing;
 
   if (isLoading) {
     return (
@@ -123,14 +126,27 @@ const DSAIntelligencePage: React.FC = () => {
         
         {/* We use a custom header to perfectly match the dark theme, skipping the default WorkspaceHeader if it clashes, 
             but for compatibility we'll render it and wrap it if needed. The prompt allows us to "build it to next level". */}
-        <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="mb-10 flex items-center gap-4">
-           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-[0_0_30px_rgba(99,102,241,0.4)]">
-             <Code2 className="w-6 h-6 text-white" />
+        <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="mb-10 flex flex-wrap items-center justify-between gap-4">
+           <div className="flex items-center gap-4">
+             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-[0_0_30px_rgba(99,102,241,0.4)]">
+               <Code2 className="w-6 h-6 text-white" />
+             </div>
+             <div>
+               <h1 className="text-3xl font-black tracking-tight text-white">DSA Intelligence</h1>
+               <p className="text-sm font-semibold text-indigo-300 uppercase tracking-widest mt-1">Algorithmic Maturity Engine</p>
+             </div>
            </div>
-           <div>
-             <h1 className="text-3xl font-black tracking-tight text-white">DSA Intelligence</h1>
-             <p className="text-sm font-semibold text-indigo-300 uppercase tracking-widest mt-1">Algorithmic Maturity Engine</p>
-           </div>
+           {!isZeroState && (
+             <button
+               type="button"
+               onClick={() => syncMutation.mutate()}
+               disabled={isSyncing}
+               className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-white/10 disabled:opacity-60"
+             >
+               <RefreshCw size={15} aria-hidden="true" className={isSyncing ? 'motion-safe:animate-spin' : ''} />
+               {isSyncing ? 'Syncing…' : 'Refresh Telemetry'}
+             </button>
+           )}
         </motion.div>
 
         {isZeroState && (
@@ -150,17 +166,17 @@ const DSAIntelligencePage: React.FC = () => {
             </div>
             <button
               type="button"
-              onClick={() => void refetch({ cancelRefetch: false })}
-              disabled={isFetching}
+              onClick={() => syncMutation.mutate()}
+              disabled={isSyncing}
               className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-6 py-2 font-bold text-black transition-transform enabled:hover:scale-105 disabled:opacity-70"
             >
-              {isFetching && <RefreshCw size={16} aria-hidden="true" className="motion-safe:animate-spin" />}
-              {isFetching ? 'Syncing…' : 'Sync Data'}
+              {isSyncing && <RefreshCw size={16} aria-hidden="true" className="motion-safe:animate-spin" />}
+              {isSyncing ? 'Syncing…' : 'Sync Data'}
             </button>
           </motion.div>
         )}
 
-        {isRefetchError && !isFetching && (
+        {hasSyncError && (
           <p role="alert" className="mb-4 text-sm text-rose-300">
             Could not refresh DSA data. Showing the last loaded results.
           </p>
@@ -304,6 +320,7 @@ const DSAIntelligencePage: React.FC = () => {
                <div className="opacity-90 grayscale-[0.2]">
                  <TrustConfidenceLayer
                     confidence={data.confidenceScore}
+                    lastSyncedAt={data.lastUpdated || null}
                     verificationCoverage={data.verificationCoverage}
                   />
                </div>

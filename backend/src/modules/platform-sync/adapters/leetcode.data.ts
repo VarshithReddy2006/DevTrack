@@ -32,6 +32,23 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
             count
           }
         }
+        tagProblemCounts {
+          advanced {
+            tagName
+            tagSlug
+            problemsSolved
+          }
+          intermediate {
+            tagName
+            tagSlug
+            problemsSolved
+          }
+          fundamental {
+            tagName
+            tagSlug
+            problemsSolved
+          }
+        }
         submissionCalendar
       }
       userContestRanking(username: $username) {
@@ -96,6 +113,7 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
     totalContests: contest.attendedContestsCount || 0,
     rawData: {
       submissionCalendar,
+      tagProblemCounts: data.matchedUser.tagProblemCounts ?? null,
       // Used by frontend profile stats
       userContestRanking: data.userContestRanking ?? null,
     },

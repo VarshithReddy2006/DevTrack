@@ -48,7 +48,7 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
           platform: sub.platform, externalId: sub.problemExternalId, url: sub.problemUrl,
         }).key,
         difficultyKnown: sub.difficulty !== 'unknown',
-        url: sub.problemUrl ?? '', tags: [], category: sub.category ?? 'General',
+        url: sub.problemUrl ?? '', tags: sub.tags ?? [], category: sub.category ?? 'General',
         status: sub.status === 'accepted' ? 'solved' : 'attempted', isFavorite: false, submissionCount: 0,
       } }, { upsert: true, new: true, session });
       if (!problem) throw new Error('Failed to persist synced problem');
@@ -56,11 +56,19 @@ export async function persistSubmissions(userId: string, submissions: PlatformSu
         status: sub.status === 'accepted' ? 'accepted' : sub.status === 'time_limit' ? 'time_limit_exceeded'
           : sub.status === 'runtime_error' ? 'runtime_error' : sub.status === 'compilation_error' ? 'compilation_error' : 'wrong',
         language: sub.language ?? 'unknown', codeSnippet: null, submittedAt: sub.submittedAt,
-        executionTime: sub.runtimeMs ?? null, memoryUsed: sub.memoryKb ?? null, runtimePercentile: sub.runtimePercentile ?? null }], { session });
+        executionTime: sub.runtimeMs ?? null, memoryUsed: sub.memoryKb ?? null, runtimePercentile: sub.runtimePercentile ?? null,
+        topicTags: sub.tags ?? [] }], { session });
       await projectSubmission(userObjId, new Types.ObjectId(problem._id.toString()), sub.submittedAt, session);
-      if (sub.difficulty !== 'unknown') await DsaProblem.updateOne({ _id: problem._id, userId: userObjId }, {
-        $set: { difficulty: sub.difficulty, difficultyKnown: true },
-      }, { session });
+      if (sub.difficulty !== 'unknown' || sub.tags?.length) {
+        const updateDoc: Record<string, unknown> = {};
+        if (sub.difficulty !== 'unknown') {
+          updateDoc.$set = { difficulty: sub.difficulty, difficultyKnown: true };
+        }
+        if (sub.tags?.length) {
+          updateDoc.$addToSet = { tags: { $each: sub.tags } };
+        }
+        await DsaProblem.updateOne({ _id: problem._id, userId: userObjId }, updateDoc, { session });
+      }
       return { id: savedSubmission._id.toString(), created: true, queue: true };
     });
     if (outcome.created) ingested++;

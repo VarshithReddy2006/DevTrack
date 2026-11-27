@@ -25,3 +25,8 @@ export const fetchDsaIntelligence = async (): Promise<DsaIntelligenceResponse> =
   return response.data.data;
 };
 
+export const syncDsaIntelligence = async (): Promise<DsaIntelligenceResponse> => {
+  const response = await axiosClient.post<{ success: boolean; data: DsaIntelligenceResponse }>('/readiness/dsa/sync');
+  return response.data.data;
+};
+

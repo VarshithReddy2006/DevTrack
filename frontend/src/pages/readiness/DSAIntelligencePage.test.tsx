@@ -2,13 +2,17 @@ import '@testing-library/jest-dom/vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { fetchDsaIntelligence, type DsaIntelligenceResponse } from '../../features/readiness/services/dsaIntelligenceService';
+import { fetchDsaIntelligence, syncDsaIntelligence, type DsaIntelligenceResponse } from '../../features/readiness/services/dsaIntelligenceService';
 import DSAIntelligencePage from './DSAIntelligencePage';
 
 vi.mock('../../store/userStore', () => ({ useUserStore: () => ({ user: { id: 'test-user' } }) }));
-vi.mock('../../features/readiness/services/dsaIntelligenceService', () => ({ fetchDsaIntelligence: vi.fn() }));
+vi.mock('../../features/readiness/services/dsaIntelligenceService', () => ({
+  fetchDsaIntelligence: vi.fn(),
+  syncDsaIntelligence: vi.fn(),
+}));
 
 const fetchData = vi.mocked(fetchDsaIntelligence);
+const syncData = vi.mocked(syncDsaIntelligence);
 const zeroState: DsaIntelligenceResponse = {
   readinessScore: 0,
   consistencyScore: 0,
@@ -33,6 +37,7 @@ const activeState = {
 afterEach(() => {
   cleanup();
   fetchData.mockReset();
+  syncData.mockReset();
 });
 
 function renderPage() {
@@ -40,22 +45,23 @@ function renderPage() {
   render(<QueryClientProvider client={client}><DSAIntelligencePage /></QueryClientProvider>);
 }
 
-it('renders the empty state and disables Sync Data until the readiness refresh completes', async () => {
+it('renders the empty state and disables Sync Data until the sync mutation completes', async () => {
   fetchData.mockResolvedValueOnce(zeroState);
-  let finishRefresh!: (data: DsaIntelligenceResponse) => void;
-  fetchData.mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+  let finishSync!: (data: DsaIntelligenceResponse) => void;
+  syncData.mockImplementationOnce(() => new Promise((resolve) => { finishSync = resolve; }));
   renderPage();
 
   const sync = await screen.findByRole('button', { name: 'Sync Data' });
   expect(screen.getByText('Awaiting initial telemetry...')).toBeInTheDocument();
   fireEvent.click(sync);
   expect(await screen.findByRole('button', { name: 'Syncing…' })).toBeDisabled();
-  expect(fetchData).toHaveBeenCalledTimes(2);
+  expect(syncData).toHaveBeenCalledTimes(1);
 
-  finishRefresh(activeState);
+  finishSync(activeState);
   expect(await screen.findByText('Total Analyzed')).toBeInTheDocument();
   expect(screen.getByText('25')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Sync Data' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Refresh Telemetry' })).toBeEnabled();
 });
 
 it('renders active metric values and all difficulty counts', async () => {
@@ -69,8 +75,9 @@ it('renders active metric values and all difficulty counts', async () => {
   }
 });
 
-it('keeps the zero state visible and makes Sync Data available after a failed refresh', async () => {
-  fetchData.mockResolvedValueOnce(zeroState).mockRejectedValue(new Error('Offline'));
+it('keeps the zero state visible and makes Sync Data available after a failed sync', async () => {
+  fetchData.mockResolvedValueOnce(zeroState);
+  syncData.mockRejectedValueOnce(new Error('Offline'));
   renderPage();
 
   fireEvent.click(await screen.findByRole('button', { name: 'Sync Data' }));

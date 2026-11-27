@@ -66,6 +66,25 @@ export class DSAController {
       next(error);
     }
   }
+
+  /**
+   * POST /api/readiness/dsa/sync
+   * Trigger platform sync + recompute DSA intelligence and return updated telemetry
+   */
+  async syncDSAIntelligence(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const query = GetDSAIntelligenceQuerySchema.parse(req.query);
+      const intelligence = await dsaService.syncAndGenerateDSAIntelligence(req.user!.id, query.platform);
+      const validatedResponse = DSAIntelligenceResponseSchema.parse(intelligence);
+
+      res.json({
+        success: true,
+        data: validatedResponse,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const dsaController = new DSAController();

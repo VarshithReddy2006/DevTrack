@@ -18,6 +18,8 @@ export interface PlatformSubmission {
   title: string;
   /** Difficulty classification (normalized) */
   difficulty: 'easy' | 'medium' | 'hard' | 'unknown';
+  /** Topic tags associated with the problem */
+  tags?: string[];
   /** Submission status */
   status: 'accepted' | 'wrong_answer' | 'time_limit' | 'runtime_error' | 'compilation_error' | 'other';
   /** When the submission was made */

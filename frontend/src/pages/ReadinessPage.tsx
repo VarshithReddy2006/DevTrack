@@ -1,8 +1,10 @@
 import { PlacementRadarPanel } from '../features/readiness/components/PlacementRadarPanel';
 import React from 'react';
 import { motion } from 'framer-motion';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Code2, Map, TrendingUp, MessageSquare, Target, Flame, ShieldCheck } from 'lucide-react';
+import { Code2, Map, TrendingUp, MessageSquare, Target, Flame, ShieldCheck, RefreshCw } from 'lucide-react';
+import axiosClient from '../utils/axiosClient';
 import { NetworkErrorPanel } from '../components/shared/NetworkErrorPanel';
 import { useReadinessData } from '../features/readiness/hooks/useReadinessData';
 import { ReadinessHero } from '../features/readiness/components/ReadinessHero';
@@ -17,7 +19,20 @@ import { INTERVIEW_STUDIO_FLAG, INTERVIEW_STUDIO_PATH } from '../features/interv
 const ReadinessPage: React.FC = () => {
   const { data, loading, error, refetch } = useReadinessData();
   const { isEnabled } = useFeatureFlags();
+  const queryClient = useQueryClient();
   const handleRetry = React.useCallback(() => { void refetch(); }, [refetch]);
+
+  const syncAllMutation = useMutation({
+    mutationFn: async () => {
+      await axiosClient.post('/platforms/sync-all');
+      await axiosClient.post('/readiness/dsa/sync');
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['readinessData'] });
+      void queryClient.invalidateQueries({ queryKey: ['placementRadar'] });
+      void queryClient.invalidateQueries({ queryKey: ['dsaIntelligence'] });
+    },
+  });
 
   if (loading) {
     return (
@@ -150,12 +165,23 @@ const ReadinessPage: React.FC = () => {
             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mt-0.5">Engineering Progression Overview</p>
           </div>
         </div>
-        {isEnabled(INTERVIEW_STUDIO_FLAG) && (
-          <Link to={INTERVIEW_STUDIO_PATH}
-            className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-white px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50">
-            <MessageSquare size={16} aria-hidden="true" /> Practice an interview
-          </Link>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => syncAllMutation.mutate()}
+            disabled={syncAllMutation.isPending}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RefreshCw size={15} aria-hidden="true" className={syncAllMutation.isPending ? 'animate-spin' : ''} />
+            {syncAllMutation.isPending ? 'Syncing…' : 'Sync Telemetry'}
+          </button>
+          {isEnabled(INTERVIEW_STUDIO_FLAG) && (
+            <Link to={INTERVIEW_STUDIO_PATH}
+              className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-white px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50">
+              <MessageSquare size={16} aria-hidden="true" /> Practice an interview
+            </Link>
+          )}
+        </div>
       </motion.div>
 
       <motion.div
@@ -204,6 +230,12 @@ const ReadinessPage: React.FC = () => {
             <TrustConfidenceLayer
               confidence={data.dynamicState?.confidence || 0}
               isDegraded={data.rawMetrics?.dsa?.isDegraded || false}
+              lastSyncedAt={
+                data.rawMetrics?.dsa?.computedAt ||
+                data.rawMetrics?.projects?.computedAt ||
+                data.rawMetrics?.core?.computedAt ||
+                null
+              }
               providerCount={Object.values(data.rawMetrics || {}).filter(Boolean).length}
               verificationCoverage={Math.min(
                 Math.round(

@@ -32,6 +32,7 @@ export class CodeforcesAdapter extends BasePlatformAdapter {
           problemUrl: problem.contestId ? `https://codeforces.com/problemset/problem/${problem.contestId}/${problem.index}` : 'https://codeforces.com',
           category: 'Competitive', platform: this.platform, title: problem.name ?? 'Unknown',
           difficulty: !problem.rating ? 'unknown' : problem.rating <= 1200 ? 'easy' : problem.rating <= 1800 ? 'medium' : 'hard',
+          tags: Array.isArray(problem.tags) ? problem.tags.filter((t: unknown): t is string => typeof t === 'string') : [],
           status, submittedAt, language: row.programmingLanguage ?? row.language ?? 'unknown' });
       }
       if (reachedCutoff || data.result.length < 1000) return submissions;
