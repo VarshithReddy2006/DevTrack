@@ -7,6 +7,7 @@ import { XpTransaction } from '../../../db/models/xpTransaction.model.js';
 import { AntiGamingWorker } from '../../../modules/profile/antiGaming.worker.js';
 import { getPublicProfile } from '../../../modules/profile/profile.controller.js';
 import { consumerRegistry, type DomainEventEnvelope } from '../../../shared/events/index.js';
+import { auditRowsFor } from '../../../modules/audit/auditLedger.service.js';
 
 const DAY = 86_400_000;
 
@@ -48,12 +49,12 @@ it('flags an XP-farming profile once, logs the score change and stays quiet for 
     antiGaming: { isFlagged: false, suspicionScore: 0, flags: [] },
   });
 
-  const gamerLogs = await ProfileAuditLog.find({ userId: gamer._id }).sort({ eventType: 1 }).lean();
+  const gamerLogs = await ProfileAuditLog.find(await auditRowsFor(gamer._id)).sort({ eventType: 1 }).lean();
   expect(gamerLogs.map(({ eventType }) => eventType)).toEqual(['anti_gaming_check', 'flag_raised']);
   for (const log of gamerLogs) {
     expect(log).toMatchObject({ triggeredBy: 'system', suspicionScoreBefore: null, suspicionScoreAfter: 80 });
   }
-  expect((await ProfileAuditLog.find({ userId: normal._id }).lean()).map(({ eventType }) => eventType))
+  expect((await ProfileAuditLog.find(await auditRowsFor(normal._id)).lean()).map(({ eventType }) => eventType))
     .toEqual(['anti_gaming_check']);
 
   expect(flaggedEvents).toHaveLength(1);
@@ -66,9 +67,9 @@ it('flags an XP-farming profile once, logs the score change and stays quiet for 
   // no second flag entry and no second event.
   await AntiGamingWorker.startAuditJob(scheduledAt);
   await AntiGamingWorker.startAuditJob(new Date(scheduledAt.getTime() + DAY));
-  expect(await ProfileAuditLog.countDocuments({ userId: gamer._id, eventType: 'flag_raised' })).toBe(1);
-  expect(await ProfileAuditLog.countDocuments({ userId: gamer._id, eventType: 'anti_gaming_check' })).toBe(2);
-  expect(await ProfileAuditLog.findOne({ userId: gamer._id, eventType: 'anti_gaming_check' }).sort({ createdAt: -1 }))
+  expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(gamer._id), eventType: 'flag_raised' })).toBe(1);
+  expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(gamer._id), eventType: 'anti_gaming_check' })).toBe(2);
+  expect(await ProfileAuditLog.findOne({ ...await auditRowsFor(gamer._id), eventType: 'anti_gaming_check' }).sort({ createdAt: -1 }))
     .toMatchObject({ suspicionScoreBefore: 80, suspicionScoreAfter: 80 });
   expect(flaggedEvents).toHaveLength(1);
 });
@@ -84,13 +85,13 @@ it('raises the flag even when a profile rebuild already stored the score, and lo
 
   const scheduledAt = new Date();
   await AntiGamingWorker.startAuditJob(scheduledAt);
-  expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'flag_raised' })).toBe(1);
+  expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'flag_raised' })).toBe(1);
   expect(flaggedEvents).toHaveLength(1);
 
   await XpTransaction.deleteMany({ userId: user._id });
   await AntiGamingWorker.startAuditJob(new Date(scheduledAt.getTime() + DAY));
   expect(await PublicProfile.findOne({ userId: user._id })).toMatchObject({ antiGaming: { isFlagged: false, suspicionScore: 0 } });
-  expect(await ProfileAuditLog.findOne({ userId: user._id, eventType: 'flag_cleared' })).toMatchObject({
+  expect(await ProfileAuditLog.findOne({ ...await auditRowsFor(user._id), eventType: 'flag_cleared' })).toMatchObject({
     suspicionScoreBefore: 80, suspicionScoreAfter: 0,
   });
   expect(flaggedEvents).toHaveLength(1);
@@ -106,11 +107,11 @@ it('retries a user whose flag write failed without duplicating the entry or even
   try {
     await expect(AntiGamingWorker.startAuditJob(scheduledAt)).rejects.toThrow('1 profiles');
     // The user is not marked as audited for the day, so the next attempt picks it up again.
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'anti_gaming_check' })).toBe(0);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'anti_gaming_check' })).toBe(0);
     await AntiGamingWorker.startAuditJob(scheduledAt);
     expect(handler).toHaveBeenCalledTimes(2);
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'flag_raised' })).toBe(1);
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'anti_gaming_check' })).toBe(1);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'flag_raised' })).toBe(1);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'anti_gaming_check' })).toBe(1);
   } finally {
     handler.mockRestore();
   }

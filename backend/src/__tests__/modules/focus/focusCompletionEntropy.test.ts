@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Types } from 'mongoose';
 import { FocusSession, ProfileAuditLog } from '../../../db/models/index.js';
 import { FocusEngine } from '../../../modules/activity/focusEngine.service.js';
+import { auditRowsFor, decryptChainedAuditEvent } from '../../../modules/audit/auditLedger.service.js';
 
 vi.mock('../../../shared/sse/index.js', () => ({ eventBus: { emitRuntimeStatePatch: vi.fn() } }));
 
@@ -63,9 +64,9 @@ describe('focus completion entropy gating', () => {
     expect(result!.session.xp!.reason).toBe('anti_gaming');
     expect(result!.session.xp!.capApplied).toBe(false);
 
-    const logs = await ProfileAuditLog.find({ userId: owner, eventType: 'anti_gaming_check' }).lean();
+    const logs = await ProfileAuditLog.find({ ...await auditRowsFor(new Types.ObjectId(owner)), eventType: 'anti_gaming_check' }).lean();
     expect(logs.length).toBeGreaterThan(0);
-    expect(logs[0].details.reason).toBe('periodic intervals');
+    expect(await decryptChainedAuditEvent(logs[0], owner)).toMatchObject({ reason: 'periodic intervals' });
     expect(logs[0].triggeredBy).toBe('system');
   });
 
@@ -79,9 +80,9 @@ describe('focus completion entropy gating', () => {
     expect(result!.session.xp!.amount).toBe(0);
     expect(result!.session.xp!.reason).toBe('anti_gaming');
 
-    const logs = await ProfileAuditLog.find({ userId: owner, eventType: 'anti_gaming_check' }).lean();
+    const logs = await ProfileAuditLog.find({ ...await auditRowsFor(new Types.ObjectId(owner)), eventType: 'anti_gaming_check' }).lean();
     expect(logs.length).toBeGreaterThan(0);
-    expect(logs[0].details.repeatRate).toBe(1);
+    expect(await decryptChainedAuditEvent(logs[0], owner)).toMatchObject({ repeatRate: 1 });
   });
 
   it('awards full XP for natural bursty human typing', async () => {
@@ -93,7 +94,7 @@ describe('focus completion entropy gating', () => {
 
     expect(result!.session.xp!.amount).toBe(50);
     expect(result!.session.xp!.reason).toBe('qualified');
-    expect(await ProfileAuditLog.countDocuments({ userId: owner, eventType: 'anti_gaming_check' })).toBe(0);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(new Types.ObjectId(owner)), eventType: 'anti_gaming_check' })).toBe(0);
   });
 
   it('keeps XP when no interaction telemetry is submitted', async () => {

@@ -82,6 +82,7 @@ export {
   type IAuditEncryptionKey,
   type ProfileAuditEventType,
 } from './profileAuditLog.model.js';
+export { AuditCheckpoint, type IAuditCheckpoint } from './auditCheckpoint.model.js';
 export { AntiGamingDecision, type IAntiGamingDecision } from './antiGamingDecision.model.js';
 export { ProfileView, type IProfileView } from './profileView.model.js';
 export { ProfileTimelineEvent, type IProfileTimelineEvent } from './profileTimelineEvent.model.js';

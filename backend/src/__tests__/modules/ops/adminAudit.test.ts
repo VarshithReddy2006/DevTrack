@@ -275,7 +275,7 @@ describe('POST /api/v2/ops/anti-gaming/:userId/action', () => {
     expect(await PublicProfile.findOne({ userId: user._id }).lean()).toMatchObject({
       antiGaming: { isFlagged: false, suspicionScore: 80, review: { status: 'pardoned' } },
     });
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: { $in: ['flag_raised', 'flag_cleared'] } })).toBe(1);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: { $in: ['flag_raised', 'flag_cleared'] } })).toBe(1);
     expect(flaggedEvents).toHaveLength(1);
 
     // New evidence the pardon did not cover flags the profile again, with an audit entry and event.
@@ -284,7 +284,7 @@ describe('POST /api/v2/ops/anti-gaming/:userId/action', () => {
     expect(await PublicProfile.findOne({ userId: user._id }).lean()).toMatchObject({
       antiGaming: { isFlagged: true, flags: ['suspicious_difficulty_ratio', 'abnormal_xp_velocity'] },
     });
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'flag_raised' })).toBe(2);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'flag_raised' })).toBe(2);
     expect(flaggedEvents).toHaveLength(2);
   });
 
@@ -343,7 +343,7 @@ describe('POST /api/v2/ops/anti-gaming/:userId/action', () => {
     expect(await PublicProfile.findOne({ userId: user._id }).lean()).toMatchObject({
       antiGaming: { isFlagged: true, suspicionScore: 0, review: { status: 'confirmed_gaming' } }, snapshot: { achievements: [] },
     });
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'flag_cleared' })).toBe(0);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'flag_cleared' })).toBe(0);
     // Even if something writes badges back or clears the flag, the next derivation restores the penalty.
     await PublicProfile.updateOne({ userId: user._id }, { $set: { 'snapshot.achievements': badges, 'antiGaming.isFlagged': false } });
     await applyAntiGamingReview(user._id);
@@ -370,7 +370,7 @@ describe('POST /api/v2/ops/anti-gaming/:userId/action', () => {
     expect(data.timeline[0]).toMatchObject({ eventType: 'anti_gaming_penalized', details: { note: 'farmed', actor: { id: String(admin._id) } } });
     expect(data.timeline[0]).not.toHaveProperty('encryptedDetails');
     expect(data.timeline[0]).not.toHaveProperty('subjectHash');
-    expect(await verifyStoredAuditChain()).toEqual({ ok: true, checked: 1 });
+    expect(await verifyStoredAuditChain()).toEqual({ ok: true, checked: await ProfileAuditLog.countDocuments() });
   });
 
   it('uses an encrypted sweep entry as the baseline', async () => {
@@ -383,7 +383,7 @@ describe('POST /api/v2/ops/anti-gaming/:userId/action', () => {
       details: { isFlagged: false }, suspicionScoreAfter: 80,
     });
     await AntiGamingWorker.startAuditJob(new Date(Date.now() + DAY));
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'flag_cleared' })).toBe(0);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'flag_cleared' })).toBe(0);
   });
 
   it('removes decisions when the account is erased', async () => {
@@ -399,7 +399,7 @@ describe('POST /api/v2/ops/anti-gaming/:userId/action', () => {
     expect(await AntiGamingDecision.countDocuments({ userId: user._id })).toBe(0);
     expect(await AntiGamingDecision.countDocuments({ userId: other._id })).toBe(1);
     expect(await decryptChainedAuditEvent(row!, user._id)).toBeNull();
-    expect(await verifyStoredAuditChain()).toEqual({ ok: true, checked: 3 });
+    expect(await verifyStoredAuditChain()).toEqual({ ok: true, checked: await ProfileAuditLog.countDocuments() });
   });
 
   it('keeps decision records append-only', async () => {

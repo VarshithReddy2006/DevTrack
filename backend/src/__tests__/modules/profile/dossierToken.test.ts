@@ -24,6 +24,7 @@ import {
   verifyDossierToken,
 } from '../../../modules/profile/dossierToken.service.js';
 import { getObjectStorage } from '../../../shared/storage/objectStorage.js';
+import { auditRowsFor, decryptChainedAuditEvent } from '../../../modules/audit/auditLedger.service.js';
 
 const env = vi.hoisted(() => {
   process.env.UPLOAD_DIR = `${process.env.TMPDIR ?? '/tmp'}/devtrack-dossier-token-test-${process.pid}`;
@@ -339,11 +340,12 @@ describe('dossierDownload.routes HTTP endpoints', () => {
 
       // Verify audit log
       const audit = await ProfileAuditLog.findOne({
-        userId: candidate._id,
+        ...await auditRowsFor(candidate._id),
         eventType: 'dossier_downloaded',
       });
       expect(audit).not.toBeNull();
-      expect(audit?.details).toMatchObject({ username: candidate.username });
+      expect(audit?.userId).toBeNull();
+      expect(await decryptChainedAuditEvent(audit!, candidate._id)).toMatchObject({ username: candidate.username });
     });
 
     it('rejects expired tokens with 403 Forbidden', async () => {

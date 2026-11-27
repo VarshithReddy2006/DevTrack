@@ -1,6 +1,8 @@
 // src/modules/audit/auditLedger.service.ts — DB-backed crypto-shredded & hash-chained audit ledger.
 import { createHash, randomBytes } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Types, type ClientSession } from 'mongoose';
+import { AuditCheckpoint } from '../../db/models/auditCheckpoint.model.js';
 import {
   AuditEncryptionKey,
   ProfileAuditLog,
@@ -14,6 +16,7 @@ import {
   chainNext,
   decryptAuditPayload,
   encryptAuditPayload,
+  hashPayload,
   inspectAuditChain,
   pseudonymizeAuditSubject,
   verifyAuditChain,
@@ -22,7 +25,12 @@ import {
   type AuditVerification,
 } from './auditChain.service.js';
 
+/** Appends racing for the same position outside a transaction re-read the tail this many times. */
+const APPEND_ATTEMPTS = 100;
+
 export interface AppendChainedAuditInput {
+  /** Fixed id for writers that must not log the same thing twice (the daily sweep). */
+  _id?: Types.ObjectId;
   userId: string | Types.ObjectId;
   eventType: Exclude<ProfileAuditEventType, 'ACCOUNT_ERASURE_TOMBSTONE'>;
   triggeredBy: 'system' | 'admin' | 'user';
@@ -42,6 +50,32 @@ export interface AppendErasureTombstoneInput {
 
 function isDuplicateSequenceError(err: any): boolean {
   return err?.code === 11000 && (err?.keyPattern?.sequenceNumber || String(err?.message).includes('sequenceNumber'));
+}
+
+/**
+ * Everything stored on a row besides the chain columns, as hashed into `payloadHash`. Verification
+ * rebuilds it from the stored row, so editing any of these fields is detected. A tombstone's
+ * payload is its details, matching chainErasureTombstone.
+ */
+function sealedPayload(
+  row: Pick<
+    IProfileAuditLog,
+    'eventType' | 'userId' | 'triggeredBy' | 'details' | 'encryptedDetails' | 'suspicionScoreBefore' | 'suspicionScoreAfter' | 'createdAt'
+  >
+): unknown {
+  if (row.eventType === ACCOUNT_ERASURE_TOMBSTONE) return row.details;
+  const sealed = row.encryptedDetails;
+  return {
+    userId: row.userId ? String(row.userId) : null,
+    triggeredBy: row.triggeredBy,
+    details: row.details,
+    encryptedDetails: sealed
+      ? { algorithm: sealed.algorithm, iv: sealed.iv, authTag: sealed.authTag, ciphertext: sealed.ciphertext }
+      : null,
+    suspicionScoreBefore: row.suspicionScoreBefore ?? null,
+    suspicionScoreAfter: row.suspicionScoreAfter ?? null,
+    createdAt: row.createdAt,
+  };
 }
 
 /**
@@ -107,16 +141,53 @@ async function readChainTail(
     .sort({ sequenceNumber: -1 })
     .lean();
 
-  if (!tail || typeof tail.sequenceNumber !== 'number' || !tail.recordHash) {
-    return null;
+  if (tail && typeof tail.sequenceNumber === 'number' && tail.recordHash) {
+    return { sequenceNumber: tail.sequenceNumber, recordHash: tail.recordHash };
   }
-  return { sequenceNumber: tail.sequenceNumber, recordHash: tail.recordHash };
+  // Every row can expire after a long quiet period; the newest checkpoint still knows where the chain ended.
+  const sealed = await AuditCheckpoint.findOne(
+    {},
+    { toSequence: 1, lastRecordHash: 1 },
+    session ? { session } : undefined
+  )
+    .sort({ toSequence: -1 })
+    .lean();
+  return sealed && sealed.toSequence > 0
+    ? { sequenceNumber: sealed.toSequence, recordHash: sealed.lastRecordHash }
+    : null;
+}
+
+/**
+ * Reads the tail and inserts the next link. Two writers that read the same tail collide on the
+ * unique sequence index. In a transaction that is a transient write conflict which
+ * `withTransaction` retries on the new tail, so this only loops outside one.
+ */
+async function appendToTail(
+  session: ClientSession | null | undefined,
+  insert: (tail: Awaited<ReturnType<typeof readChainTail>>) => Promise<IProfileAuditLog>,
+  fixedId?: Types.ObjectId
+): Promise<IProfileAuditLog> {
+  const attempts = session?.inTransaction() ? 1 : APPEND_ATTEMPTS;
+  for (let attempt = 1; ; attempt++) {
+    if (fixedId) {
+      const existing = await ProfileAuditLog.findById(fixedId, null, session ? { session } : undefined);
+      if (existing) return existing;
+    }
+    try {
+      return await insert(await readChainTail(session));
+    } catch (err: any) {
+      const lostRace = isDuplicateSequenceError(err) || (!!fixedId && err?.code === 11000);
+      if (attempt >= attempts || !lostRace) throw err;
+      await delay(Math.random() * Math.min(attempt, 20));
+    }
+  }
 }
 
 /**
  * Appends an immutable, hash-chained audit entry whose PII payload is encrypted
  * with the user's crypto-shredding key. Neither plaintext userId nor plaintext details
- * are stored on the immutable ledger record.
+ * are stored on the immutable ledger record. Pass the caller's session to write inside its
+ * transaction; with a fixed `_id` an existing row with that id is returned unchanged.
  */
 export async function appendChainedAuditEvent(
   input: AppendChainedAuditInput,
@@ -124,50 +195,45 @@ export async function appendChainedAuditEvent(
 ): Promise<IProfileAuditLog> {
   const keyDoc = await getOrCreateAuditKey(input.userId, session);
   const subjectHash = pseudonymizeAuditSubject(String(input.userId), keyDoc.saltHex);
-  const encryptedDetails = encryptAuditPayload(input.details, keyDoc.keyHex);
+  // JSON round trip, so ObjectIds and dates are encrypted as strings and undefined keys are dropped.
+  const encryptedDetails = encryptAuditPayload(JSON.parse(JSON.stringify(input.details)), keyDoc.keyHex);
   const timestamp = input.timestamp ?? new Date();
   const sessionOpts = session ? { session } : {};
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const tail = await readChainTail(session);
+  return appendToTail(session, async (tail) => {
+    const row = {
+      ...(input._id ? { _id: input._id } : {}),
+      userId: null,
+      subjectHash,
+      eventType: input.eventType,
+      triggeredBy: input.triggeredBy,
+      details: { encrypted: true },
+      encryptedDetails,
+      suspicionScoreBefore: input.suspicionScoreBefore ?? null,
+      suspicionScoreAfter: input.suspicionScoreAfter ?? null,
+      createdAt: new Date(),
+    };
     const chain = chainNext(tail, {
       timestamp,
       userId: subjectHash,
       eventType: input.eventType,
-      payload: encryptedDetails,
+      payload: sealedPayload(row),
     });
-
-    try {
-      const [created] = await ProfileAuditLog.create(
-        [
-          {
-            userId: null,
-            subjectHash,
-            eventType: input.eventType,
-            triggeredBy: input.triggeredBy,
-            details: { encrypted: true },
-            encryptedDetails,
-            sequenceNumber: chain.sequenceNumber,
-            previousHash: chain.previousHash,
-            chainTimestamp: chain.timestamp,
-            payloadHash: chain.payloadHash,
-            recordHash: chain.recordHash,
-            suspicionScoreBefore: input.suspicionScoreBefore ?? null,
-            suspicionScoreAfter: input.suspicionScoreAfter ?? null,
-          },
-        ],
-        sessionOpts
-      );
-      return created;
-    } catch (err) {
-      if (attempt < 2 && isDuplicateSequenceError(err)) {
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw new Error('Exhausted retries appending chained audit event');
+    const [created] = await ProfileAuditLog.create(
+      [
+        {
+          ...row,
+          sequenceNumber: chain.sequenceNumber,
+          previousHash: chain.previousHash,
+          chainTimestamp: chain.timestamp,
+          payloadHash: chain.payloadHash,
+          recordHash: chain.recordHash,
+        },
+      ],
+      sessionOpts
+    );
+    return created;
+  }, input._id);
 }
 
 /**
@@ -235,58 +301,51 @@ export async function appendErasureTombstone(
   const reason = input.reason ?? 'gdpr_right_to_erasure';
   const sessionOpts = session ? { session } : {};
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const tail = await readChainTail(session);
+  return appendToTail(session, async (tail) => {
     const chain = chainErasureTombstone(tail, {
       timestamp: erasedAt,
       subjectRef,
       keyDestroyed: input.keyDestroyed,
       reason,
     });
-
-    try {
-      const [created] = await ProfileAuditLog.create(
-        [
-          {
-            userId: null,
-            subjectHash: subjectRef,
-            eventType: ACCOUNT_ERASURE_TOMBSTONE,
-            triggeredBy: 'system',
-            details: {
-              subjectRef,
-              keyDestroyed: input.keyDestroyed,
-              reason,
-              erasedAt: chain.timestamp,
-            },
-            encryptedDetails: null,
-            sequenceNumber: chain.sequenceNumber,
-            previousHash: chain.previousHash,
-            chainTimestamp: chain.timestamp,
-            payloadHash: chain.payloadHash,
-            recordHash: chain.recordHash,
-            suspicionScoreBefore: null,
-            suspicionScoreAfter: null,
+    const [created] = await ProfileAuditLog.create(
+      [
+        {
+          userId: null,
+          subjectHash: subjectRef,
+          eventType: ACCOUNT_ERASURE_TOMBSTONE,
+          triggeredBy: 'system',
+          details: {
+            subjectRef,
+            keyDestroyed: input.keyDestroyed,
+            reason,
+            erasedAt: chain.timestamp,
           },
-        ],
-        sessionOpts
-      );
-      return created;
-    } catch (err) {
-      if (attempt < 2 && isDuplicateSequenceError(err)) {
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw new Error('Exhausted retries appending erasure tombstone');
+          encryptedDetails: null,
+          sequenceNumber: chain.sequenceNumber,
+          previousHash: chain.previousHash,
+          chainTimestamp: chain.timestamp,
+          payloadHash: chain.payloadHash,
+          recordHash: chain.recordHash,
+          suspicionScoreBefore: null,
+          suspicionScoreAfter: null,
+        },
+      ],
+      sessionOpts
+    );
+    return created;
+  });
 }
 
-/** Maps a stored ProfileAuditLog document to pure AuditChainFields for verification. */
+/**
+ * Maps a stored ProfileAuditLog document to pure AuditChainFields for verification. The payload
+ * hash is recomputed from the stored fields, never read back.
+ */
 export function toAuditChainFields(
   doc: Pick<
     IProfileAuditLog,
-    'sequenceNumber' | 'previousHash' | 'chainTimestamp' | 'subjectHash' | 'userId' | 'eventType' | 'payloadHash' | 'recordHash'
+    | 'sequenceNumber' | 'previousHash' | 'chainTimestamp' | 'subjectHash' | 'userId' | 'eventType' | 'recordHash'
+    | 'triggeredBy' | 'details' | 'encryptedDetails' | 'suspicionScoreBefore' | 'suspicionScoreAfter' | 'createdAt'
   >
 ): AuditChainFields {
   return {
@@ -295,7 +354,7 @@ export function toAuditChainFields(
     timestamp: doc.chainTimestamp!,
     userId: doc.subjectHash ?? (doc.userId ? String(doc.userId) : 'system'),
     eventType: doc.eventType,
-    payloadHash: doc.payloadHash!,
+    payloadHash: hashPayload(sealedPayload(doc)),
     recordHash: doc.recordHash!,
   };
 }

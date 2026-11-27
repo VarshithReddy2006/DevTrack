@@ -191,6 +191,7 @@ database and ledger before clearing the `runner` record in
 | `MONGODB_URI` | Yes | `mongodb://localhost:27017/devtrack` | MongoDB connection string |
 | `CORS_ORIGIN` | Yes | `http://localhost:5173` | Frontend origin - **must be HTTPS in production** |
 | `OBJECT_STORAGE_SIGNING_SECRET` | Yes in prod | dev-only default | HMAC key (16+ characters) for signed dossier download links; share it between the API and the render service |
+| `AUDIT_CHECKPOINT_SECRET` | Yes in prod (maintenance worker) | dev-only default | HMAC key that signs the daily `AuditCheckpoint` roots of the `ProfileAuditLog` hash chain. Keep it stable: rotating it makes existing checkpoints fail verification |
 | `PUBLIC_API_URL` | No | `http://localhost:<PORT>` in dev, unset in prod | Public origin of the API, used for the absolute `og:image` link in `/u/:username` previews |
 | `CLERK_SECRET_KEY` | Yes | - | Clerk backend secret |
 | `REDIS_URL` | Recommended | - | Full Redis URL (overrides host/port) |

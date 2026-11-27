@@ -3,9 +3,10 @@
 //   GET  /api/v2/portfolio/:username/dossier.pdf   -> verify HMAC signature and stream PDF binary
 
 import { Router, type Request, type Response } from 'express';
-import { User, UserSettings, PublicProfile, ProfileAuditLog } from '../../db/models/index.js';
+import { User, UserSettings, PublicProfile } from '../../db/models/index.js';
 import { asyncHandler, optionalAuthMiddleware, type AuthenticatedRequest } from '../../middleware/index.js';
 import { logger } from '../../shared/logger.js';
+import { appendChainedAuditEvent } from '../audit/auditLedger.service.js';
 import { commonErrors, errorResponse, successResponse } from '../../shared/response.js';
 import { getObjectStorage } from '../../shared/storage/objectStorage.js';
 import { renderDossierArtifact } from './dossier/dossier.service.js';
@@ -133,7 +134,7 @@ export async function downloadDossierPdfHandler(req: Request, res: Response): Pr
   }
 
   try {
-    await ProfileAuditLog.create({
+    await appendChainedAuditEvent({
       userId: targetUser._id,
       eventType: 'dossier_downloaded',
       triggeredBy: (req as AuthenticatedRequest).user ? 'user' : 'system',

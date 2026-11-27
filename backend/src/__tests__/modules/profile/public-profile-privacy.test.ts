@@ -12,6 +12,7 @@ import { registerPublicProfileShell } from '../../../modules/profile/ogShell.rou
 import profileRoutes from '../../../modules/profile/profile.routes.js';
 import { PublicProfileService } from '../../../modules/profile/publicProfile.service.js';
 import { consumerRegistry, type DomainEventEnvelope } from '../../../shared/events/index.js';
+import { auditRowsFor, decryptChainedAuditEvent } from '../../../modules/audit/auditLedger.service.js';
 import mongoose from 'mongoose';
 
 const actor = vi.hoisted(() => ({ id: '' }));
@@ -162,9 +163,9 @@ describe('publishing', () => {
     expect(await PublicProfile.findOne({ userId: user._id })).toMatchObject({
       published: true, visibility: 'public', slug: 'sam-builds', isIndexable: false, publicationVersion: 1,
     });
-    expect(await ProfileAuditLog.findOne({ userId: user._id, eventType: 'visibility_changed' })).toMatchObject({
-      triggeredBy: 'user', details: { published: true, slug: 'sam-builds', publicationVersion: 1 },
-    });
+    const entry = await ProfileAuditLog.findOne({ ...await auditRowsFor(user._id), eventType: 'visibility_changed' });
+    expect(entry).toMatchObject({ triggeredBy: 'user' });
+    expect(await decryptChainedAuditEvent(entry!, user._id)).toMatchObject({ published: true, slug: 'sam-builds', publicationVersion: 1 });
     expect(events).toMatchObject([{ type: 'profile.published', userId: String(user._id), payload: { slug: 'sam-builds', publicationVersion: 1 } }]);
 
     const publicRead = await readPublic('sam-builds');
@@ -276,7 +277,7 @@ describe('unpublishing', () => {
 
     expect(await PublicProfile.findOne({ userId: user._id })).toMatchObject({ published: false, visibility: 'private' });
     expect(await UsernameReservation.findOne({ slug: 'going-away' })).toMatchObject({ status: 'active' });
-    expect(await ProfileAuditLog.countDocuments({ userId: user._id, eventType: 'visibility_changed' })).toBe(2);
+    expect(await ProfileAuditLog.countDocuments({ ...await auditRowsFor(user._id), eventType: 'visibility_changed' })).toBe(2);
     expect(events.map(event => event.type)).toEqual(['profile.published', 'profile.unpublished']);
     expect(events[1].payload).toMatchObject({ slug: 'going-away', publicationVersion: 2 });
   });

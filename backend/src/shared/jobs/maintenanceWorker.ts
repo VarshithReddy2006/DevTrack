@@ -17,6 +17,7 @@ import { cleanupStaleLocks } from '../redis/syncLock.service.js';
 import { User, UserAnalytics, UserStreakLog } from '../../db/models/index.js';
 import { focusEngine } from '../../modules/activity/focusEngine.service.js';
 import { AntiGamingWorker } from '../../modules/profile/antiGaming.worker.js';
+import { runDailyAuditCheckpoint } from '../../modules/audit/auditCheckpoint.service.js';
 import { getNotificationQueue } from './queueFactory.js';
 import { seedDailyChallengeWindow } from '../../modules/daily-challenge/daily-challenge.service.js';
 import { localDateString, localDayBounds, resolveTimezone } from '../../modules/daily-challenge/daily-challenge.time.js';
@@ -349,6 +350,9 @@ export function startMaintenanceWorker(): Worker<SystemMaintenanceJobData> {
         case 'audit_public_profiles':
           await AntiGamingWorker.startAuditJob(new Date(job.opts.prevMillis ?? job.timestamp));
           break;
+        case 'seal_audit_checkpoint':
+          await runDailyAuditCheckpoint(new Date(job.opts.prevMillis ?? job.timestamp));
+          break;
         case 'reap_stale_focus_sessions':
           await focusEngine.reapStaleSessions();
           break;
@@ -591,6 +595,20 @@ export async function scheduleMaintenanceTasks(): Promise<void> {
     {
       repeat: { pattern: '0 3 * * *', tz: 'UTC' },
       jobId: 'maintenance-audit-public-profiles',
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: { count: 5 },
+      removeOnFail: { count: 10 },
+    }
+  );
+
+  // Seal yesterday's ProfileAuditLog range and verify the chain, shortly after the UTC day ends.
+  await _queue.add(
+    'seal-audit-checkpoint',
+    { task: 'seal_audit_checkpoint' },
+    {
+      repeat: { pattern: '30 0 * * *', tz: 'UTC' },
+      jobId: 'maintenance-seal-audit-checkpoint',
       attempts: 3,
       backoff: { type: 'exponential', delay: 60_000 },
       removeOnComplete: { count: 5 },
