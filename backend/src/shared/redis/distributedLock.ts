@@ -185,11 +185,7 @@ export function formatFenceKey(nameOrKey: string): string {
 }
 
 function isClientReady(redis: Redis | null | undefined): redis is Redis {
-  return Boolean(
-    redis &&
-      redis.status === 'ready' &&
-      (typeof redis.eval === 'function' || typeof redis.set === 'function')
-  );
+  return Boolean(redis && redis.status === 'ready' && typeof redis.set === 'function');
 }
 
 /**
@@ -266,7 +262,8 @@ export class DistributedLock implements DistributedLockHandle {
   }
 
   private async acquireOnNode(redis: Redis): Promise<{ acquired: boolean; token: FencingToken | null }> {
-    if (typeof redis.eval === 'function') {
+    const incrFn = (redis as unknown as { incr?: (key: string) => Promise<number> }).incr;
+    if (typeof redis.eval === 'function' && typeof incrFn === 'function') {
       const raw = await redis.eval(
         ACQUIRE_WITH_FENCE_LUA_SCRIPT,
         2,
@@ -287,7 +284,6 @@ export class DistributedLock implements DistributedLockHandle {
       return { acquired: false, token: null };
     }
 
-    const incrFn = (redis as unknown as { incr?: (key: string) => Promise<number> }).incr;
     const token =
       typeof incrFn === 'function'
         ? Number(await incrFn.call(redis, this.fenceKey))
