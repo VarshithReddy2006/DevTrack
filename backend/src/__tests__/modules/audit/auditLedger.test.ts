@@ -358,7 +358,7 @@ describe('daily checkpoints', () => {
         })
       )
     );
-    expect(appended.map(a => a.sequenceNumber).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(appended.map(a => a.sequenceNumber!).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(await verifyAuditIntegrity()).toMatchObject({ ok: true, checked: 6 });
   });
 
