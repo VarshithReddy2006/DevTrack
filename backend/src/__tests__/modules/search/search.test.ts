@@ -430,7 +430,10 @@ describe('Unified Search API — GET /api/v2/search', () => {
   // 4. Failure & Resilience Handling
   // ==========================================================================
   describe('Failure Handling', () => {
-    it('returns 500 without leaking stack traces when search provider throws', async () => {
+    it.each([
+      ['type=all', 503, 'SERVICE_UNAVAILABLE'],
+      ['type=dsa', 500, 'INTERNAL_ERROR'],
+    ])('returns an error without leaking internals when the provider throws (%s)', async (typeParam, status, code) => {
       const failingProvider = {
         name: 'faulty-provider',
         search: vi.fn().mockRejectedValue(new Error('Internal cluster connection lost to host redis://secret:pass@cluster:6379')),
@@ -444,18 +447,142 @@ describe('Unified Search API — GET /api/v2/search', () => {
 
       setSearchClient(failingProvider as any);
 
-      const res = await requestSearch('q=binary');
-      expect(res.status).toBe(500);
+      const res = await requestSearch(`q=binary&${typeParam}`);
+      expect(res.status).toBe(status);
 
       const json = await res.json();
       expect(json.success).toBe(false);
-      expect(json.code).toBe('INTERNAL_ERROR');
+      expect(json.code).toBe(code);
       expect(json.message).toBe('Search service temporarily unavailable');
 
       // Crucial: No internal connection string or stack trace leaked
       expect(JSON.stringify(json)).not.toContain('secret:pass@cluster');
       expect(JSON.stringify(json)).not.toContain('faulty-provider');
     });
+  });
+
+  // ==========================================================================
+  // Partial index failure, rank fusion and horizon metadata
+  // ==========================================================================
+  describe('Multi-Index Resilience', () => {
+    const docs = (type: SearchDocument['type'], count: number, title: (i: number) => string) =>
+      Array.from({ length: count }, (_, i) => {
+        const id = `${type}_${String(i).padStart(4, '0')}`;
+        return { id, doc: { id, type, title: title(i), updatedAt: 1000 } as SearchDocument };
+      });
+
+    /** Makes the named indices fail while the rest keep using the real provider. */
+    const breakIndices = (broken: string[], mode: 'reject' | 'throw' = 'reject') => {
+      const original = searchProvider.search.bind(searchProvider);
+      vi.spyOn(searchProvider, 'search').mockImplementation(((index: string, q: string, options: any) => {
+        if (!broken.includes(index)) return original(index, q, options);
+        const error = new Error('index offline at redis://secret:pass@cluster:6379');
+        if (mode === 'throw') throw error;
+        return Promise.reject(error);
+      }) as typeof searchProvider.search);
+    };
+
+    beforeEach(async () => {
+      await searchProvider.indexDocuments('devtrack_dsa', docs('dsa', 3, () => 'graph'));
+      await searchProvider.indexDocuments('devtrack_profiles', docs('profile', 2, (i) => `graph person ${i}`));
+      await searchProvider.indexDocuments('devtrack_projects', docs('project', 2, (i) => `paragraphs ${i}`));
+    });
+
+    it.each(['reject', 'throw'] as const)(
+      'returns DSA and project hits with 200 when the profile index is down (%s)',
+      async (mode) => {
+        breakIndices(['devtrack_profiles'], mode);
+
+        const res = await requestSearch('q=graph&type=all');
+        expect(res.status).toBe(200);
+        const json = await res.json();
+
+        expect(json.data.degradedIndices).toEqual(['devtrack_profiles']);
+        expect(json.data.totalHits).toBe(5);
+        expect(json.data.pagination.totalItems).toBe(5);
+        expect(new Set(json.data.hits.map((h: any) => h.type))).toEqual(new Set(['dsa', 'project']));
+        expect(JSON.stringify(json)).not.toContain('secret:pass');
+      }
+    );
+
+    it('returns 200 with the one healthy index when two are down', async () => {
+      breakIndices(['devtrack_dsa', 'devtrack_profiles']);
+
+      const res = await requestSearch('q=graph');
+      expect(res.status).toBe(200);
+      const json = await res.json();
+
+      expect(json.data.degradedIndices).toEqual(['devtrack_dsa', 'devtrack_profiles']);
+      expect(json.data.hits.map((h: any) => h.type)).toEqual(['project', 'project']);
+    });
+
+    it('returns 503 when every index fails', async () => {
+      breakIndices(['devtrack_dsa', 'devtrack_profiles', 'devtrack_projects']);
+
+      const res = await requestSearch('q=graph');
+      expect(res.status).toBe(503);
+      const json = await res.json();
+
+      expect(json.code).toBe('SERVICE_UNAVAILABLE');
+      expect(JSON.stringify(json)).not.toContain('secret:pass');
+    });
+
+    it('omits degradedIndices when every index answers', async () => {
+      const res = await requestSearch('q=graph');
+      const json = await res.json();
+
+      expect(json.data).not.toHaveProperty('degradedIndices');
+    });
+
+    it('interleaves indices by rank even when their raw score scales differ', async () => {
+      const res = await requestSearch('q=graph&type=all');
+      const json = await res.json();
+      const hits = json.data.hits;
+
+      // Precondition: the raw scores really are on different levels
+      const best = (type: string) => hits.find((h: any) => h.type === type).score;
+      expect(best('dsa')).toBeGreaterThan(best('profile'));
+      expect(best('profile')).toBeGreaterThan(best('project'));
+
+      expect(hits.map((h: any) => h.id)).toEqual([
+        'dsa_0000', 'profile_0000', 'project_0000',
+        'dsa_0001', 'profile_0001', 'project_0001',
+        'dsa_0002',
+      ]);
+    });
+
+    it('keeps the fused order stable across page boundaries', async () => {
+      const ids: string[] = [];
+      for (const page of [1, 2, 3, 4]) {
+        const json = await (await requestSearch(`q=graph&limit=2&page=${page}`)).json();
+        ids.push(...json.data.hits.map((h: any) => h.id));
+      }
+      const full = await (await requestSearch('q=graph&limit=20')).json();
+
+      expect(ids).toEqual(full.data.hits.map((h: any) => h.id));
+    });
+
+    it.each([
+      ['all', 100, 10, 1000],
+      ['all', 30, 33, 990],
+      ['dsa', 30, 33, 990],
+    ])(
+      'limits pagination metadata to the result horizon (type=%s, limit=%i)',
+      async (type, limit, lastPage, reachable) => {
+        await searchProvider.indexDocuments('devtrack_dsa', docs('dsa', 1100, () => 'horizon'));
+        await searchProvider.indexDocuments('devtrack_projects', docs('project', 300, () => 'horizon'));
+
+        const res = await requestSearch(`q=horizon&type=${type}&limit=${limit}&page=${lastPage}`);
+        expect(res.status).toBe(200);
+        const json = await res.json();
+
+        expect(json.data.totalHits).toBe(type === 'all' ? 1400 : 1100);
+        expect(json.data.pagination.totalItems).toBe(reachable);
+        expect(json.data.totalPages).toBe(lastPage);
+        expect(json.data.pagination.hasNextPage).toBe(false);
+        expect(json.data.hits).toHaveLength(limit);
+      }
+    );
   });
 
   // ==========================================================================
