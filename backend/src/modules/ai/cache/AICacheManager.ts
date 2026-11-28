@@ -61,6 +61,11 @@ class AICacheManagerClass {
       return null;
     }
 
+    // Move to the end of the Map so eviction drops the least recently used entry.
+    // The timestamp is left alone: TTL still counts from when the entry was stored.
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+
     // Update hit count
     entry.hitCount++;
     this.hitCount++;
@@ -74,9 +79,12 @@ class AICacheManagerClass {
    * Set cached response
    */
   set(key: string, response: string, prompt: string, model: string, provider: string, contextVersion: string, ttl?: number): void {
+    // Overwriting a key makes it the most recent one and needs no extra room
+    this.cache.delete(key);
+
     // Check if cache is full
     if (this.cache.size >= this.maxCacheSize) {
-      this.evictOldest();
+      this.evictLeastRecentlyUsed();
     }
 
     const entry: CacheEntry = {
@@ -124,8 +132,7 @@ class AICacheManagerClass {
   generateSemanticKey(prompt: string): string {
     // Simple semantic hashing - in production would use embeddings
     const normalized = prompt.toLowerCase().replace(/\s+/g, ' ').trim();
-    const words = normalized.split(' ').slice(0, 10); // First 10 words
-    return Buffer.from(words.join(' ')).toString('base64');
+    return createHash('sha256').update(normalized).digest('hex');
   }
 
   /**
@@ -148,22 +155,14 @@ class AICacheManagerClass {
   }
 
   /**
-   * Evict oldest entry
+   * Evict the least recently used entry (the first key in Map order)
    */
-  private evictOldest(): void {
-    let oldestKey: string | null = null;
-    let oldestTimestamp = Date.now();
+  private evictLeastRecentlyUsed(): void {
+    const oldestKey = this.cache.keys().next().value;
 
-    for (const [key, entry] of this.cache.entries()) {
-      if (entry.timestamp.getTime() < oldestTimestamp) {
-        oldestTimestamp = entry.timestamp.getTime();
-        oldestKey = key;
-      }
-    }
-
-    if (oldestKey) {
+    if (oldestKey !== undefined) {
       this.cache.delete(oldestKey);
-      logger.debug('[AICacheManager] Evicted oldest entry', { key: oldestKey });
+      logger.debug('[AICacheManager] Evicted least recently used entry', { key: oldestKey });
     }
   }
 
@@ -245,7 +244,7 @@ class AICacheManagerClass {
     
     // Evict entries if new size is smaller
     while (this.cache.size > this.maxCacheSize) {
-      this.evictOldest();
+      this.evictLeastRecentlyUsed();
     }
     
     logger.info('[AICacheManager] Max cache size updated', { size });
