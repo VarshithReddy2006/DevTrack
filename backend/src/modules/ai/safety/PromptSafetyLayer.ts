@@ -19,7 +19,10 @@ export interface SafetyPolicy {
 export const MAX_INPUT_LENGTH = 50_000;
 
 /** Regular expression for stripping zero-width, non-printing, and invisible formatting characters */
-const INVISIBLE_AND_ZERO_WIDTH_REGEX = /[\u200B-\u200D\uFEFF\u00AD\u2060\u200E\u200F\u202A-\u202E\u2061-\u2064]/g;
+const INVISIBLE_AND_ZERO_WIDTH_REGEX = /[\u200B-\u200D\uFEFF\u00AD\u2060\u200E\u200F\u202A-\u202E\u2061-\u2064]/;
+
+/** Combining diacritics left over after NFKD decomposition */
+const COMBINING_DIACRITICS_REGEX = /[\u0300-\u036f]/g;
 
 /** Homoglyph substitution map for Cyrillic, Greek, and other script lookalikes */
 export const HOMOGLYPH_MAP: Readonly<Record<string, string>> = Object.freeze({
@@ -88,8 +91,142 @@ export const HOMOGLYPH_MAP: Readonly<Record<string, string>> = Object.freeze({
   '\u0396': 'Z', // Greek Capital Letter Zeta
 });
 
-/** Compiled regex matching any character in the homoglyph map */
-const HOMOGLYPH_REGEX = new RegExp(`[${Object.keys(HOMOGLYPH_MAP).join('')}]`, 'g');
+/**
+ * Words spelled with punctuation between the letters (w-i-l-l g-e-t). Neighbouring words are
+ * matched as one chain, and the whitespace between them stays as the word break.
+ */
+const PUNCTUATED_WORD_CHAIN_REGEX =
+  /(?<![a-zA-Z0-9])[a-zA-Z](?:[-_.][a-zA-Z])+(?![a-zA-Z0-9])(?:\s+[a-zA-Z](?:[-_.][a-zA-Z])+(?![a-zA-Z0-9]))*/g;
+
+/** Letters spaced out with whitespace (g u a r a n t e e d) */
+const SPACED_LETTERS_REGEX = /(?<![a-zA-Z0-9])[a-zA-Z](?:\s[a-zA-Z]){2,}(?![a-zA-Z0-9])/g;
+
+/** Any mix of separators, for a single word split like g-u a-r */
+const MIXED_SEPARATOR_REGEX = /(?<![a-zA-Z0-9])[a-zA-Z](?:[-_.\s][a-zA-Z]){2,}(?![a-zA-Z0-9])/g;
+
+/** Normalized text, with the raw [start, end) range behind each of its characters */
+interface MappedText {
+  text: string;
+  starts: number[];
+  ends: number[];
+}
+
+/**
+ * Strips invisible characters, applies NFKD, drops diacritics and maps homoglyphs one
+ * code point at a time, so every output character can be traced back to the input.
+ */
+function foldCharacters(raw: string): MappedText {
+  const chars: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let offset = 0;
+
+  for (const char of raw) {
+    const start = offset;
+    offset += char.length;
+
+    let folded = '';
+    if (!INVISIBLE_AND_ZERO_WIDTH_REGEX.test(char)) {
+      folded = char.normalize('NFKD').replace(COMBINING_DIACRITICS_REGEX, '');
+    }
+
+    if (!folded) {
+      // A dropped character belongs to the one before it, so redaction takes it too
+      for (let i = ends.length - 1; i >= 0 && starts[i] === starts[starts.length - 1]; i--) {
+        ends[i] = offset;
+      }
+      continue;
+    }
+
+    for (let i = 0; i < folded.length; i++) {
+      chars.push(HOMOGLYPH_MAP[folded[i]] ?? folded[i]);
+      starts.push(start);
+      ends.push(offset);
+    }
+  }
+
+  return { text: chars.join(''), starts, ends };
+}
+
+/** Removes the matched separator characters from every run the pattern finds */
+function removeSeparators(
+  source: MappedText,
+  runPattern: RegExp,
+  separator: RegExp,
+  shouldCollapse: (run: string) => boolean = () => true,
+): MappedText {
+  const removed = new Set<number>();
+  for (const match of source.text.matchAll(runPattern)) {
+    if (!shouldCollapse(match[0])) continue;
+    for (let i = 0; i < match[0].length; i++) {
+      if (separator.test(match[0][i])) removed.add(match.index + i);
+    }
+  }
+  if (removed.size === 0) return source;
+
+  const kept = (_: unknown, i: number) => !removed.has(i);
+  return {
+    text: source.text.split('').filter(kept).join(''),
+    starts: source.starts.filter(kept),
+    ends: source.ends.filter(kept),
+  };
+}
+
+/**
+ * Two readings of obfuscated text: one keeps the breaks between words, the other joins
+ * everything for words split with mixed separators. Policies are checked against both.
+ */
+function normalizedVariants(raw: string): [MappedText, MappedText] {
+  const folded = foldCharacters(raw);
+  // A chain of only two-letter pieces (e-g a-b) is left alone
+  const punctuated = removeSeparators(folded, PUNCTUATED_WORD_CHAIN_REGEX, /[-_.]/, (chain) =>
+    chain.split(/\s+/).some((word) => word.length >= 5),
+  );
+  return [
+    removeSeparators(punctuated, SPACED_LETTERS_REGEX, /\s/),
+    removeSeparators(folded, MIXED_SEPARATOR_REGEX, /[-_.\s]/),
+  ];
+}
+
+/**
+ * Replaces every match of the patterns with [FILTERED] in the raw text, including matches
+ * that only show up in a normalized variant.
+ */
+function redactMatches(raw: string, variants: MappedText[], patterns: RegExp[]): string {
+  const spans: Array<[number, number]> = [];
+
+  for (const pattern of patterns) {
+    const global = new RegExp(pattern.source, `${pattern.flags.replace(/[gy]/g, '')}g`);
+    const before = spans.length;
+
+    for (const match of raw.matchAll(global)) {
+      if (match[0]) spans.push([match.index, match.index + match[0].length]);
+    }
+    for (const { text, starts, ends } of variants) {
+      for (const match of text.matchAll(global)) {
+        if (match[0]) spans.push([starts[match.index], ends[match.index + match[0].length - 1]]);
+      }
+    }
+
+    // Matched but with no range to cut (zero-length custom pattern): redact everything
+    if (spans.length === before && [raw, ...variants.map((v) => v.text)].some((t) => t.search(pattern) !== -1)) {
+      spans.push([0, raw.length]);
+    }
+  }
+
+  spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+  // Overlapping ranges become a single [FILTERED]
+  let result = '';
+  let redactedUpTo = 0;
+  for (const [start, end] of spans) {
+    if (start >= redactedUpTo) {
+      result += `${raw.slice(redactedUpTo, start)}[FILTERED]`;
+    }
+    redactedUpTo = Math.max(redactedUpTo, end);
+  }
+  return result + raw.slice(redactedUpTo);
+}
 
 class PromptSafetyLayerClass {
   private policies: SafetyPolicy[] = [
@@ -127,6 +264,7 @@ class PromptSafetyLayerClass {
         /will definitely get (Google|Amazon|Microsoft|Meta|Apple|Netflix)/gi,
         /guaranteed (Google|Amazon|Microsoft|Meta|Apple|Netflix)/gi,
         /definitely (land|get into) (Google|Amazon|Microsoft|Meta|Apple|Netflix)/gi,
+        /you will get into (Google|Amazon|Microsoft|Meta|Apple|Netflix)\b/gi,
       ],
       severity: 'critical',
       action: 'block',
@@ -192,35 +330,16 @@ class PromptSafetyLayerClass {
   /**
    * Pre-normalization pipeline:
    * 1. Strip invisible/zero-width formatting characters
-   * 2. Canonical Unicode normalization (NFKC)
+   * 2. Unicode compatibility decomposition (NFKD) and strip combining diacritics
    * 3. Map lookalike homoglyphs (Cyrillic, Greek) to ASCII equivalents
-   * 4. Decompose accented characters (NFKD) and strip combining diacritics
-   * 5. Collapse spaced-out single letters / intra-word punctuation tricks (e.g. g-u-a-r-a-n-t-e-e-d)
+   * 4. Collapse spaced-out single letters / intra-word punctuation tricks (e.g. g-u-a-r-a-n-t-e-e-d)
    */
   public normalizeText(text: string): string {
     if (!text || typeof text !== 'string') {
       return '';
     }
 
-    // Step 1: Strip invisible, zero-width, and directional characters
-    let normalized = text.replace(INVISIBLE_AND_ZERO_WIDTH_REGEX, '');
-
-    // Step 2: Canonical Unicode NFKC normalization (normalizes fullwidth Latin, ligatures, etc.)
-    normalized = normalized.normalize('NFKC');
-
-    // Step 3: Replace known Cyrillic and Greek homoglyphs with standard ASCII
-    normalized = normalized.replace(HOMOGLYPH_REGEX, (ch) => HOMOGLYPH_MAP[ch] || ch);
-
-    // Step 4: Decompose combining marks and strip diacritics (e.g. guàràntèèd -> guaranteed)
-    normalized = normalized.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
-
-    // Step 5: Collapse intra-word punctuation or whitespace tricks (e.g. g-u-a-r-a-n-t-e-e-d -> guaranteed)
-    normalized = normalized.replace(
-      /(?:^|[^a-zA-Z0-9])([a-zA-Z](?:[-_.\s][a-zA-Z]){2,})(?:[^a-zA-Z0-9]|$)/g,
-      (match, group) => match.replace(group, group.replace(/[-_.\s]/g, '')),
-    );
-
-    return normalized;
+    return normalizedVariants(text)[0].text;
   }
 
   /**
@@ -245,14 +364,14 @@ class PromptSafetyLayerClass {
       };
     }
 
-    const normalizedPrompt = this.normalizeText(prompt);
+    const candidates = [prompt, ...normalizedVariants(prompt).map((v) => v.text)];
     const violations: string[] = [];
     const warnings: string[] = [];
     
     for (const policy of this.policies) {
       for (const pattern of policy.patterns) {
         pattern.lastIndex = 0;
-        if (normalizedPrompt.search(pattern) !== -1 || prompt.search(pattern) !== -1) {
+        if (candidates.some((text) => text.search(pattern) !== -1)) {
           if (policy.severity === 'critical') {
             violations.push(`${policy.description}: Matched pattern "${pattern}"`);
           } else if (policy.severity === 'warning') {
@@ -298,25 +417,23 @@ class PromptSafetyLayerClass {
       };
     }
 
-    const normalizedResponse = this.normalizeText(response);
+    const variants = normalizedVariants(response);
+    const candidates = [response, ...variants.map((v) => v.text)];
     const violations: string[] = [];
     const warnings: string[] = [];
-    let filteredContent = response;
+    const patternsToFilter: RegExp[] = [];
     
     for (const policy of this.policies) {
       for (const pattern of policy.patterns) {
         pattern.lastIndex = 0;
-        const matchedNormalized = normalizedResponse.search(pattern) !== -1;
-        const matchedRaw = response.search(pattern) !== -1;
-
-        if (matchedNormalized || matchedRaw) {
+        if (candidates.some((text) => text.search(pattern) !== -1)) {
           if (policy.severity === 'critical') {
             violations.push(`${policy.description}: Matched pattern "${pattern}"`);
           } else if (policy.severity === 'warning') {
             warnings.push(`${policy.description}: Matched pattern "${pattern}"`);
             
             if (policy.action === 'filter') {
-              filteredContent = filteredContent.replace(pattern, '[FILTERED]');
+              patternsToFilter.push(pattern);
             }
           }
         }
@@ -337,7 +454,7 @@ class PromptSafetyLayerClass {
       safe,
       violations,
       warnings,
-      filteredContent: warnings.length > 0 ? filteredContent : undefined,
+      filteredContent: warnings.length > 0 ? redactMatches(response, variants, patternsToFilter) : undefined,
     };
   }
 
@@ -357,18 +474,11 @@ class PromptSafetyLayerClass {
       prompt = prompt.slice(0, MAX_INPUT_LENGTH);
     }
 
-    let sanitized = prompt;
-    
-    for (const policy of this.policies) {
-      if (policy.action === 'filter' || policy.action === 'block') {
-        for (const pattern of policy.patterns) {
-          pattern.lastIndex = 0;
-          sanitized = sanitized.replace(pattern, '[FILTERED]');
-        }
-      }
-    }
-    
-    return sanitized;
+    const patterns = this.policies
+      .filter((policy) => policy.action === 'filter' || policy.action === 'block')
+      .flatMap((policy) => policy.patterns);
+
+    return redactMatches(prompt, normalizedVariants(prompt), patterns);
   }
 
   /**
@@ -402,12 +512,12 @@ class PromptSafetyLayerClass {
       return true; // Fail-safe: oversized content is rejected as prohibited
     }
 
-    const normalized = this.normalizeText(content);
+    const candidates = [content, ...normalizedVariants(content).map((v) => v.text)];
     for (const policy of this.policies) {
       if (policy.severity === 'critical') {
         for (const pattern of policy.patterns) {
           pattern.lastIndex = 0;
-          if (pattern.test(normalized) || pattern.test(content)) {
+          if (candidates.some((text) => text.search(pattern) !== -1)) {
             return true;
           }
         }
@@ -478,6 +588,7 @@ class PromptSafetyLayerClass {
           /will definitely get (Google|Amazon|Microsoft|Meta|Apple|Netflix)/gi,
           /guaranteed (Google|Amazon|Microsoft|Meta|Apple|Netflix)/gi,
           /definitely (land|get into) (Google|Amazon|Microsoft|Meta|Apple|Netflix)/gi,
+          /you will get into (Google|Amazon|Microsoft|Meta|Apple|Netflix)\b/gi,
         ],
         severity: 'critical',
         action: 'block',
