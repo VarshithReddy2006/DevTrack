@@ -56,6 +56,7 @@ export { UserStreakLog, type IUserStreakLog, type StreakType } from './userStrea
 export { UserAnalytics, type IUserAnalytics } from './userAnalytics.model.js';
 export { ProcessedEvent, type IProcessedEvent } from './processedEvent.model.js';
 export { DailyChallenge, type IDailyChallenge } from './dailyChallenge.model.js';
+export { DailyChallengeAssignment, type IDailyChallengeAssignment } from './dailyChallengeAssignment.model.js';
 export { UserDailyChallenge, type IUserDailyChallenge } from './userDailyChallenge.model.js';
 
 // Phase-I Validation Models

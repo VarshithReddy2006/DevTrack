@@ -30,6 +30,7 @@ import '../../db/models/connectedPlatform.model.js';
 import '../../db/models/customDomain.model.js';
 import '../../db/models/dailyActivity.model.js';
 import '../../db/models/dailyChallenge.model.js';
+import '../../db/models/dailyChallengeAssignment.model.js';
 import '../../db/models/datasetIngestion.model.js';
 import '../../db/models/deadLetterJob.model.js';
 import '../../db/models/dsaContest.model.js';

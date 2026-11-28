@@ -133,6 +133,53 @@ export async function recordActivity(
   await recalculateStreak(userId, streakType, { session });
 }
 
+// ─── Activity logs ─────────────────────────────────────────────────────────
+
+async function loadStreakLogs(
+  userObjId: Types.ObjectId,
+  streakType: StreakType,
+  session?: ClientSession
+): Promise<(IUserStreakLog | StreakDayItem)[]> {
+  // Get all logs for this user and streak type, sorted by date descending.
+  // Nothing writes 'unified' logs, so 'unified' is the union of every type's days.
+  const isUnified = streakType === 'unified';
+  const logs = await UserStreakLog.find({
+    userId: userObjId,
+    streakType: isUnified ? { $in: ALL_STREAK_TYPES } : streakType,
+  })
+    .sort({ date: -1 })
+    .limit(365 * (isUnified ? ALL_STREAK_TYPES.length : 1))
+    .session(session ?? null); // Cap at 1 year of days for performance
+
+  if (logs.length > 0) return logs;
+
+  const dailyActivities = await DailyActivity.find({
+    userId: userObjId,
+    count: { $gt: 0 },
+  })
+    .sort({ date: -1 })
+    .limit(365)
+    .session(session ?? null);
+
+  return dailyActivities.map((da) => ({
+    date: da.date,
+    activityCount: da.count,
+  }));
+}
+
+/**
+ * Current unified streak computed from the activity logs. Unlike recalculateStreak
+ * this only reads: nothing is written to UserAnalytics and no events are emitted.
+ */
+export async function readCurrentStreak(userId: string, timezone: string): Promise<number> {
+  const userObjId = new Types.ObjectId(userId);
+  const [logs, analytics] = await Promise.all([
+    loadStreakLogs(userObjId, 'unified'),
+    UserAnalytics.findOne({ userId: userObjId }).select('streakFreezeUntil').lean(),
+  ]);
+  return calculateCurrentStreak(logs, timezone, analytics?.streakFreezeUntil ?? null).currentStreak;
+}
+
 // ─── Recalculation ─────────────────────────────────────────────────────────
 
 export async function recalculateStreak(
@@ -144,33 +191,8 @@ export async function recalculateStreak(
   const session = options?.session;
   const timezone = await getUserTimezone(userId, session);
 
-  // Get all logs for this user and streak type, sorted by date descending.
-  // Nothing writes 'unified' logs, so 'unified' is the union of every type's days.
   const isUnified = streakType === 'unified';
-  let logs: (IUserStreakLog | StreakDayItem)[] = await UserStreakLog.find({
-    userId: userObjId,
-    streakType: isUnified ? { $in: ALL_STREAK_TYPES } : streakType,
-  })
-    .sort({ date: -1 })
-    .limit(365 * (isUnified ? ALL_STREAK_TYPES.length : 1))
-    .session(session ?? null); // Cap at 1 year of days for performance
-
-  if (logs.length === 0) {
-    const dailyActivities = await DailyActivity.find({
-      userId: userObjId,
-      count: { $gt: 0 },
-    })
-      .sort({ date: -1 })
-      .limit(365)
-      .session(session ?? null);
-
-    if (dailyActivities.length > 0) {
-      logs = dailyActivities.map((da) => ({
-        date: da.date,
-        activityCount: da.count,
-      }));
-    }
-  }
+  const logs = await loadStreakLogs(userObjId, streakType, session);
 
   if (logs.length === 0) {
     // currentStreak is one field per user. Only reset it when the user has no
