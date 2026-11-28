@@ -1,12 +1,13 @@
 // src/modules/daily-challenge/daily-challenge.service.ts
 import { Types } from 'mongoose';
-import { DailyChallenge, DsaProblem, DsaSubmission, XpTransaction, UserAnalytics } from '../../db/models/index.js';
+import { DailyChallenge, DailyChallengeAssignment, DsaProblem, DsaSubmission, XpTransaction } from '../../db/models/index.js';
 import type { IDailyChallenge } from '../../db/models/dailyChallenge.model.js';
 import { processXpEvent } from '../xp/processor.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { logger } from '../../shared/logger.js';
 import { localDateString, localDayBounds } from './daily-challenge.time.js';
 import { getUserTimezone } from '../../shared/userTimezone.js';
+import { readCurrentStreak } from '../streak/streak.service.js';
 
 // ---------------------------------------------------------------------------
 // Expanded Challenge Pool — organized by difficulty
@@ -62,37 +63,37 @@ const CHALLENGE_DIFFICULTIES = ['easy', 'medium', 'hard'] as const;
 // Adaptive Difficulty Selection
 // ---------------------------------------------------------------------------
 
-async function selectAdaptiveDifficulty(userId: string, dateStr: string): Promise<'easy' | 'medium' | 'hard'> {
-  try {
-    const analytics = await UserAnalytics.findOne({ userId: new Types.ObjectId(userId) }).lean();
-    const currentStreak = analytics?.currentStreak ?? 0;
+// Only used for the first assignment of a day. Errors propagate so that a failed read
+// is never stored as the user's tier.
+async function selectAdaptiveDifficulty(
+  userId: string,
+  dateStr: string,
+  timezone: string,
+): Promise<'easy' | 'medium' | 'hard'> {
+  const currentStreak = await readCurrentStreak(userId, timezone);
 
-    // Weekend/weekday balancing — easier on weekends
-    const dayOfWeek = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+  // Weekend/weekday balancing — easier on weekends
+  const dayOfWeek = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
 
-    if (isWeekend) {
-      return currentStreak >= 14 ? 'medium' : 'easy';
-    }
-
-    // Streak-sensitive difficulty
-    if (currentStreak >= 30) return 'hard';
-    if (currentStreak >= 14) return 'medium';
-    if (currentStreak >= 7) {
-      // Mix: 60% medium, 40% easy based on date hash
-      const dateHash = hashDateString(dateStr);
-      return dateHash % 5 < 3 ? 'medium' : 'easy';
-    }
-    if (currentStreak >= 3) {
-      // Mix: 70% easy, 30% medium
-      const dateHash = hashDateString(dateStr);
-      return dateHash % 10 < 3 ? 'medium' : 'easy';
-    }
-    return 'easy'; // New or low-streak users get easy
-  } catch (err) {
-    logger.debug('[daily-challenge] Difficulty calculation failed, defaulting to easy', { userId, error: err instanceof Error ? err.message : String(err) });
-    return 'easy';
+  if (isWeekend) {
+    return currentStreak >= 14 ? 'medium' : 'easy';
   }
+
+  // Streak-sensitive difficulty
+  if (currentStreak >= 30) return 'hard';
+  if (currentStreak >= 14) return 'medium';
+  if (currentStreak >= 7) {
+    // Mix: 60% medium, 40% easy based on date hash
+    const dateHash = hashDateString(dateStr);
+    return dateHash % 5 < 3 ? 'medium' : 'easy';
+  }
+  if (currentStreak >= 3) {
+    // Mix: 70% easy, 30% medium
+    const dateHash = hashDateString(dateStr);
+    return dateHash % 10 < 3 ? 'medium' : 'easy';
+  }
+  return 'easy'; // New or low-streak users get easy
 }
 
 function getChallengeForDate(dateStr: string, difficulty: 'easy' | 'medium' | 'hard') {
@@ -141,12 +142,43 @@ export async function seedDailyChallengeWindow(now = new Date()): Promise<void> 
   }
 }
 
+/**
+ * Returns the challenge on the user's assigned tier for this local day. The first call of
+ * the day picks the tier and stores it; later streak changes do not move it.
+ * `loadChallenge` may return null, in which case nothing is assigned.
+ */
+async function loadAssignedChallenge<T extends IDailyChallenge | null>(
+  userId: string,
+  dayKey: string,
+  timezone: string,
+  loadChallenge: (difficulty: IDailyChallenge['difficulty']) => Promise<T>,
+) {
+  const key = { userId: new Types.ObjectId(userId), dayKey };
+  const existing = await DailyChallengeAssignment.findOne(key).lean();
+  if (existing) return loadChallenge(existing.difficulty);
+
+  const challenge = await loadChallenge(await selectAdaptiveDifficulty(userId, dayKey, timezone));
+  if (!challenge) return challenge;
+
+  // A concurrent first call may have stored another tier; the stored one wins.
+  const assignment = await DailyChallengeAssignment.findOneAndUpdate(
+    key,
+    { $setOnInsert: {
+      difficulty: challenge.difficulty,
+      problemId: challenge.titleSlug,
+      assignedAt: new Date(),
+    } },
+    { upsert: true, new: true },
+  ).orFail();
+  return assignment.difficulty === challenge.difficulty ? challenge : loadChallenge(assignment.difficulty);
+}
+
 export async function getTodayChallenge(userId: string) {
   const now = new Date();
   const timezone = await getUserTimezone(userId);
   const dateStr = localDateString(now, timezone);
-  const adaptiveDifficulty = await selectAdaptiveDifficulty(userId, dateStr);
-  const challenge = await seedChallenge(dateStr, adaptiveDifficulty);
+  const challenge = await loadAssignedChallenge(userId, dateStr, timezone, difficulty =>
+    seedChallenge(dateStr, difficulty));
 
   // Check completion
   const completedTx = await XpTransaction.findOne({
@@ -202,8 +234,8 @@ export async function checkChallengeCompletion(
   const dateStr = localDateString(now, timezone);
   if (localDateString(submittedAt, timezone) !== dateStr) return false;
 
-  const difficulty = await selectAdaptiveDifficulty(userId, dateStr);
-  const challenge = await DailyChallenge.findOne({ date: dateStr, difficulty });
+  const challenge = await loadAssignedChallenge(userId, dateStr, timezone, difficulty =>
+    DailyChallenge.findOne({ date: dateStr, difficulty }));
   if (
     !challenge ||
     challenge.platform !== platform.toLowerCase() ||

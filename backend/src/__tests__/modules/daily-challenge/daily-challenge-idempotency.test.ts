@@ -2,7 +2,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
-import { User, UserXp, UserAnalytics, XpTransaction, DailyChallenge, DsaProblem, DsaSubmission } from '../../../db/models/index.js';
+import { User, UserXp, UserAnalytics, UserStreakLog, XpTransaction, DailyChallenge, DailyChallengeAssignment, DsaProblem, DsaSubmission } from '../../../db/models/index.js';
 import { checkChallengeCompletion, getTodayChallenge, seedDailyChallengeWindow } from '../../../modules/daily-challenge/daily-challenge.service.js';
 import challengeRoutes from '../../../modules/daily-challenge/daily-challenge.routes.js';
 import { errorHandler } from '../../../middleware/error.js';
@@ -30,7 +30,7 @@ let server: Server;
 let url: string;
 
 beforeAll(async () => {
-  await Promise.all([User.init(), UserXp.init(), UserAnalytics.init(), XpTransaction.init(), DailyChallenge.init(), DsaProblem.init(), DsaSubmission.init()]);
+  await Promise.all([User.init(), UserXp.init(), UserStreakLog.init(), XpTransaction.init(), DailyChallenge.init(), DailyChallengeAssignment.init(), DsaProblem.init(), DsaSubmission.init()]);
   const app = express();
   app.use('/api/v1/daily-challenge', challengeRoutes);
   app.use(errorHandler);
@@ -76,6 +76,13 @@ async function seedSolve(userId = ownerId, status: 'accepted' | 'wrong' = 'accep
     difficulty: 'easy', category: 'arrays', url: 'https://leetcode.com/problems/two-sum/', status: 'solved' });
   await DsaSubmission.create({ userId, problemId: problem._id, platform: 'leetcode', externalId: `submission-${userId}`,
     language: 'typescript', status, submittedAt: now });
+}
+/** Daily activity ending on the current (fake) UTC date. */
+async function seedStreak(userId: string, days: number) {
+  const today = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`).getTime();
+  await UserStreakLog.insertMany(Array.from({ length: days }, (_, i) => ({
+    userId, date: new Date(today - i * 86_400_000), streakType: 'dsa', activityCount: 1,
+  })));
 }
 async function readToday(token = 'owner') {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
@@ -192,11 +199,11 @@ it('preserves missing-challenge and unauthenticated behavior', async () => {
 
 
 it.each(['beginner', 'advanced'])('isolates all three tiers when %s visits first', async first => {
-  await UserAnalytics.create({ userId: otherId, currentStreak: 35 });
+  await seedStreak(otherId, 35);
   const mediumId = '000000000000000000000026';
   await User.create({ _id: mediumId, clerkId: 'clerk_medium', username: 'challengemedium',
     email: 'medium@example.test', displayName: 'Medium', timezone: 'UTC' });
-  await UserAnalytics.create({ userId: mediumId, currentStreak: 14 });
+  await seedStreak(mediumId, 14);
   if (first === 'advanced') await getTodayChallenge(otherId);
   else await getTodayChallenge(ownerId);
   const [easy, medium, hard] = await Promise.all([
@@ -218,7 +225,7 @@ it.each(['beginner', 'advanced'])('isolates all three tiers when %s visits first
 });
 
 it('converges concurrent first reads on one document per tier', async () => {
-  await UserAnalytics.create({ userId: otherId, currentStreak: 35 });
+  await seedStreak(otherId, 35);
   const results = await Promise.all(Array.from({ length: 8 }, (_, i) => getTodayChallenge(i % 2 ? ownerId : otherId)));
   expect(new Set(results.map(r => r.challenge.id)).size).toBe(2);
   expect(await DailyChallenge.countDocuments({ date: '2026-10-28' })).toBe(2);
@@ -228,9 +235,9 @@ it('converges concurrent first reads on one document per tier', async () => {
 it('seeds all tiers across UTC rollover while preserving existing challenges', async () => {
   await User.findByIdAndUpdate(ownerId, { timezone: 'America/Los_Angeles' });
   await User.findByIdAndUpdate(otherId, { timezone: 'Asia/Kolkata' });
-  await UserAnalytics.create({ userId: otherId, currentStreak: 30 });
   const existing = await seedChallenge(12);
   vi.setSystemTime(new Date('2026-10-28T00:30:00Z'));
+  await seedStreak(otherId, 30);
 
   const [, , west, east] = await Promise.all([
     seedDailyChallengeWindow(),
@@ -255,7 +262,8 @@ it('uses different local dates at the same instant and local weekends for adapta
   vi.setSystemTime(new Date('2026-11-09T00:30:00Z'));
   await User.findByIdAndUpdate(ownerId, { timezone: 'America/Los_Angeles' });
   await User.findByIdAndUpdate(otherId, { timezone: 'Asia/Tokyo' });
-  await UserAnalytics.create([{ userId: ownerId, currentStreak: 35 }, { userId: otherId, currentStreak: 35 }]);
+  await seedStreak(ownerId, 35);
+  await seedStreak(otherId, 35);
   const la = await getTodayChallenge(ownerId);
   const tokyo = await getTodayChallenge(otherId);
   expect(la.challenge).toMatchObject({ date: '2026-11-08', difficulty: 'medium' });
@@ -299,4 +307,84 @@ it.each([
   expect((await getTodayChallenge(ownerId)).userCompleted).toBe(true);
   expect(await checkChallengeCompletion(ownerId, challenge.platform, challenge.titleSlug, new Date(spec.start))).toBe(false);
   await expectSingleAward(challenge.id);
+});
+
+// 2026-10-28 is a Wednesday, so a 35 day streak means 'hard' and no streak means 'easy'.
+it('keeps the assigned challenge when the streak crosses a tier mid-day', async () => {
+  const { challenge } = await getTodayChallenge(ownerId);
+  expect(challenge.difficulty).toBe('easy');
+  await seedStreak(ownerId, 35);
+
+  expect((await getTodayChallenge(ownerId)).challenge.id).toBe(challenge.id);
+  expect(await checkChallengeCompletion(ownerId, challenge.platform, challenge.titleSlug, now)).toBe(true);
+  expect((await getTodayChallenge(ownerId)).userCompleted).toBe(true);
+  await expectSingleAward(challenge.id);
+  expect(await DailyChallengeAssignment.find({ userId: ownerId }).lean()).toMatchObject([
+    { dayKey: '2026-10-28', difficulty: 'easy', problemId: challenge.titleSlug },
+  ]);
+});
+
+it('assigns the tier at a completion check that runs before the first read', async () => {
+  await seedDailyChallengeWindow();
+  expect(await checkChallengeCompletion(ownerId, 'leetcode', 'not-the-challenge', now)).toBe(false);
+  await seedStreak(ownerId, 35);
+
+  expect((await getTodayChallenge(ownerId)).challenge.difficulty).toBe('easy');
+  expect(await DailyChallengeAssignment.countDocuments({})).toBe(1);
+});
+
+it('picks a new tier on the next local day', async () => {
+  expect((await getTodayChallenge(ownerId)).challenge.difficulty).toBe('easy');
+  vi.setSystemTime(new Date('2026-10-29T12:00:00Z'));
+  await seedStreak(ownerId, 35);
+
+  expect((await getTodayChallenge(ownerId)).challenge).toMatchObject({ date: '2026-10-29', difficulty: 'hard' });
+  expect(await DailyChallengeAssignment.countDocuments({ userId: ownerId })).toBe(2);
+});
+
+it('returns one tier to concurrent first reads that computed different ones', async () => {
+  await seedStreak(ownerId, 35);
+  // Hold both callers after their "no assignment yet" read, then give them different streaks.
+  const findLogs = UserStreakLog.find.bind(UserStreakLog);
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const timer = setTimeout(() => release(), 5_000);
+  cleanups.push(() => { clearTimeout(timer); release(); });
+  vi.spyOn(UserStreakLog, 'find').mockImplementation(((filter: any) => {
+    const call = ++calls;
+    if (call === 2) release();
+    const query = findLogs(call === 1 ? filter : { ...filter, date: new Date(0) });
+    const exec = query.exec.bind(query);
+    query.exec = async () => { await gate; return exec(); };
+    return query;
+  }) as typeof UserStreakLog.find);
+
+  const [first, second] = await Promise.all([getTodayChallenge(ownerId), getTodayChallenge(ownerId)]);
+
+  expect(calls).toBe(2);
+  expect(first.challenge.id).toBe(second.challenge.id);
+  const assignments = await DailyChallengeAssignment.find({ userId: ownerId }).lean();
+  expect(assignments).toHaveLength(1);
+  expect(assignments[0].difficulty).toBe(first.challenge.difficulty);
+  expect(await DailyChallenge.countDocuments({ date: '2026-10-28' })).toBe(2);
+});
+
+it('uses the activity logs rather than a stale UserAnalytics streak', async () => {
+  await UserAnalytics.create({ userId: ownerId, currentStreak: 35 });
+  await seedStreak(otherId, 35);
+  await UserAnalytics.create({ userId: otherId, currentStreak: 0 });
+
+  expect((await getTodayChallenge(ownerId)).challenge.difficulty).toBe('easy');
+  expect((await getTodayChallenge(otherId)).challenge.difficulty).toBe('hard');
+});
+
+it('does not store a tier when the streak cannot be read', async () => {
+  const find = vi.spyOn(UserStreakLog, 'find').mockImplementationOnce(() => { throw new Error('synthetic read failure'); });
+
+  await expect(getTodayChallenge(ownerId)).rejects.toThrow('synthetic read failure');
+  expect(await DailyChallengeAssignment.countDocuments({})).toBe(0);
+  find.mockRestore();
+  await seedStreak(ownerId, 35);
+  expect((await getTodayChallenge(ownerId)).challenge.difficulty).toBe('hard');
 });

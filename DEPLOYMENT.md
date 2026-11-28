@@ -485,10 +485,17 @@ documents, completion counts, IDs, or XP transactions are rewritten. Existing
 challenges remain the challenge for their date and tier; missing tiers are
 created lazily. Fresh databases get the compound index from the model.
 
-Difficulty is selected per user on each request using the existing streak
-rules and the user's local weekday. A change in streak may select a different
-tier; completion and rewards are tracked independently per tier through the
-existing user/challenge XP ledger key. New tier completion counts start at zero.
+Difficulty is selected once per user per local day, using the existing streak
+rules, the streak computed from the activity logs, and the user's local weekday.
+The first read or completion check of the day stores it in
+`dailychallengeassignments`, and later streak changes do not move it. The unique
+`{ userId: 1, dayKey: 1 }` index comes from the versioned migration
+`20261128105000-dailyChallengeAssignments`; apply it with the other migrations
+(`npm run migrate:up`) before the new code serves traffic, including the sync
+workers. Users have no stored assignment on the day of the deploy, so their tier
+is picked again on the first request after it. Completion and rewards are tracked
+per tier through the existing user/challenge XP ledger key. New tier completion
+counts start at zero.
 
 Do not roll back to date-only uniqueness after multiple tiers exist without a
 separate data migration. This command does not perform that rollback.

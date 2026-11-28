@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Types } from 'mongoose';
 import { getTodayChallenge, checkChallengeCompletion } from '../../../modules/daily-challenge/daily-challenge.service.js';
-import { DailyChallenge, XpTransaction, UserAnalytics, DsaProblem, DsaSubmission } from '../../../db/models/index.js';
+import { DailyChallenge, XpTransaction, UserStreakLog, DsaProblem, DsaSubmission } from '../../../db/models/index.js';
 
 // Mock XP processor
 vi.mock('../../../modules/xp/processor.js', () => ({
@@ -75,10 +75,12 @@ describe('Daily Challenge — getTodayChallenge', () => {
 
   it('should use adaptive difficulty based on streak', async () => {
     // Create a user with a high streak
-    await UserAnalytics.create({
+    const today = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`).getTime();
+    await UserStreakLog.insertMany(Array.from({ length: 35 }, (_, i) => ({ // > 30 => should get hard difficulty
       userId: new Types.ObjectId(userId),
-      currentStreak: 35, // > 30 => should get hard difficulty
-    });
+      date: new Date(today - i * 86_400_000),
+      streakType: 'dsa',
+    })));
 
     const result = await getTodayChallenge(userId);
     // On a weekday with streak >= 30, difficulty should be 'hard'
