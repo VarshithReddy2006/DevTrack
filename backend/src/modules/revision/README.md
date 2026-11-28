@@ -158,3 +158,18 @@ handoff. They exercise the actual persistence, relay routing, consumer dispatch,
 transaction rollback/repair, thresholds, ownership, and review preservation.
 Production Redis/BullMQ execution and an authenticated browser SSE session require
 separate deployment verification.
+
+## Review events and XP recovery
+
+Every accepted review saves a `revision.reviewed` outbox row, which quest tracking
+uses as proof of the review. With transactions the row commits together with the
+card. If MongoDB reports that transactions are unavailable, the row is upserted
+right after the card update under the event ID
+`revision-reviewed_<cardId>_<reviewSeq>`. Those two writes are not atomic: a crash
+or failed insert between them loses the event, and the failed insert is logged.
+
+XP is still awarded during the request. The `xp.revisionReviewed` consumer on
+`domain-readiness` (xp pool) awards it again from the outbox under the same
+`revision_review` ledger key, so a failed inline attempt is recovered and a
+successful one is not paid twice. XP awards and quest progress themselves still
+require transaction support; saving the event does not change that.

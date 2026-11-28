@@ -1,5 +1,6 @@
 import { registerQuestConsumers } from '../../quests/questEvents.consumer.js';
 import { registerStreakConsumers } from '../../streak/consumers/index.js';
+import { registerRevisionXpConsumer } from '../../xp/consumers/revisionReviewed.consumer.js';
 // src/modules/readiness/workers/domainReadiness.worker.ts: Runs the readiness domain consumers.
 // The outbox relay enqueues one job per event (jobId = eventId) on `domain-readiness`; the job
 // data is the event envelope. Each consumer registered for that queue is run through the inbox
@@ -32,6 +33,8 @@ export function startDomainReadinessWorker(): Worker<DomainEventEnvelope> {
   registerReadinessConsumers();
   registerQuestConsumers();
   registerStreakConsumers();
+  // Last, so a failing XP award does not hold back the consumers above.
+  registerRevisionXpConsumer();
 
   _worker = createDlqWorker<DomainEventEnvelope>(
     QueueNames.DOMAIN_READINESS,

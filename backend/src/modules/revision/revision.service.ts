@@ -1,4 +1,4 @@
-import { writeOutboxEvent } from '../../shared/events/outbox.js';
+import { writeOutboxEvent, writeStandaloneOutboxEvent } from '../../shared/events/outbox.js';
 // src/modules/revision/revision.service.ts — Revision cards service with optimistic concurrency
 import { Types } from 'mongoose';
 import { RevisionCard, type IRevisionCard } from '../../db/models/revisionCard.model.js';
@@ -124,9 +124,23 @@ export class RevisionService {
         );
       }
 
+      const reviewedEvent = { type: 'revision.reviewed', aggregateType: 'RevisionCard', aggregateId: cardId, userId,
+        payload: { cardId, reviewSeq: nextReviewSeq, rating, reviewedAt: now.toISOString() } };
       if (session) {
-        await writeOutboxEvent(session, { type: 'revision.reviewed', aggregateType: 'RevisionCard', aggregateId: cardId, userId,
-          payload: { cardId, reviewSeq: nextReviewSeq, rating, reviewedAt: now.toISOString() } });
+        await writeOutboxEvent(session, reviewedEvent);
+      } else {
+        // The card is already saved. Failing the request now would not undo that, and
+        // a client retry would only be rejected as stale, so log and carry on.
+        try {
+          await writeStandaloneOutboxEvent(`revision-reviewed_${cardId}_${nextReviewSeq}`, reviewedEvent);
+        } catch (outboxErr) {
+          logger.error('RevisionService: failed to persist revision.reviewed event', {
+            userId,
+            cardId,
+            reviewSeq: nextReviewSeq,
+            error: (outboxErr as Error).message,
+          });
+        }
       }
 
       return saved;
@@ -160,7 +174,8 @@ export class RevisionService {
       throw new RevisionCardNotFoundError();
     }
 
-    // Award 5 XP via idempotent consumer ledger
+    // Award 5 XP right away. If this fails, the revision.reviewed consumer awards it
+    // from the outbox under the same ledger key.
     try {
       await processXpEvent({
         userId,
@@ -174,7 +189,7 @@ export class RevisionService {
         },
       });
     } catch (xpErr) {
-      logger.error('RevisionService: failed to award XP for review', {
+      logger.error('RevisionService: inline XP award failed, leaving it to the outbox consumer', {
         userId,
         cardId,
         reviewSeq: nextReviewSeq,

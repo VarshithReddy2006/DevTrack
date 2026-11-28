@@ -29,6 +29,21 @@ export async function writeOutboxEvent(session: ClientSession, input: OutboxEven
   if (!session || !session.inTransaction()) {
     throw new Error('writeOutboxEvent must be called inside an active transaction session');
   }
+  const [doc] = await OutboxEvent.create([{ ...pendingRow(input), eventId: randomUUID() }], { session });
+  return doc;
+}
+
+/**
+ * For deployments without transactions only. The caller has already saved its state
+ * change, so the two writes are not atomic; use writeOutboxEvent whenever a session
+ * exists. `eventId` must be derived from that change, which turns a repeated write
+ * into a no-op. It doubles as the BullMQ job id, so it cannot contain ':'.
+ */
+export async function writeStandaloneOutboxEvent(eventId: string, input: OutboxEventInput): Promise<void> {
+  await OutboxEvent.updateOne({ eventId }, { $setOnInsert: { ...pendingRow(input), eventId } }, { upsert: true });
+}
+
+function pendingRow(input: OutboxEventInput) {
   const data = outboxEventInputSchema.parse(input);
   const active = captureTraceContext();
   const { traceparent, correlationId, causationId } = data.traceContext;
@@ -38,6 +53,5 @@ export async function writeOutboxEvent(session: ClientSession, input: OutboxEven
     ...(correlationId ? { correlationId } : {}),
     ...(causationId ? { causationId } : {}),
   };
-  const [doc] = await OutboxEvent.create([{ ...data, traceContext, eventId: randomUUID(), status: 'pending' }], { session });
-  return doc;
+  return { ...data, traceContext, status: 'pending' as const };
 }
