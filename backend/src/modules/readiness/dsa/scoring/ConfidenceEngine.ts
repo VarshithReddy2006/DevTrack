@@ -12,6 +12,7 @@ export class ConfidenceEngine {
    */
   calculateConfidenceScore(input: ConfidenceScoreInput): number {
     const { lastSyncedAt, isVerified, totalSolved, lastSolvedDate, platform } = input;
+    if (totalSolved <= 0) return 0;
 
     // 1. Data Freshness Score (30% weight)
     const freshnessScore = this.calculateFreshnessScore(lastSyncedAt);
