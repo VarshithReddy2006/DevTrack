@@ -89,11 +89,20 @@ export async function getOrCreateAuditKey(
   const keyHex = randomBytes(32).toString('hex');
   const saltHex = randomBytes(32).toString('hex');
 
-  const doc = await AuditEncryptionKey.findOneAndUpdate(
-    { userId: userObjectId },
-    { $setOnInsert: { userId: userObjectId, keyHex, saltHex } },
-    { upsert: true, new: true, ...(session ? { session } : {}) }
-  ).lean();
+  let doc: Pick<IAuditEncryptionKey, 'userId' | 'keyHex' | 'saltHex'> | null = null;
+  try {
+    doc = await AuditEncryptionKey.findOneAndUpdate(
+      { userId: userObjectId },
+      { $setOnInsert: { userId: userObjectId, keyHex, saltHex } },
+      { upsert: true, new: true, ...(session ? { session } : {}) }
+    ).lean();
+  } catch (err: any) {
+    if (!session && err?.code === 11000) {
+      doc = await AuditEncryptionKey.findOne({ userId: userObjectId }).lean();
+    } else {
+      throw err;
+    }
+  }
 
   if (!doc) {
     throw new Error('Failed to provision audit encryption key');

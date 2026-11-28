@@ -329,4 +329,61 @@ describe('daily checkpoints', () => {
     vi.stubEnv('NODE_ENV', 'production');
     await expect(sealDailyCheckpoint(dayOf(0))).rejects.toThrow('AUDIT_CHECKPOINT_SECRET');
   });
+
+  it('recovers from E11000 upsert race in getOrCreateAuditKey and handles concurrent non-session appends', async () => {
+    const { getOrCreateAuditKey } = await import('../../../modules/audit/auditLedger.service.js');
+    const { AuditEncryptionKey } = await import('../../../db/models/profileAuditLog.model.js');
+    const newUser = new Types.ObjectId();
+    const seeded = await getOrCreateAuditKey(newUser);
+
+    // Simulate MongoDB E11000 upsert race on findOneAndUpdate
+    const findSpy = vi.spyOn(AuditEncryptionKey, 'findOneAndUpdate').mockReturnValueOnce({
+      lean: vi.fn().mockRejectedValueOnce(
+        Object.assign(new Error('E11000 duplicate key error'), { code: 11000 })
+      ),
+    } as any);
+    const recovered = await getOrCreateAuditKey(newUser);
+    expect(recovered.keyHex).toBe(seeded.keyHex);
+    expect(recovered.saltHex).toBe(seeded.saltHex);
+    findSpy.mockRestore();
+
+    // 6 concurrent non-session appends must all succeed with contiguous sequence numbers
+    const appended = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        appendChainedAuditEvent({
+          userId: newUser,
+          eventType: 'visibility_changed',
+          triggeredBy: 'user',
+          details: { idx: i },
+        })
+      )
+    );
+    expect(appended.map(a => a.sequenceNumber!).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(await verifyAuditIntegrity()).toMatchObject({ ok: true, checked: 6 });
+  });
+
+  it('does not retry E11000 inside an active ClientSession in appendChainedAuditEvent', async () => {
+    await appendMany(1);
+    const session = await ProfileAuditLog.startSession();
+    session.startTransaction();
+    const createSpy = vi.spyOn(ProfileAuditLog, 'create').mockRejectedValueOnce(
+      Object.assign(new Error('E11000 duplicate key error collection: sequenceNumber'), {
+        code: 11000,
+        keyPattern: { sequenceNumber: 1 },
+      })
+    );
+    try {
+      await expect(
+        appendChainedAuditEvent(
+          { userId: owner, eventType: 'visibility_changed', triggeredBy: 'user', details: {} },
+          session
+        )
+      ).rejects.toThrow('E11000');
+      expect(createSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      createSpy.mockRestore();
+      await session.abortTransaction();
+      await session.endSession();
+    }
+  });
 });
