@@ -105,6 +105,7 @@ describe('readiness DSA intelligence', () => {
       mastery: 67,
       tier: 'Proficient',
       difficulty: { easy: 0, medium: 12, hard: 0 },
+      isEstimatedDifficulty: true,
     });
     expect(frontend.weakTopics).toContainEqual({
       topic: 'graphs',
@@ -112,6 +113,7 @@ describe('readiness DSA intelligence', () => {
       mastery: 20,
       tier: 'Novice',
       difficulty: { easy: 0, medium: 4, hard: 0 },
+      isEstimatedDifficulty: true,
     });
     expect(frontend.nextTopics).not.toContain('arrays');
     expect(frontend.nextTopics.slice(0, 2)).toEqual(['trees', 'strings']);
@@ -174,13 +176,15 @@ describe('readiness DSA intelligence', () => {
       mastery: 100,
       tier: 'Mastery',
       difficulty: { easy: 14, medium: 12, hard: 4 },
+      isEstimatedDifficulty: true,
     });
     expect(intelligence.strongTopics).toContainEqual({
       topic: 'hashing',
       solved: 16,
-      mastery: 99,
-      tier: 'Mastery',
+      mastery: 79,
+      tier: 'Advanced',
       difficulty: { easy: 7, medium: 7, hard: 2 },
+      isEstimatedDifficulty: true,
     });
     expect(intelligence.weakTopics).toContainEqual({
       topic: 'dp',
@@ -188,6 +192,7 @@ describe('readiness DSA intelligence', () => {
       mastery: 28,
       tier: 'Novice',
       difficulty: { easy: 4, medium: 3, hard: 1 },
+      isEstimatedDifficulty: true,
     });
   });
 });
