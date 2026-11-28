@@ -15,7 +15,7 @@ import { writeOutboxEvent } from '../../shared/events/outbox.js';
 import { QueueNames } from '../../shared/jobs/types.js';
 import { eventBus } from '../../shared/sse/eventBus.js';
 import { decideFocusXp } from '../activity/focusXpDecision.js';
-import { generateUserQuests, questObjectId, questTransaction } from './questEngine.service.js';
+import { ensureQuestsForActivity, questObjectId, questTransaction } from './questEngine.service.js';
 import { reconcileQuestReward } from '../xp/processor.js';
 
 const progressPayload = z.object({ progressId: questObjectId });
@@ -72,7 +72,7 @@ export async function trackQuestEvent(event: DomainEventEnvelope, now = new Date
   if (!await User.exists({ _id: event.userId })) return;
   const source = await evidence(event);
   if (!source || !Number.isFinite(+source.at) || source.at > now || source.amount <= 0) return;
-  await generateUserQuests(event.userId, now);
+  await ensureQuestsForActivity(event.userId, source.at, now);
   await questTransaction(async session => {
     const rows = await UserQuestProgress.find({
       userId: event.userId, kind: source.kind, completed: false,

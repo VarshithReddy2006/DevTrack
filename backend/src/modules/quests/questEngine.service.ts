@@ -56,7 +56,11 @@ const QUEST_GEN_LOCK_WAIT_MS = 100;
 const QUEST_GEN_LOCK_MAX_WAIT_ATTEMPTS = 15;
 const RELEASE_LOCK_LUA = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
-export async function generateUserQuests(userId: string, now = new Date(), cadence?: 'daily' | 'weekly') {
+/**
+ * Ensures the quests of the periods containing `now`. `clock` is the real current
+ * time and only differs when quests are resolved for an earlier period.
+ */
+export async function generateUserQuests(userId: string, now = new Date(), cadence?: 'daily' | 'weekly', clock = now) {
   questObjectId.parse(userId);
   const periods = questPeriods(now);
   const filter = { userId, periodKey: { $in: [periods.daily.periodKey, periods.weekly.periodKey] } };
@@ -99,8 +103,12 @@ export async function generateUserQuests(userId: string, now = new Date(), caden
     const rechecked = await UserQuestProgress.find(filter).sort({ cadence: 1, slot: 1 }).lean();
     if (slots.every(slot => rechecked.some(row => row.slot === slot))) return rechecked;
 
-    const active = await LeagueStanding.findOne({ userId, weekKey: weekKeyFor(now) }).lean();
-    if (!active && await LeagueStanding.exists({ userId, weekKey: previousWeekKey(weekKeyFor(now)), status: 'active' })) {
+    const weekKey = weekKeyFor(now);
+    const active = await LeagueStanding.findOne({ userId, weekKey }).lean();
+    // Only the running week waits for the rollover to pick its division. A week that
+    // is already over must not be blocked by it.
+    if (!active && weekKey >= weekKeyFor(clock)
+      && await LeagueStanding.exists({ userId, weekKey: previousWeekKey(weekKey), status: 'active' })) {
       throw questError(503, 'League rollover is pending; retry quest generation');
     }
     const previous = active ? null : await LeagueStanding.findOne({ userId, status: 'finalized' }).sort({ weekKey: -1 }).lean();
@@ -138,6 +146,22 @@ export async function generateUserQuests(userId: string, now = new Date(), caden
       }
     }
   }
+}
+
+/** How long after a period closes a late event may still create that period's quests. */
+export const QUEST_BACKFILL_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Ensures the quests an activity counts toward exist: those of the day and week it
+ * happened in, not of the time it is processed. Periods closed for longer than the
+ * grace window are left as they are.
+ */
+export async function ensureQuestsForActivity(userId: string, occurredAt: Date, now: Date): Promise<void> {
+  const { daily, weekly } = questPeriods(occurredAt);
+  const canCreate = (period: { expiresAt: Date }) => +now < +period.expiresAt + QUEST_BACKFILL_GRACE_MS;
+  // A day never outlasts its week, so a closed week means a closed day too.
+  if (!canCreate(weekly)) return;
+  await generateUserQuests(userId, occurredAt, canCreate(daily) ? undefined : 'weekly', now);
 }
 
 export async function listUserQuests(userId: string, now = new Date()) {
