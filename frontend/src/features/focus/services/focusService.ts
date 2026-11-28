@@ -19,7 +19,6 @@ export interface FocusSessionModel {
 
 export interface FocusSummary {
   todayMinutes: number;
-  targetMinutes: number;
   completedSessionsToday: number;
   currentStreak: number;
 }
@@ -29,9 +28,30 @@ export interface FocusHistoryItem {
   mode: string;
   durationMinutes: number;
   startedAt: string;
-  status: 'completed' | 'abandoned' | 'running';
-  xpAwarded: number;
+  status: 'active' | 'running' | 'paused' | 'completed' | 'abandoned' | 'expired';
+  /** Null when the server never decided XP for this session. */
+  xpAwarded: number | null;
   xpReason?: string;
+}
+
+/** `data` of GET /activity/focus/history. */
+interface ApiFocusHistory {
+  sessions: Array<{
+    id: string;
+    mode: string;
+    status: FocusHistoryItem['status'];
+    startedAt: string;
+    actualDurationMinutes: number;
+    activeDurationMs: number;
+    xpAwarded: number | null;
+    xpReason: string | null;
+  }>;
+}
+
+/** The part of GET /activity/focus/summary the Today card shows. */
+interface ApiFocusSummary {
+  today: { completedSessions: number; totalDurationMinutes: number };
+  currentStreak: number;
 }
 
 export const focusService = {
@@ -86,45 +106,29 @@ export const focusService = {
   },
 
   async getHistory(limit: number = 20): Promise<FocusHistoryItem[]> {
-    try {
-      const { data } = await axiosClient.get<ApiResponse<any>>('/activity/focus/history', {
-        params: { limit },
-      });
-      if (Array.isArray(data?.data)) {
-        return data.data.map((item: any) => ({
-          id: item._id || item.id || String(Math.random()),
-          mode: item.mode || 'deep_work',
-          durationMinutes: Math.round((item.durationSeconds || item.duration || 1500) / 60),
-          startedAt: item.startedAt || item.createdAt || new Date().toISOString(),
-          status: item.status === 'completed' ? 'completed' : item.status === 'abandoned' ? 'abandoned' : 'completed',
-          xpAwarded: item.xpAwarded ?? (item.status === 'completed' ? 25 : 0),
-          xpReason: item.xpReason || (item.status === 'completed' ? 'qualified' : 'below_min_duration'),
-        }));
-      }
-      return [];
-    } catch {
-      return [];
-    }
+    const { data } = await axiosClient.get<ApiResponse<ApiFocusHistory>>('/activity/focus/history', {
+      params: { limit },
+    });
+    return data.data.sessions.map((item) => ({
+      id: item.id,
+      mode: item.mode,
+      // A session reaped as stale keeps only its tracked milliseconds.
+      durationMinutes: item.actualDurationMinutes || Math.round(item.activeDurationMs / 60000),
+      startedAt: item.startedAt,
+      status: item.status,
+      xpAwarded: item.xpAwarded,
+      xpReason: item.xpReason ?? undefined,
+    }));
   },
 
   async getTodaySummary(): Promise<FocusSummary> {
-    try {
-      const { data } = await axiosClient.get<ApiResponse<any>>('/activity/focus/summary', {
-        params: { days: 1 },
-      });
-      return {
-        todayMinutes: data?.data?.todayMinutes ?? 45,
-        targetMinutes: data?.data?.targetMinutes ?? 120,
-        completedSessionsToday: data?.data?.completedSessionsToday ?? 2,
-        currentStreak: data?.data?.currentStreak ?? 4,
-      };
-    } catch {
-      return {
-        todayMinutes: 45,
-        targetMinutes: 120,
-        completedSessionsToday: 2,
-        currentStreak: 4,
-      };
-    }
+    const { data } = await axiosClient.get<ApiResponse<ApiFocusSummary>>('/activity/focus/summary', {
+      params: { days: 1 },
+    });
+    return {
+      todayMinutes: data.data.today.totalDurationMinutes,
+      completedSessionsToday: data.data.today.completedSessions,
+      currentStreak: data.data.currentStreak,
+    };
   },
 };

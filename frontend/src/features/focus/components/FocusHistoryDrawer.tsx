@@ -8,6 +8,16 @@ interface FocusHistoryDrawerProps {
   onClose: () => void;
 }
 
+// The reasons the server stores with a completed session (focusXpDecision.ts).
+const XP_REASON_LABELS: Record<string, string> = {
+  qualified: '✓ Qualified for focus XP',
+  below_min_duration: '⚠ Planned for under 25 minutes',
+  below_completion_threshold: '⚠ Under 90% of the planned time was active',
+  below_heartbeat_coverage: '⚠ Not enough activity check-ins',
+  daily_cap_reached: '★ Daily XP cap attained',
+  anti_gaming: '⚠ XP withheld by activity checks',
+};
+
 export const FocusHistoryDrawer: React.FC<FocusHistoryDrawerProps> = ({
   isOpen,
   onClose,
@@ -15,15 +25,26 @@ export const FocusHistoryDrawer: React.FC<FocusHistoryDrawerProps> = ({
   const [history, setHistory] = useState<FocusHistoryItem[]>([]);
   const [filter, setFilter] = useState<'all' | 'completed'>('all');
   const [loading, setLoading] = useState<boolean>(true);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!isOpen) return;
+    let current = true;
     setLoading(true);
-    focusService.getHistory(30).then((items) => {
-      setHistory(items ?? []);
-      setLoading(false);
-    });
-  }, [isOpen]);
+    setFailed(false);
+    focusService.getHistory(30)
+      .then((items) => {
+        if (current) setHistory(items);
+      })
+      .catch(() => {
+        if (!current) return;
+        setHistory([]);
+        setFailed(true);
+      })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [isOpen, attempt]);
 
   const filtered = history.filter((item) =>
     filter === 'all' ? true : item.status === 'completed'
@@ -125,6 +146,13 @@ export const FocusHistoryDrawer: React.FC<FocusHistoryDrawerProps> = ({
                 <div className="flex items-center justify-center py-20 text-zinc-400 text-sm">
                   Loading history…
                 </div>
+              ) : failed ? (
+                <div role="alert" className="flex flex-col items-center justify-center gap-3 py-20 text-center text-zinc-400">
+                  <p className="text-sm font-medium">Could not load your focus history.</p>
+                  <button type="button" onClick={() => setAttempt((n) => n + 1)} className="text-xs font-semibold underline">
+                    Retry
+                  </button>
+                </div>
               ) : filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 text-center text-zinc-400">
                   <Clock className="w-10 h-10 stroke-1 mb-2 text-zinc-300 dark:text-zinc-600" />
@@ -152,12 +180,14 @@ export const FocusHistoryDrawer: React.FC<FocusHistoryDrawerProps> = ({
                             {item.status}
                           </span>
                         </div>
-                        <span className={`text-xs font-bold flex items-center gap-1 ${
-                          item.xpAwarded > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400'
-                        }`}>
-                          <Award className="w-3.5 h-3.5" />
-                          +{item.xpAwarded} XP
-                        </span>
+                        {item.xpAwarded !== null && (
+                          <span className={`text-xs font-bold flex items-center gap-1 ${
+                            item.xpAwarded > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400'
+                          }`}>
+                            <Award className="w-3.5 h-3.5" />
+                            +{item.xpAwarded} XP
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
@@ -173,13 +203,7 @@ export const FocusHistoryDrawer: React.FC<FocusHistoryDrawerProps> = ({
 
                       {item.xpReason && (
                         <p className="text-[11px] text-zinc-400 dark:text-zinc-500 border-t border-zinc-100 dark:border-zinc-800/60 pt-2 mt-1">
-                          {item.xpReason === 'qualified'
-                            ? '✓ Full target duration reached'
-                            : item.xpReason === 'below_min_duration'
-                            ? '⚠ Under 10-minute threshold'
-                            : item.xpReason === 'daily_cap_reached'
-                            ? '★ Daily XP cap attained'
-                            : item.xpReason}
+                          {XP_REASON_LABELS[item.xpReason] ?? item.xpReason}
                         </p>
                       )}
                     </div>

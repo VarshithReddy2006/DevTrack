@@ -121,7 +121,7 @@ const FocusPage: React.FC = () => {
 
           {/* Today's Focus Overview & History Quick Launcher */}
           <framerMotion.section variants={itemVariants} className="w-full">
-            <FocusTodayCompact onOpenHistory={() => setIsHistoryDrawerOpen(true)} />
+            <FocusTodayCompact onOpenHistory={() => setIsHistoryDrawerOpen(true)} refreshKey={completedResult} />
           </framerMotion.section>
 
           {/* Execution Core: RIE + Focus Engine + Mission Control grouped tighter */}

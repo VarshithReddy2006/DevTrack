@@ -85,7 +85,6 @@ describe('FocusTodayCompact', () => {
         onOpenHistory={onOpenHistory}
         summary={{
           todayMinutes: 75,
-          targetMinutes: 120,
           completedSessionsToday: 3,
           currentStreak: 5,
         }}
@@ -94,16 +93,69 @@ describe('FocusTodayCompact', () => {
 
     expect(screen.getByText("Today's Focus")).toBeDefined();
     expect(screen.getByText('75')).toBeDefined();
-    expect(screen.getByText('Target: 120m')).toBeDefined();
     expect(screen.getByText('3 sprints completed')).toBeDefined();
     expect(screen.getByText('5 day streak')).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: /Focus History/i }));
     expect(onOpenHistory).toHaveBeenCalledOnce();
   });
+
+  it('shows no numbers before the summary arrives, then loads it again when asked to refresh', async () => {
+    const load = vi.spyOn(focusService, 'getTodaySummary')
+      .mockResolvedValueOnce({ todayMinutes: 0, completedSessionsToday: 0, currentStreak: 0 })
+      .mockResolvedValueOnce({ todayMinutes: 25, completedSessionsToday: 1, currentStreak: 1 });
+
+    const view = render(<FocusTodayCompact onOpenHistory={vi.fn()} />);
+
+    expect(screen.getByRole('status').textContent).toContain('Loading');
+    expect(screen.queryByText(/sprints completed/)).toBeNull();
+    expect(await screen.findByText('0 sprints completed')).toBeDefined();
+
+    view.rerender(<FocusTodayCompact onOpenHistory={vi.fn()} refreshKey="session-ended" />);
+    expect(await screen.findByText('1 sprints completed')).toBeDefined();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows an error with a retry when the summary request fails', async () => {
+    vi.spyOn(focusService, 'getTodaySummary')
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ todayMinutes: 40, completedSessionsToday: 1, currentStreak: 2 });
+
+    render(<FocusTodayCompact onOpenHistory={vi.fn()} />);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load');
+    expect(screen.queryByText(/day streak/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('40')).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });
 
 describe('FocusHistoryDrawer', () => {
+  it('shows an error with a retry, not the empty state, when history cannot be loaded', async () => {
+    vi.spyOn(focusService, 'getHistory').mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([]);
+
+    render(<FocusHistoryDrawer isOpen={true} onClose={vi.fn()} />);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load');
+    expect(screen.queryByText('No sessions recorded yet')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('No sessions recorded yet')).toBeDefined();
+  });
+
+  it('hides the XP badge when there is no XP decision and explains stored reasons', async () => {
+    const base = { mode: 'deep_work', durationMinutes: 30, startedAt: '2026-01-01T12:00:00.000Z' };
+    vi.spyOn(focusService, 'getHistory').mockResolvedValue([
+      { ...base, id: 'a', status: 'abandoned', xpAwarded: null },
+      { ...base, id: 'b', status: 'completed', xpAwarded: 0, xpReason: 'below_completion_threshold' },
+    ]);
+
+    render(<FocusHistoryDrawer isOpen={true} onClose={vi.fn()} />);
+
+    expect(await screen.findByText('⚠ Under 90% of the planned time was active')).toBeDefined();
+    expect(screen.getAllByText(/XP$/).map(node => node.textContent)).toEqual(['+0 XP']);
+  });
+
   it('shows the empty state without fabricated sessions when history is empty', async () => {
     vi.spyOn(focusService, 'getHistory').mockResolvedValue([]);
 
