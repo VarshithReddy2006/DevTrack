@@ -120,7 +120,8 @@ describe('Project GitHub sync route', () => {
 
     expect(result.status).toBe(200);
     expect(result.body.success).toBe(true);
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(11);
+    expect(calls.filter(url => url.endsWith('/readme'))).toHaveLength(1);
     expect(await VerifiedProject.findOne({ userId: ownerId, githubRepoId: '42' }).lean()).toMatchObject({
       projectId: new Types.ObjectId(projectId),
       verification: { status: 'pending' },
