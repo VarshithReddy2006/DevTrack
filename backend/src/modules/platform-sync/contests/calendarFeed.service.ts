@@ -12,9 +12,13 @@ type CalendarContest = Pick<
   'platform' | 'externalId' | 'contestName' | 'startTime' | 'endTime' | 'url'
 >;
 
+// Control characters that RFC 5545 does not allow in a content line (tab and line breaks are handled apart).
+const FORBIDDEN_CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
 /** Escape a TEXT value per RFC 5545 section 3.3.11. */
 export function escapeText(value: string): string {
   return value
+    .replace(FORBIDDEN_CONTROLS, '')
     .replace(/\\/g, '\\\\')
     .replace(/;/g, '\\;')
     .replace(/,/g, '\\,')
@@ -48,6 +52,38 @@ export function formatIcsDate(date: Date): string {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
 
+// An ISO date-time with no zone designator, which `new Date` would read in the server's local time.
+const ZONELESS_DATE_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+/**
+ * Reads a contest timestamp (a Date, or a string once it has been through the Redis cache).
+ * Zoneless strings are taken as UTC. Returns null for anything missing, invalid or outside
+ * the four-digit years that RFC 5545 can express.
+ */
+export function parseContestDate(value: unknown): Date | null {
+  let date: Date;
+  if (value instanceof Date) {
+    date = value;
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    date = new Date(ZONELESS_DATE_TIME.test(text) ? `${text.replace(' ', 'T')}Z` : text);
+  } else {
+    return null;
+  }
+  const year = date.getUTCFullYear();
+  return year >= 1 && year <= 9999 ? date : null;
+}
+
+/** The URL in its normalised http(s) form, or null. It can never carry a line break into the feed. */
+function feedUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildIcs(contests: CalendarContest[], now: Date = new Date(), calendarName = 'DevTrack Contests'): string {
   const lines: string[] = [
     'BEGIN:VCALENDAR',
@@ -58,20 +94,33 @@ export function buildIcs(contests: CalendarContest[], now: Date = new Date(), ca
     `X-WR-CALNAME:${escapeText(calendarName)}`,
   ];
 
+  const seen = new Set<string>();
+
   for (const c of contests) {
-    const start = new Date(c.startTime);
-    const end = new Date(c.endTime);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
+    const start = parseContestDate(c.startTime);
+    if (!start) continue;
+
+    // A repeated UID shows up as a ghost event in calendar apps, so the first copy wins.
+    const uid = escapeText(`${c.platform}-${c.externalId}@devtrack`);
+    if (seen.has(uid)) continue;
+    seen.add(uid);
+
+    // DTEND is optional but must be later than DTSTART, so leave it out when the end is unknown.
+    const end = parseContestDate(c.endTime);
+    const dtstart = formatIcsDate(start);
+    const dtend = end ? formatIcsDate(end) : null;
+    const url = feedUrl(c.url);
+    const description = `${c.contestName} on ${c.platform}.${url ? ` ${url}` : ''}`;
 
     lines.push(
       'BEGIN:VEVENT',
-      `UID:${c.platform}-${c.externalId}@devtrack`,
+      `UID:${uid}`,
       `DTSTAMP:${formatIcsDate(now)}`,
-      `DTSTART:${formatIcsDate(start)}`,
-      `DTEND:${formatIcsDate(end)}`,
+      `DTSTART:${dtstart}`,
+      ...(dtend && dtend > dtstart ? [`DTEND:${dtend}`] : []),
       `SUMMARY:${escapeText(`[${c.platform}] ${c.contestName}`)}`,
-      `DESCRIPTION:${escapeText(`${c.contestName} on ${c.platform}. ${c.url}`)}`,
-      `URL:${c.url}`,
+      `DESCRIPTION:${escapeText(description)}`,
+      ...(url ? [`URL:${url}`] : []),
       'BEGIN:VALARM',
       'ACTION:DISPLAY',
       `DESCRIPTION:${escapeText(`${c.contestName} starts in 30 minutes`)}`,
