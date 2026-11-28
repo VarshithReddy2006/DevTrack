@@ -35,34 +35,41 @@ export interface SemanticCacheOptions {
   maxMemoryEntries?: number;
 }
 
+const VECTOR_INDEX_NAME = 'idx:semantic_cache';
+const VECTOR_INDEX_PREFIX = 'devtrack:ai:sem_cache_idx:';
+const VECTOR_DIMENSIONS = 768;
+
 /**
  * Calculates cosine similarity: dot(A, B) / (norm(A) * norm(B))
+ * Returns 0 for mismatched dimensions or non-finite values.
  */
 export function calculateCosineSimilarity(vecA: number[], vecB: number[]): number {
-  if (!vecA || !vecB || vecA.length === 0 || vecB.length === 0) {
+  if (!vecA || !vecB || vecA.length === 0 || vecA.length !== vecB.length) {
     return 0;
   }
-  const minLen = Math.min(vecA.length, vecB.length);
   let dotProduct = 0;
   let normA = 0;
   let normB = 0;
 
-  for (let i = 0; i < minLen; i++) {
+  for (let i = 0; i < vecA.length; i++) {
+    if (!Number.isFinite(vecA[i]) || !Number.isFinite(vecB[i])) return 0;
     dotProduct += vecA[i] * vecB[i];
     normA += vecA[i] * vecA[i];
     normB += vecB[i] * vecB[i];
   }
 
-  // Account for any remaining dimensions in vecA or vecB
-  for (let i = minLen; i < vecA.length; i++) {
-    normA += vecA[i] * vecA[i];
-  }
-  for (let i = minLen; i < vecB.length; i++) {
-    normB += vecB[i] * vecB[i];
-  }
-
   if (normA === 0 || normB === 0) return 0;
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  const similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  // Very large values can overflow to Infinity above
+  return Number.isFinite(similarity) ? similarity : 0;
+}
+
+/**
+ * Backslash-escapes ASCII punctuation and whitespace so RediSearch reads the
+ * value literally inside a TAG {...} clause.
+ */
+function escapeTagValue(value: string): string {
+  return value.replace(/[ \t\n\r\f\v!-/:-@[-^`{-~]/g, '\\$&');
 }
 
 export class SemanticCacheService {
@@ -345,7 +352,8 @@ export class SemanticCacheService {
   }
 
   /**
-   * Stores entry in Redis (both HASH/JSON for search and scoped list/keys).
+   * Stores entry in Redis: scoped string keys for the linear scan, plus a HASH
+   * document for the vector index when RediSearch is loaded.
    */
   private async storeInRedis(entry: SemanticCacheEntry): Promise<void> {
     try {
@@ -360,9 +368,65 @@ export class SemanticCacheService {
       await redis.lpush(scopeListKey, entry.id);
       await redis.ltrim(scopeListKey, 0, 199); // Keep latest 200 items per scope
       await redis.expire(scopeListKey, entry.ttlSeconds);
+
+      if (this.isIndexableEmbedding(entry.embedding) && (await this.isVectorSearchAvailable())) {
+        await this.ensureRedisIndex();
+        await this.storeVectorDocument(entry, payload);
+      }
     } catch (err) {
       logger.warn('[SemanticCache] Redis store error', { error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /**
+   * Writes the HASH document that the vector index picks up by key prefix.
+   */
+  private async storeVectorDocument(entry: SemanticCacheEntry, payload: string): Promise<void> {
+    const key = `${VECTOR_INDEX_PREFIX}${entry.id}`;
+    // MULTI so a document is never left behind without a TTL
+    const results = await getRedisClient()
+      .multi()
+      .hset(key, {
+        topicScope: entry.topicScope,
+        vector: Buffer.from(new Float32Array(entry.embedding).buffer),
+        payload,
+      })
+      .expire(key, entry.ttlSeconds)
+      .exec();
+
+    const failure = results?.find(([err]) => err)?.[0];
+    if (failure) throw failure;
+  }
+
+  /**
+   * The index has a fixed dimension, and a zero vector has no cosine distance.
+   */
+  private isIndexableEmbedding(embedding: number[]): boolean {
+    return (
+      embedding.length === VECTOR_DIMENSIONS &&
+      embedding.every((value) => Number.isFinite(value)) &&
+      embedding.some((value) => value !== 0)
+    );
+  }
+
+  /**
+   * Checks once whether the RediSearch module is loaded.
+   */
+  private async isVectorSearchAvailable(): Promise<boolean> {
+    if (this.redisVectorSearchAvailable === null) {
+      try {
+        const modules = await getRedisClient().call('MODULE', 'LIST') as unknown[];
+        this.redisVectorSearchAvailable = Array.isArray(modules) && modules.some((m: unknown) => {
+          if (Array.isArray(m)) {
+            return m.includes('search');
+          }
+          return false;
+        });
+      } catch {
+        this.redisVectorSearchAvailable = false;
+      }
+    }
+    return this.redisVectorSearchAvailable;
   }
 
   /**
@@ -376,30 +440,19 @@ export class SemanticCacheService {
     try {
       const redis = getRedisClient();
 
-      // Check if RediSearch module is available
-      if (this.redisVectorSearchAvailable === null) {
-        try {
-          const modules = await redis.call('MODULE', 'LIST') as unknown[];
-          this.redisVectorSearchAvailable = Array.isArray(modules) && modules.some((m: unknown) => {
-            if (Array.isArray(m)) {
-              return m.includes('search');
-            }
-            return false;
-          });
-        } catch {
-          this.redisVectorSearchAvailable = false;
-        }
-      }
-
       // If RediSearch is available, execute FT.SEARCH vector query
-      if (this.redisVectorSearchAvailable) {
+      if (await this.isVectorSearchAvailable()) {
         try {
           await this.ensureRedisIndex();
           const floatBuffer = Buffer.from(new Float32Array(queryVector).buffer);
           const rawResult = await redis.call(
             'FT.SEARCH',
-            'idx:semantic_cache',
-            `(@topicScope:{${topicScope}})=>[KNN 5 @vector $BLOB AS score]`,
+            VECTOR_INDEX_NAME,
+            `(@topicScope:{${escapeTagValue(topicScope)}})=>[KNN 5 @vector $BLOB AS score]`,
+            'RETURN',
+            '2',
+            'score',
+            'payload',
             'PARAMS',
             '2',
             'BLOB',
@@ -424,7 +477,10 @@ export class SemanticCacheService {
                 const similarity = 1 - score; // Cosine distance to similarity
                 if (similarity >= this.similarityThreshold && payloadStr) {
                   const entry = JSON.parse(payloadStr) as SemanticCacheEntry;
-                  return { hit: true, similarity, entry };
+                  // TAG matching ignores case and splits on commas, so confirm the exact scope
+                  if (entry.topicScope === topicScope) {
+                    return { hit: true, similarity, entry };
+                  }
                 }
               }
             }
@@ -491,12 +547,12 @@ export class SemanticCacheService {
       const redis = getRedisClient();
       await redis.call(
         'FT.CREATE',
-        'idx:semantic_cache',
+        VECTOR_INDEX_NAME,
         'ON',
         'HASH',
         'PREFIX',
         '1',
-        'devtrack:ai:sem_cache_idx:',
+        VECTOR_INDEX_PREFIX,
         'SCHEMA',
         'topicScope',
         'TAG',
@@ -507,7 +563,7 @@ export class SemanticCacheService {
         'TYPE',
         'FLOAT32',
         'DIM',
-        '768',
+        String(VECTOR_DIMENSIONS),
         'DISTANCE_METRIC',
         'COSINE'
       );
