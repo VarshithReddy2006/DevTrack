@@ -533,7 +533,7 @@ export async function getAchievements(userId: string): Promise<ApiAchievementsRe
   const totalProblems = platformStats.reduce((sum: number, p: ApiPlatformStats) => sum + p.totalSolved, 0);
   const totalHard = platformStats.reduce((sum: number, p: ApiPlatformStats) => sum + p.hardSolved, 0);
   const totalContests = platformStats.reduce((sum: number, p: ApiPlatformStats) => sum + p.totalContests, 0);
-  const currentStreak = dashboardStats.currentStreak;
+  const longestStreak = dashboardStats.longestStreak;
   const totalProjects = dashboardStats.totalProjects;
 
   // Calculate achievements based on stats
@@ -544,8 +544,8 @@ export async function getAchievements(userId: string): Promise<ApiAchievementsRe
 
     switch (def.category) {
       case 'streak':
-        progress = Math.min(currentStreak, target);
-        isUnlocked = currentStreak >= target;
+        progress = Math.min(longestStreak, target);
+        isUnlocked = longestStreak >= target;
         break;
       case 'problems':
         if (def.id.includes('hard')) {
@@ -573,7 +573,8 @@ export async function getAchievements(userId: string): Promise<ApiAchievementsRe
       icon: def.icon,
       title: def.title,
       description: def.description,
-      unlockedAt: isUnlocked ? new Date().toISOString() : null,
+      // Unlock times are not recorded here, so don't report the request time as one.
+      unlockedAt: null,
       progress,
       target,
       isUnlocked,
