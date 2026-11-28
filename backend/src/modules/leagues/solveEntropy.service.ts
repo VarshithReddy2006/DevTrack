@@ -57,17 +57,27 @@ export interface SolveEntropyResult {
   audit?: { reason: 'leaderboard_sniping_detected'; details: Record<string, number> };
 }
 
-/** H = -sum(p_i log2 p_i) / log2(n). Returns 0 for no data or a single bucket. */
+/**
+ * H = -sum(p_i log2 p_i) / log2(n), always within [0, 1].
+ * Non-finite and negative values count as an empty bucket. Returns 0 when there is no XP
+ * or only one bucket holds any (n counts every bucket, empty ones included).
+ */
 export function normalizedEntropy(values: number[]): number {
-  const total = values.reduce((a, b) => a + b, 0);
-  if (total <= 0 || values.length < 2) return 0;
+  const clean = values.map((v) => (Number.isFinite(v) && v > 0 ? v : 0));
+  const positive = clean.filter((v) => v > 0);
+  if (clean.length < 2 || positive.length < 2) return 0;
+  // An even spread is exactly 1; the summed form can miss it by a rounding error.
+  if (positive.length === clean.length && positive.every((v) => v === positive[0])) return 1;
+  // Scale by the largest value first so the total cannot overflow to Infinity.
+  const max = positive.reduce((a, b) => Math.max(a, b), 0);
+  const scaled = positive.map((v) => v / max);
+  const total = scaled.reduce((a, b) => a + b, 0);
   let h = 0;
-  for (const v of values) {
-    if (v <= 0) continue;
+  for (const v of scaled) {
     const p = v / total;
-    h -= p * Math.log2(p);
+    if (p > 0) h -= p * Math.log2(p);
   }
-  return h / Math.log2(values.length);
+  return Math.max(0, Math.min(1, h / Math.log2(clean.length)));
 }
 
 export function analyzeSolveEntropy(
