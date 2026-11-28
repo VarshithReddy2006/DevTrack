@@ -17,6 +17,9 @@ function mockRepository() {
     if (url.pathname.endsWith('/commits')) {
       return Response.json([{ author: { id: 7 }, commit: { committer: { date: '2026-10-01T12:00:00Z' } } }]);
     }
+    if (url.pathname.endsWith('/readme')) {
+      return Response.json({ content: Buffer.from('# Example project').toString('base64') });
+    }
     if (url.pathname.endsWith('/languages')) return Response.json({ TypeScript: 1000 });
     if (url.pathname.endsWith('/git/trees/main')) {
       return Response.json({ tree: [{ path: 'test/example.test.ts', type: 'blob' }] });
@@ -58,7 +61,9 @@ describe('verified project ingestion', () => {
       githubRepoId: '42', projectId: project._id, repoFullName: 'example/project',
       verification: { status: 'verified', verifiedAt: expect.any(Date) },
       metrics: { userCommitCount: 1, totalCommitCount: 1 },
-      provenance: { contributorId: '7', hasTests: true, discoveredBySync: true },
+      provenance: {
+        contributorId: '7', hasTests: true, discoveredBySync: true, readmeContent: '# Example project',
+      },
     });
   });
 

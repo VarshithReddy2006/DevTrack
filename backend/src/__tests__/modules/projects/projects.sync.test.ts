@@ -82,6 +82,9 @@ describe('Project GitHub sync route', () => {
         id: 42, name: 'project', full_name: 'example/project', size: options.emptyRepository ? 0 : 10,
         created_at: '2025-10-01T00:00:00Z', fork: false, archived: false,
       });
+      if (parsed.pathname.endsWith('/readme')) {
+        return Response.json({ content: Buffer.from('# Example project').toString('base64') });
+      }
       if (parsed.pathname.endsWith('/languages')) return Response.json({ TypeScript: 1024 });
       if (parsed.pathname.endsWith('/git/trees/main')) {
         return Response.json({ tree: [
@@ -120,7 +123,8 @@ describe('Project GitHub sync route', () => {
 
     expect(result.status).toBe(200);
     expect(result.body.success).toBe(true);
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(11);
+    expect(calls.filter(url => url.endsWith('/readme'))).toHaveLength(1);
     expect(await VerifiedProject.findOne({ userId: ownerId, githubRepoId: '42' }).lean()).toMatchObject({
       projectId: new Types.ObjectId(projectId),
       verification: { status: 'pending' },

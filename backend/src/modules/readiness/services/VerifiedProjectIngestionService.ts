@@ -126,6 +126,8 @@ export const VerifiedProjectIngestionService = {
       'provenance.files': evidence.files,
       'provenance.hasTests': evidence.hasTests,
       'provenance.hasCI': evidence.hasCI,
+      ...(evidence.readmeContent !== undefined ? { 'provenance.readmeContent': evidence.readmeContent } : {}),
+      ...(evidence.commitMessages ? { 'provenance.commitMessages': evidence.commitMessages } : {}),
       ...(link.projectId ? { projectId: link.projectId, 'provenance.linkedRepoUrl': link.repoUrl } : {}),
       ...(link.discoveredBySync ? { 'provenance.discoveredBySync': true } : {}),
     };

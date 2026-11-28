@@ -55,6 +55,8 @@ export interface IVerifiedProject extends Document {
     files: string[];
     hasTests: boolean;
     hasCI: boolean;
+    readmeContent?: string;
+    commitMessages?: string[];
     linkedRepoUrl?: string;
     discoveredBySync?: boolean;
   };
@@ -123,6 +125,9 @@ const VerifiedProjectSchema = new Schema<IVerifiedProject>(
         files: [String],
         hasTests: Boolean,
         hasCI: Boolean,
+        // No defaults: absent means "not collected", which is different from empty.
+        readmeContent: String,
+        commitMessages: { type: [String], default: undefined },
         linkedRepoUrl: String,
         discoveredBySync: Boolean,
       }, { _id: false }),

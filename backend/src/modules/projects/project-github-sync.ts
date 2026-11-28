@@ -127,6 +127,33 @@ export async function fetchGitHubProjectMetrics(repository: GitHubRepository): P
   };
 }
 
+// The README quality score stops growing at 1500 characters, so a little more is enough.
+const README_MAX_CHARS = 2000;
+const COMMIT_MESSAGE_SAMPLE = 20;
+
+/** README text, '' when the repository has none, undefined when the response has no content. */
+async function fetchReadmeContent(base: string): Promise<string | undefined> {
+  const response = await requestGitHub(`${base}/readme`);
+  if (response.status === 404) return '';
+  if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
+  const data: unknown = await response.json();
+  if (!isRecord(data) || typeof data.content !== 'string') return undefined;
+  return Buffer.from(data.content, 'base64').toString('utf8').slice(0, README_MAX_CHARS);
+}
+
+/** Subject lines of the contributor's most recent commits. */
+async function fetchCommitSubjects(path: string): Promise<string[]> {
+  const response = await requestGitHub(`${path}&per_page=${COMMIT_MESSAGE_SAMPLE}`);
+  if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
+  const items: unknown = await response.json();
+  if (!Array.isArray(items)) throw new Error('Invalid GitHub list response');
+  return items.flatMap(item => {
+    const commit = isRecord(item) ? item.commit : null;
+    return isRecord(commit) && typeof commit.message === 'string'
+      ? [commit.message.split('\n')[0].slice(0, 200)] : [];
+  });
+}
+
 export async function fetchGitHubRepositoryEvidence(repository: GitHubRepository, contributor?: {
   id: string;
   username: string;
@@ -151,18 +178,23 @@ export async function fetchGitHubRepositoryEvidence(repository: GitHubRepository
   const createdAt = Date.parse(data.created_at);
   if (!Number.isFinite(createdAt)) throw new Error('Invalid GitHub repository creation date');
   const branch = encodeURIComponent(data.default_branch);
-  const [commits, contributions, languages, tree] = await Promise.all([
+  const contributorCommits = contributor
+    ? `${base}/commits?sha=${branch}&author=${encodeURIComponent(contributor.username)}`
+    : null;
+  const [commits, contributions, languages, tree, readmeContent] = await Promise.all([
     listCount(`${base}/commits?sha=${branch}`, true),
-    contributor
-      ? listCount(`${base}/commits?sha=${branch}&author=${encodeURIComponent(contributor.username)}`, true)
-      : null,
+    contributorCommits ? listCount(contributorCommits, true) : null,
     json(`${base}/languages`),
     count(data.size) ? json(`${base}/git/trees/${branch}?recursive=1`) : null,
+    count(data.size) ? fetchReadmeContent(base) : '',
   ]);
   const first = contributions?.first;
   const matchedContributor = Boolean(contributor && isRecord(data.owner)
     && String(data.owner.id) === contributor.id && isRecord(first) && isRecord(first.author)
     && String(first.author.id) === contributor.id);
+  const commitMessages = matchedContributor && contributorCommits
+    ? await fetchCommitSubjects(contributorCommits)
+    : undefined;
   const commit = isRecord(commits.first) ? commits.first.commit : null;
   const lastCommitAt = isRecord(commit) && isRecord(commit.committer)
     && typeof commit.committer.date === 'string' ? new Date(commit.committer.date) : null;
@@ -194,5 +226,7 @@ export async function fetchGitHubRepositoryEvidence(repository: GitHubRepository
     files: paths.filter(path => /(^|\/)(dockerfile|docker-compose|readme|\.github\/workflows\/|\.gitlab-ci)/i.test(path)).slice(0, 100),
     hasTests: paths.some(path => /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.[^/]+$/i.test(path)),
     hasCI: paths.some(path => /^\.github\/workflows\/.+\.ya?ml$|^\.gitlab-ci\.yml$/i.test(path)),
+    readmeContent,
+    commitMessages,
   };
 }
