@@ -7,7 +7,7 @@
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Home, Code, FolderKanban, User } from 'lucide-react';
+import { Home, FolderKanban, User } from 'lucide-react';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { safeAreas } from '../../design-system/layout';
 import { prefersReducedMotion } from '../../design-system/motion';
@@ -28,7 +28,6 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { path: '/dashboard', label: 'Dashboard', icon: Home },
-  { path: '/dsa', label: 'DSA', icon: Code },
   { path: '/projects', label: 'Projects', icon: FolderKanban },
   { path: '/profile', label: 'Profile', icon: User },
 ];

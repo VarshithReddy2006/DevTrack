@@ -23,12 +23,14 @@ import {
 } from 'lucide-react';
 import { useReadinessDomain } from '../../features/readiness/hooks/useReadinessData';
 import { WorkspaceHeader } from '../../features/readiness/components/WorkspaceHeader';
-import { TrustConfidenceLayer } from '../../features/readiness/components/TrustConfidenceLayer';
 import { RoadmapMilestoneTimeline } from '../../features/readiness/components/RoadmapMilestoneTimeline';
+import { CrashCourseWorkspace } from '../../features/readiness/components/CrashCourseWorkspace';
 import type { RoadmapTaskToggle } from '../../features/readiness/components/roadmapTimeline.types';
 import {
   mapMilestoneRoadmapToTimeline,
   readinessService,
+  type CrashCoursePlan,
+  type CrashCourseWindow,
   type LearningResource,
   type MilestoneRoadmapApiResponse,
   type ReadinessRoadmapDomainResponse,
@@ -141,7 +143,7 @@ interface CareerDiscoveryInitialValues {
 
 const CareerDiscoveryForm: React.FC<{
   initialValues?: CareerDiscoveryInitialValues;
-  onComplete: () => void;
+  onComplete: (result?: { paceMode?: 'standard' | 'crash'; crashWindow?: CrashCourseWindow }) => void;
   onCancel?: () => void;
 }> = ({ initialValues, onComplete, onCancel }) => {
   const [trackMode, setTrackMode] = useState<'role' | 'jobTarget'>('role');
@@ -151,6 +153,8 @@ const CareerDiscoveryForm: React.FC<{
   const [experienceLevel, setExperienceLevel] = useState(initialValues?.experienceLevel || 'Beginner');
   const [weeklyHours, setWeeklyHours] = useState<number>(initialValues?.weeklyHours || 10);
   const [targetDeadlineWeeks, setTargetDeadlineWeeks] = useState<number>(initialValues?.targetDeadlineWeeks || 12);
+  const [paceMode, setPaceMode] = useState<'standard' | 'crash'>('standard');
+  const [crashWindow, setCrashWindow] = useState<CrashCourseWindow>('7d');
   const [knownSkills, setKnownSkills] = useState<string[]>(initialValues?.knownSkills ?? []);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -190,7 +194,7 @@ const CareerDiscoveryForm: React.FC<{
         goal,
         experienceLevel,
         weeklyHours,
-        targetDeadlineWeeks,
+        targetDeadlineWeeks: paceMode === 'crash' ? 2 : targetDeadlineWeeks,
         knownSkills: knownSkills.length > 0 ? knownSkills : undefined,
         jobTargetId: selectedTarget?.id,
       });
@@ -198,9 +202,9 @@ const CareerDiscoveryForm: React.FC<{
         analyticsService.trackEvent('career_discovery_completed', {
           targetRole: effectiveRole,
           weeklyHours,
-          targetDeadlineWeeks,
+          targetDeadlineWeeks: paceMode === 'crash' ? 2 : targetDeadlineWeeks,
         });
-        onComplete();
+        onComplete({ paceMode, crashWindow });
       } else {
         setSubmitError('Failed to generate career roadmap. Please try again.');
       }
@@ -344,24 +348,72 @@ const CareerDiscoveryForm: React.FC<{
           </div>
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Target Timeline</span>
-          <div className="grid grid-cols-4 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
-            {[4, 8, 12, 20].map((wks) => (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Pace Mode & Timeline</span>
+            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
               <button
-                key={wks}
                 type="button"
-                onClick={() => setTargetDeadlineWeeks(wks)}
-                className={`py-2 px-3 rounded-lg text-xs font-semibold transition-colors tabular-nums whitespace-nowrap ${
-                  targetDeadlineWeeks === wks
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                onClick={() => setPaceMode('standard')}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  paceMode === 'standard' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {wks} wks
+                Standard Roadmap
               </button>
-            ))}
+              <button
+                type="button"
+                onClick={() => setPaceMode('crash')}
+                className={`inline-flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  paceMode === 'crash' ? 'bg-amber-500 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Zap size={11} />
+                Crash Course Blitz
+              </button>
+            </div>
           </div>
+          {paceMode === 'standard' ? (
+            <div className="grid grid-cols-4 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
+              {[4, 8, 12, 20].map((wks) => (
+                <button
+                  key={wks}
+                  type="button"
+                  onClick={() => setTargetDeadlineWeeks(wks)}
+                  className={`py-2 px-3 rounded-lg text-xs font-semibold transition-colors tabular-nums whitespace-nowrap cursor-pointer ${
+                    targetDeadlineWeeks === wks
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {wks} wks
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2 rounded-xl border border-amber-200 bg-amber-50/70 p-1">
+              {(
+                [
+                  { id: '48h', label: '48-Hour Blitz' },
+                  { id: '7d', label: '7-Day Intensive' },
+                  { id: '14d', label: '14-Day Sprint' },
+                ] as const
+              ).map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => setCrashWindow(preset.id)}
+                  className={`py-2 px-3 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    crashWindow === preset.id
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-amber-800 hover:bg-amber-100/70'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {trackMode === 'role' && (
@@ -519,6 +571,8 @@ const RoadmapIntelligencePage: React.FC = () => {
   const { data, loading, error, refetch } = useReadinessDomain('roadmap');
 
   const [isEditing, setIsEditing] = useState(false);
+  const [paceMode, setPaceMode] = useState<'standard' | 'crash'>('standard');
+  const [crashWindow, setCrashWindow] = useState<CrashCourseWindow>('7d');
   const [togglingSkills, setTogglingSkills] = useState<Record<string, boolean>>({});
   const [selectedSkill, setSelectedSkill] = useState<string>('');
   const [skillFilter, setSkillFilter] = useState<SkillFilterTab>('all');
@@ -541,6 +595,19 @@ const RoadmapIntelligencePage: React.FC = () => {
     queryKey: ['milestoneRoadmap'],
     queryFn: ({ signal }) => readinessService.getMilestoneRoadmap({ signal }),
     enabled: !loading && !noRoleSelected,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const {
+    data: crashCoursePlan,
+    isLoading: crashCourseLoading,
+    error: crashCourseQueryError,
+    refetch: refetchCrashCourse,
+  } = useQuery<CrashCoursePlan>({
+    queryKey: ['crashCoursePlan', crashWindow],
+    queryFn: ({ signal }) => readinessService.getCrashCoursePlan(crashWindow, { signal }),
+    enabled: !loading && !noRoleSelected && paceMode === 'crash',
     staleTime: 60_000,
     retry: false,
   });
@@ -610,7 +677,11 @@ const RoadmapIntelligencePage: React.FC = () => {
           newProgress: roadmap?.roadmapProgress,
         });
       }
-      await refetch();
+      await Promise.all([
+        refetch(),
+        queryClient.invalidateQueries({ queryKey: ['milestoneRoadmap'] }),
+        queryClient.invalidateQueries({ queryKey: ['crashCoursePlan'] }),
+      ]);
     } finally {
       setTogglingSkills((prev) => ({ ...prev, [skill]: false }));
     }
@@ -641,6 +712,11 @@ const RoadmapIntelligencePage: React.FC = () => {
       change.completed
     );
     queryClient.setQueryData(['milestoneRoadmap'], updated);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['readinessDomain', 'roadmap'] }),
+      queryClient.invalidateQueries({ queryKey: ['readinessData'] }),
+      queryClient.invalidateQueries({ queryKey: ['placementRadar'] }),
+    ]);
   };
 
   const toggleResourceDone = (url: string) => {
@@ -715,11 +791,20 @@ const RoadmapIntelligencePage: React.FC = () => {
                   }
                 : undefined
             }
-            onComplete={() => {
+            onComplete={(result) => {
               setIsEditing(false);
               setSelectedSkill('');
+              if (result?.paceMode === 'crash') {
+                setPaceMode('crash');
+                if (result.crashWindow) {
+                  setCrashWindow(result.crashWindow);
+                }
+              } else {
+                setPaceMode('standard');
+              }
               void refetch();
               void queryClient.invalidateQueries({ queryKey: ['milestoneRoadmap'] });
+              void queryClient.invalidateQueries({ queryKey: ['crashCoursePlan'] });
             }}
             onCancel={noRoleSelected ? undefined : () => setIsEditing(false)}
           />
@@ -761,6 +846,16 @@ const RoadmapIntelligencePage: React.FC = () => {
   ];
 
   const completedCount = verifiedSkillsList.length + completedSelfList.length;
+  const completedLowerSet = new Set(
+    [...verifiedSkillsList, ...completedSelfList].map((skill) => skill.toLowerCase())
+  );
+  const skillsOutOfSync = Boolean(
+    milestoneRoadmap?.milestones?.some(
+      (milestone) =>
+        !milestone.completed &&
+        milestone.skills.some((skill) => completedLowerSet.has(skill.toLowerCase()))
+    )
+  );
   const filteredBoardSkills = allBoardSkills.filter((item) => {
     if (skillFilter === 'priority' && item.status !== 'priority') return false;
     if (skillFilter === 'remaining' && item.status !== 'priority' && item.status !== 'missing') return false;
@@ -804,16 +899,61 @@ const RoadmapIntelligencePage: React.FC = () => {
             icon={<MapIcon size={24} />}
             accentColor="#4f46e5"
           />
-          <button
-            type="button"
-            onClick={() => setIsEditing(true)}
-            className="mb-4 md:mb-8 px-4 py-2.5 bg-white border border-slate-200/80 hover:border-indigo-300 hover:text-indigo-600 text-slate-600 font-semibold rounded-xl text-xs inline-flex items-center gap-1.5 shadow-xs transition-colors w-fit whitespace-nowrap cursor-pointer"
-          >
-            <RefreshCcw size={14} /> Reset & Learn Something Else
-          </button>
+          <div className="mb-4 md:mb-8 flex flex-wrap items-center gap-2.5 shrink-0">
+            <div className="inline-flex rounded-xl border border-slate-200/80 bg-white p-1 shadow-xs">
+              <button
+                type="button"
+                onClick={() => setPaceMode('standard')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  paceMode === 'standard'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Full Roadmap
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaceMode('crash')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  paceMode === 'crash'
+                    ? 'bg-amber-500 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Zap size={13} />
+                Crash Course Blitz
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsEditing(true)}
+              className="px-4 py-2.5 bg-white border border-slate-200/80 hover:border-indigo-300 hover:text-indigo-600 text-slate-600 font-semibold rounded-xl text-xs inline-flex items-center gap-1.5 shadow-xs transition-colors w-fit whitespace-nowrap cursor-pointer"
+            >
+              <RefreshCcw size={14} /> Reset & Learn Something Else
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-col gap-6 mt-4 min-w-0">
+          {paceMode === 'crash' ? (
+            <CrashCourseWorkspace
+              window={crashWindow}
+              onWindowChange={setCrashWindow}
+              plan={crashCoursePlan}
+              isLoading={crashCourseLoading}
+              error={
+                crashCourseQueryError
+                  ? crashCourseQueryError instanceof Error
+                    ? crashCourseQueryError.message
+                    : 'Unable to load crash course plan.'
+                  : null
+              }
+              onRetry={() => void refetchCrashCourse()}
+              onMarkTopicRevised={(skill, revised) => handleSkillToggle(skill, revised)}
+            />
+          ) : (
+            <>
           {/* ─── Progress Overview (Hero) ─── */}
           <div className="relative overflow-hidden rounded-2xl bg-white border border-slate-200/80 p-6 md:p-8 shadow-xs">
             <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-50 rounded-full blur-[80px] -mr-20 -mt-20 opacity-80 pointer-events-none" />
@@ -920,7 +1060,7 @@ const RoadmapIntelligencePage: React.FC = () => {
                 <h3 className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Estimated Horizon</h3>
               </div>
               <div className="text-3xl font-black text-slate-900 tracking-tighter tabular-nums">
-                {roadmap.estimatedWeeksToNextMilestone}
+                {milestoneRoadmap?.targetDeadlineWeeks || roadmap.estimatedWeeksToNextMilestone}
                 <span className="text-lg font-bold text-slate-400 ml-1.5">wks</span>
               </div>
               <p className="text-xs text-slate-500 mt-2">At {roadmap.weeklyHours || 10} hrs/wk pace</p>
@@ -1134,6 +1274,22 @@ const RoadmapIntelligencePage: React.FC = () => {
               </div>
             </div>
 
+            {skillsOutOfSync && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
+                <span className="font-semibold">
+                  Skills updated — Regenerate Sprint Plan to align active milestones with your completed skills.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateMilestones()}
+                  disabled={generatingMilestones}
+                  className="rounded-lg bg-amber-600 px-3 py-1.5 font-semibold text-white hover:bg-amber-700 disabled:opacity-60 cursor-pointer"
+                >
+                  {generatingMilestones ? 'Regenerating...' : 'Regenerate Sprint Plan'}
+                </button>
+              </div>
+            )}
+
             {milestoneError && (
               <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-medium text-rose-700">
                 {milestoneError}
@@ -1187,6 +1343,7 @@ const RoadmapIntelligencePage: React.FC = () => {
                   roadmap.nextThreeSkills.slice(0, 3).map((s, idx) => {
                     const isActive = activeSkill.toLowerCase() === s.toLowerCase();
                     const stepStatus = idx === 0 ? 'Active Step' : idx === 1 ? 'Up Next' : 'Queued';
+                    const skillGain = roadmap.skillGains?.[s] ?? Math.max(4, roadmap.readinessGain - idx * 3);
                     return (
                       <button
                         key={`${s}_${idx}`}
@@ -1215,7 +1372,7 @@ const RoadmapIntelligencePage: React.FC = () => {
                         <div className="min-w-0">
                           <div className="text-sm font-bold text-slate-900 truncate">{s}</div>
                           <div className="text-[11px] font-semibold text-emerald-700 mt-1 tabular-nums">
-                            +{roadmap.readinessGain}% readiness gain
+                            +{skillGain}% readiness gain
                           </div>
                         </div>
                       </button>
@@ -1411,19 +1568,8 @@ const RoadmapIntelligencePage: React.FC = () => {
               ) : null}
             </section>
           )}
-
-          {/* ─── Trust & Confidence Strip ─── */}
-          <TrustConfidenceLayer
-            confidence={roadmap.confidence ?? 0}
-            isDegraded={(roadmap.confidence ?? 0) < 40}
-            lastSyncedAt={roadmap.lastSyncedAt ?? null}
-            providerCount={
-              verifiedSkillSources.length > 0
-                ? new Set(verifiedSkillSources.map((s) => s.source)).size
-                : 0
-            }
-            verificationCoverage={roadmap.verificationCoverage ?? roadmap.roadmapProgress ?? 0}
-          />
+            </>
+          )}
 
           <FeedbackWidget />
         </div>

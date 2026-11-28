@@ -1,8 +1,8 @@
 import type { ConnectionStatus } from '../../hooks/useSse';
 
-/** Latency bands from the issue: under 100ms is good, 100–300ms is elevated, above is poor. */
-export const GOOD_LATENCY_MS = 100;
-export const POOR_LATENCY_MS = 300;
+/** WAN-tolerant latency bands: under 400ms is healthy, 400–1200ms is elevated, above 1200ms is poor. */
+export const GOOD_LATENCY_MS = 400;
+export const POOR_LATENCY_MS = 1200;
 /** The server sends a heartbeat every 25s; 30s without one or any event counts as delayed. */
 export const HEARTBEAT_STALE_MS = 30_000;
 

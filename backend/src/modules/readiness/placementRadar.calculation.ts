@@ -11,9 +11,27 @@ export interface TopicEvidence {
   evidenceCoverage: number;
   recency: Date;
 }
+export interface SystemDesignConceptInput {
+  mastered: number;
+  total: number;
+  masteredTitles?: string[];
+  lastUpdatedAt?: Date | null;
+}
+
+export interface CoreCsConceptInput {
+  mastered: number;
+  total: number;
+  masteredTitles?: string[];
+  optionalMastered?: number;
+  optionalTotal?: number;
+  lastUpdatedAt?: Date | null;
+}
+
 export interface RadarInput {
   topics: TopicEvidence[];
   architecture: { score: number; observedAt: Date; coverage: number } | null;
+  systemDesignConcept?: SystemDesignConceptInput | null;
+  coreCsConcept?: CoreCsConceptInput | null;
   contestRatings: number[];
   contestPlatforms?: Array<{ platform: string; rating: number }>;
   revision: { reviews: number; lapses: number };
@@ -103,19 +121,78 @@ export function calculatePlacementRadar(input: RadarInput, now: Date) {
     let evidence = topics.map(
       (t) => `${t.name}: ${Math.round(t.masteryLevel)}/100`,
     );
-    if (
-      key === "architecture" &&
-      input.architecture &&
-      percent(input.architecture.score) &&
-      percent(input.architecture.coverage) &&
-      input.architecture.coverage > 0 &&
-      fresh(input.architecture.observedAt, now)
-    ) {
-      score = Math.round(input.architecture.score);
-      evidence = [
-        "Verified project architecture proxy; not a system-design interview grade",
-      ];
+    if (key === "architecture") {
+      const hasProxy = Boolean(
+        input.architecture &&
+        percent(input.architecture.score) &&
+        percent(input.architecture.coverage) &&
+        input.architecture.coverage > 0 &&
+        fresh(input.architecture.observedAt, now)
+      );
+      const sdConcept = input.systemDesignConcept;
+      const sdTimeOk =
+        !sdConcept?.lastUpdatedAt ||
+        (sdConcept.lastUpdatedAt instanceof Date &&
+          Number.isFinite(sdConcept.lastUpdatedAt.getTime()) &&
+          sdConcept.lastUpdatedAt <= now);
+      const hasSdConcepts = Boolean(
+        sdConcept &&
+        sdConcept.total > 0 &&
+        sdConcept.mastered > 0 &&
+        sdTimeOk
+      );
+
+      if (hasSdConcepts && sdConcept) {
+        const conceptScore = Math.round((sdConcept.mastered / sdConcept.total) * 100);
+        const topTitles = (sdConcept.masteredTitles ?? []).slice(0, 3);
+        if (hasProxy && input.architecture) {
+          score = Math.round(conceptScore * 0.65 + input.architecture.score * 0.35);
+          evidence = [
+            `System Design: ${sdConcept.mastered}/${sdConcept.total} concepts mastered`,
+            ...topTitles,
+            "Verified project architecture proxy",
+          ];
+        } else {
+          score = conceptScore;
+          evidence = [
+            `System Design: ${sdConcept.mastered}/${sdConcept.total} concepts mastered`,
+            ...topTitles,
+          ];
+        }
+      } else if (hasProxy && input.architecture) {
+        score = Math.round(input.architecture.score);
+        evidence = [
+          "Verified project architecture proxy; not a system-design interview grade",
+        ];
+      }
     }
+
+    if (key === "coreCs" && input.coreCsConcept) {
+      const cs = input.coreCsConcept;
+      const csTimeOk =
+        !cs.lastUpdatedAt ||
+        (cs.lastUpdatedAt instanceof Date &&
+          Number.isFinite(cs.lastUpdatedAt.getTime()) &&
+          cs.lastUpdatedAt <= now);
+      if (cs.total > 0 && cs.mastered > 0 && csTimeOk) {
+        // Strictly compute Core CS score from core track only; Distributed Systems is optional bonus.
+        const coreConceptScore = Math.round((cs.mastered / cs.total) * 100);
+        score =
+          score !== null ? Math.round((score + coreConceptScore) / 2) : coreConceptScore;
+        const topTitles = (cs.masteredTitles ?? []).slice(0, 3);
+        const bonusNote =
+          cs.optionalMastered && cs.optionalMastered > 0
+            ? [`Distributed Systems (Optional): ${cs.optionalMastered}/${cs.optionalTotal ?? cs.optionalMastered} explored`]
+            : [];
+        evidence = [
+          ...evidence,
+          `Core CS: ${cs.mastered}/${cs.total} fundamentals mastered`,
+          ...topTitles,
+          ...bonusNote,
+        ];
+      }
+    }
+
     // Current interview reports grade coding/communication, not behavioral STAR answers.
     const gap =
       key === "behavioral"
@@ -124,7 +201,11 @@ export function calculatePlacementRadar(input: RadarInput, now: Date) {
           ? "No fresh mapped evidence in the last seven days."
           : topics[0]
             ? `Lowest observed topic: ${topics[0].name}`
-            : "Review architecture trade-offs with an interviewer.";
+            : key === "coreCs" && input.coreCsConcept && input.coreCsConcept.mastered < input.coreCsConcept.total
+              ? `${input.coreCsConcept.total - input.coreCsConcept.mastered} Core CS concepts remaining in /readiness/cs-distributed.`
+              : key === "architecture" && input.systemDesignConcept && input.systemDesignConcept.mastered < input.systemDesignConcept.total
+                ? `${input.systemDesignConcept.total - input.systemDesignConcept.mastered} System Design concepts remaining in /readiness/system-design.`
+                : "Review architecture trade-offs with an interviewer.";
     return { key, label: LABELS[key], score, evidence, gap };
   });
   const priorities = [...axes]

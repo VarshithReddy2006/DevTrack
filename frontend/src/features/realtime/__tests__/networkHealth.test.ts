@@ -5,13 +5,13 @@ const NOW = 1_000_000;
 const base: NetworkHealthInput = { status: 'connected', pingMs: 28, pingFailed: false, lastHeartbeatAt: NOW - 5_000, lastEventAt: null, now: NOW };
 
 describe('getNetworkHealth', () => {
-  it('uses the latency bands: green under 100ms, amber to 300ms, red above', () => {
+  it('uses the WAN latency bands: green under 400ms, amber 400–1200ms, red above 1200ms', () => {
     expect(getNetworkHealth(base)).toMatchObject({ level: 'healthy', label: '28ms', reason: null });
-    expect(getNetworkHealth({ ...base, pingMs: 99 }).level).toBe('healthy');
-    expect(getNetworkHealth({ ...base, pingMs: 100 }).level).toBe('degraded');
-    expect(getNetworkHealth({ ...base, pingMs: 180 })).toMatchObject({ level: 'degraded', label: '180ms' });
-    expect(getNetworkHealth({ ...base, pingMs: 300 }).level).toBe('degraded');
-    expect(getNetworkHealth({ ...base, pingMs: 301 })).toMatchObject({ level: 'poor', label: '301ms' });
+    expect(getNetworkHealth({ ...base, pingMs: 399 }).level).toBe('healthy');
+    expect(getNetworkHealth({ ...base, pingMs: 400 }).level).toBe('degraded');
+    expect(getNetworkHealth({ ...base, pingMs: 550 })).toMatchObject({ level: 'degraded', label: '550ms' });
+    expect(getNetworkHealth({ ...base, pingMs: 1200 }).level).toBe('degraded');
+    expect(getNetworkHealth({ ...base, pingMs: 1201 })).toMatchObject({ level: 'poor', label: '1201ms' });
   });
 
   it('shows the live stream state immediately when it is not connected', () => {

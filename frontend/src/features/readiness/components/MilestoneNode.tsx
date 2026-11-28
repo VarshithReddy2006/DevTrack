@@ -20,6 +20,13 @@ function practiceHref(value?: string): string | null {
   } catch { return null; }
 }
 
+const TASK_KIND_META: Record<'learn' | 'build' | 'practice' | 'verify', { label: string; className: string }> = {
+  learn: { label: 'Learn', className: 'border-indigo-200 bg-indigo-50 text-indigo-700' },
+  build: { label: 'Build', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
+  practice: { label: 'DSA', className: 'border-violet-200 bg-violet-50 text-violet-700' },
+  verify: { label: 'Verify', className: 'border-amber-200 bg-amber-50 text-amber-800' },
+};
+
 export function MilestoneNode({ milestone, taskStates, onToggleTask }: Props) {
   const [expanded, setExpanded] = useState(milestone.status === 'active');
   const panelId = useId();
@@ -57,8 +64,19 @@ export function MilestoneNode({ milestone, taskStates, onToggleTask }: Props) {
             className="flex w-full min-w-0 items-start gap-3 rounded-2xl p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 sm:p-5">
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold">
-                <span className="text-slate-500">{weeks}</span>
+                <span className="text-slate-500">
+                  {weeks}{milestone.dateRangeLabel ? ` · ${milestone.dateRangeLabel}` : ''}
+                </span>
                 <span className={status === 'completed' ? 'text-emerald-700' : locked ? 'text-slate-500' : 'text-blue-700'}>{label}</span>
+                {milestone.paceStatus && status !== 'locked' && (
+                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold ${
+                    milestone.paceStatus === 'behind_pace'
+                      ? 'border-amber-200 bg-amber-50 text-amber-700'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  }`}>
+                    {milestone.paceStatus === 'behind_pace' ? 'Behind Pace' : 'On Track'}
+                  </span>
+                )}
               </span>
               <span className="mt-1 block break-words text-base font-bold text-slate-800 [overflow-wrap:anywhere]">{milestone.title}</span>
             </span>
@@ -83,23 +101,41 @@ export function MilestoneNode({ milestone, taskStates, onToggleTask }: Props) {
                 transition={{ duration: reduced ? 0 : motionDurations.base, ease: easePremium }} className="overflow-hidden">
                 <div className="space-y-4 border-t border-slate-100 p-4 sm:p-5">
                   <p className="break-words text-sm leading-relaxed text-slate-600 [overflow-wrap:anywhere]">{milestone.objective}</p>
-                  {locked && <p className="text-xs text-slate-500">These tasks unlock when this milestone becomes active.</p>}
+                  {locked && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600">
+                      <span className="font-semibold text-slate-700">Read-only preview:</span>{' '}
+                      These tasks unlock once prior milestones are completed.
+                      {milestone.skills && milestone.skills.length > 0 && (
+                        <span className="ml-1.5 text-slate-500">
+                          Upcoming skills: {milestone.skills.join(', ')}.
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {tasks.length === 0 ? <p className="text-sm text-slate-500">No tasks in this milestone yet.</p> : (
                     <ul aria-label={`${milestone.title} tasks`} className="space-y-3">
                       {tasks.map(task => {
                         const href = practiceHref(task.href);
+                        const kindMeta = task.kind ? TASK_KIND_META[task.kind] : null;
                         return (
                           <li key={task.id} aria-busy={task.pending || undefined} className="min-w-0 rounded-xl bg-slate-50 p-3">
-                            <label className={`flex min-h-6 min-w-0 items-start gap-3 text-sm ${locked || task.pending ? 'cursor-default' : 'cursor-pointer'}`}>
-                              <input type="checkbox" checked={task.completed} disabled={locked} aria-disabled={locked || task.pending}
-                                onChange={event => { if (!task.pending && !locked) void onToggleTask({ milestoneId: milestone.id, taskId: task.id, completed: event.target.checked }); }}
-                                className="mt-0.5 size-5 shrink-0 rounded border-slate-300 accent-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50" />
-                              <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${task.completed ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{task.title}</span>
-                            </label>
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <label className={`flex min-h-6 min-w-0 flex-1 items-start gap-3 text-sm ${locked || task.pending ? 'cursor-default' : 'cursor-pointer'}`}>
+                                <input type="checkbox" checked={task.completed} disabled={locked} aria-disabled={locked || task.pending}
+                                  onChange={event => { if (!task.pending && !locked) void onToggleTask({ milestoneId: milestone.id, taskId: task.id, completed: event.target.checked }); }}
+                                  className="mt-0.5 size-5 shrink-0 rounded border-slate-300 accent-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50" />
+                                <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${task.completed ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{task.title}</span>
+                              </label>
+                              {kindMeta && (
+                                <span className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${kindMeta.className}`}>
+                                  {kindMeta.label}
+                                </span>
+                              )}
+                            </div>
                             {href && <a href={href} target={href.startsWith('/') ? undefined : '_blank'} rel={href.startsWith('/') ? undefined : 'noopener noreferrer'}
                               aria-label={`Open practice: ${task.title}${href.startsWith('/') ? '' : ' (opens in a new tab)'}`}
                               className="ml-8 mt-2 inline-flex items-center gap-1 rounded text-xs font-semibold text-blue-700 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-                              Open practice<ExternalLink aria-hidden="true" size={12} />
+                              {task.actionLabel ?? 'Open practice'}<ExternalLink aria-hidden="true" size={12} />
                             </a>}
                             {task.pending && <p role="status" className="ml-8 mt-2 text-xs text-slate-500">Saving task…</p>}
                             {task.error && <p role="alert" className="ml-8 mt-2 text-xs text-rose-700">{task.error}</p>}

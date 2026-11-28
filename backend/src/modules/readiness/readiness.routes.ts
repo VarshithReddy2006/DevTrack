@@ -3,6 +3,7 @@ import { authMiddleware } from '../../middleware/auth.js';
 import { ReadinessController } from './readiness.controller.js';
 import dsaRoutes from './dsa/routes/dsa.routes.js';
 import roadmapRoutes from './roadmap.routes.js';
+import conceptsRoutes from './concepts/concepts.routes.js';
 import { zkpRoutes } from './zkp.routes.js';
 
 const router = Router();
@@ -30,6 +31,9 @@ router.use('/dsa', dsaRoutes);
 
 // Target role roadmap generator under /readiness/roadmap
 router.use('/roadmap', roadmapRoutes);
+
+// System Design & CS Concepts interactive tracks under /readiness/concepts
+router.use('/concepts', conceptsRoutes);
 
 export const readinessRoutes = router;
 

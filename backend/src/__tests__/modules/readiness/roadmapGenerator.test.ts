@@ -328,4 +328,52 @@ describe('PATCH /api/v2/readiness/roadmap/milestones/:milestoneId/tasks/:taskId'
     const missing = await request('/resource', 'GET');
     expect(missing.status).toBe(400);
   });
+
+  it('never duplicates Build: prefix, computes estimatedHours from CareerIntent weeklyHours, and auto-credits completed milestone skills', async () => {
+    const { CareerIntent } = await import('../../../db/models/careerIntent.model.js');
+    await CareerIntent.findOneAndUpdate(
+      { userId: user },
+      { userId: user, dreamRole: 'Backend Developer', weeklyHours: 10 },
+      { upsert: true, new: true }
+    );
+
+    const gen = await generate({ targetRoleId: 'backend-developer', targetDeadlineWeeks: 4 });
+    expect(gen.status).toBe(201);
+    const first = gen.body.data.milestones[0];
+    expect(first.estimatedHours).toBe(20);
+    for (const m of gen.body.data.milestones) {
+      for (const task of m.tasks) {
+        expect(task.title).not.toMatch(/^Build:\s*Build\b/i);
+      }
+    }
+
+    // Complete every task in milestone 1 -> skills should automatically upsert into UserSkillProgress
+    for (const task of first.tasks) {
+      await toggle(first.milestoneId, task.taskId, { completed: true });
+    }
+    const credited = await UserSkillProgress.find({ userId: user, completed: true }).lean();
+    expect(credited.length).toBeGreaterThanOrEqual(first.skills.length);
+    expect(credited.some(c => c.source === 'roadmap')).toBe(true);
+    await CareerIntent.deleteOne({ userId: user });
+  });
+
+  it('returns Pareto-filtered Crash Course blitz schedules for 48h, 7d, and 14d windows', async () => {
+    const r48 = await request('/crash-course?duration=48h', 'GET');
+    expect(r48.status).toBe(200);
+    const b48 = (await r48.json()).data;
+    expect(b48.window).toBe('48h');
+    expect(b48.blocks.length).toBe(3);
+    expect(b48.blocks[0].crashCourse.rapidQA.length).toBeGreaterThan(0);
+
+    const r7 = await request('/crash-course?duration=7d', 'GET');
+    expect(r7.status).toBe(200);
+    expect((await r7.json()).data.blocks.length).toBe(5);
+
+    const r14 = await request('/crash-course?duration=14d', 'GET');
+    expect(r14.status).toBe(200);
+    expect((await r14.json()).data.blocks.length).toBe(7);
+
+    const bad = await request('/crash-course?duration=99d', 'GET');
+    expect(bad.status).toBe(400);
+  });
 });

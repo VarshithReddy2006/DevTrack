@@ -31,7 +31,7 @@ export default function RevisionRadarPage() {
   const [topic, setTopic] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
 
-  const backLink = <Link to="/dsa" className="dt-btn dt-btn-secondary dt-btn-sm">Back to DSA</Link>;
+  const backLink = <Link to="/readiness/dsa" className="dt-btn dt-btn-secondary dt-btn-sm">Back to DSA Intelligence</Link>;
   const data = analytics.data;
   const dueCards = due.data ?? [];
   const overdue = countOverdue(dueCards);
@@ -76,8 +76,8 @@ export default function RevisionRadarPage() {
       <PageShell title="Revision Radar" subtitle="Recall, rate, repeat." status="success" error={null} actions={backLink}>
         <div className="dt-card p-10 text-center" role="status">
           <h2 className="text-xl font-bold text-dt-text">No revision cards yet</h2>
-          <p className="mt-2 text-sm text-dt-textSecondary">Solve problems on the DSA page and they will be added to your revision deck.</p>
-          <Link to="/dsa" className="dt-btn dt-btn-primary dt-btn-sm mt-5">Go to DSA</Link>
+          <p className="mt-2 text-sm text-dt-textSecondary">Solve problems on your connected platforms to populate your revision deck.</p>
+          <Link to="/readiness/dsa" className="dt-btn dt-btn-primary dt-btn-sm mt-5">Go to DSA Intelligence</Link>
         </div>
       </PageShell>
     );

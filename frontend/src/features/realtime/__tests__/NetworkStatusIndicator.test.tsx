@@ -52,13 +52,13 @@ describe('NetworkStatusIndicator', () => {
   });
 
   it('shows amber for elevated latency and red when it is high', () => {
-    withLatency({ pingMs: 180 });
+    withLatency({ pingMs: 550 });
     const { rerender } = render(<NetworkStatusIndicator status="connected" />);
     expect(pill()).toHaveAttribute('data-level', 'degraded');
-    withLatency({ pingMs: 450 });
+    withLatency({ pingMs: 1350 });
     rerender(<NetworkStatusIndicator status="connected" />);
     expect(pill()).toHaveAttribute('data-level', 'poor');
-    expect(pill()).toHaveTextContent('450ms');
+    expect(pill()).toHaveTextContent('1350ms');
   });
 
   it('goes red and stops pinging as soon as the stream disconnects', () => {
@@ -97,7 +97,7 @@ describe('NetworkStatusIndicator', () => {
   });
 
   it('offers a fresh ping when the connection is up but degraded', () => {
-    withLatency({ pingMs: 220 });
+    withLatency({ pingMs: 550 });
     render(<NetworkStatusIndicator status="connected" />);
     fireEvent.click(pill());
     expect(screen.getByText('Latency to the API is elevated.')).toBeInTheDocument();

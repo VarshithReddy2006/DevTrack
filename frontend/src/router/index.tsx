@@ -17,7 +17,6 @@ import { ATS_LIVE_EDITOR_FLAG } from '../services/resumeEditorService';
 import { EditorNavigationGuard } from '../features/resume-tracker/context/EditorNavigationGuard';
 
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
-const DsaPage = lazy(() => import('../pages/DsaPage'));
 const RevisionPage = lazy(() => import('../pages/RevisionPage'));
 const ContestsPage = lazy(() => import('../features/contests/ContestHubPage'));
 const LeaguesPage = lazy(() => import('../features/leagues/LeaguesPage'));
@@ -43,6 +42,8 @@ const RoadmapIntelligencePage = lazy(() => import('../pages/readiness/RoadmapInt
 const EvolutionIntelligencePage = lazy(() => import('../pages/readiness/EvolutionIntelligencePage'));
 const AIGuidancePage = lazy(() => import('../pages/readiness/AIGuidancePage'));
 const EvidenceLedgerPage = lazy(() => import('../pages/readiness/EvidenceLedgerPage'));
+const SystemDesignPage = lazy(() => import('../pages/readiness/SystemDesignPage'));
+const CSConceptsPage = lazy(() => import('../pages/readiness/CSConceptsPage'));
 const BetaDashboardPage = lazy(() => import('../pages/admin/BetaDashboardPage'));
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'));
 
@@ -154,16 +155,6 @@ export const AppRouter: React.FC = () => {
           element={
             <ErrorBoundary pageName="Focus">
               <FocusPage />
-            </ErrorBoundary>
-          }
-        />
-        <Route
-          path="/dsa"
-          element={
-            <ErrorBoundary pageName="DSA Workspace">
-              <Suspense fallback={<PageFallback />}>
-                <DsaPage />
-              </Suspense>
             </ErrorBoundary>
           }
         />
@@ -369,6 +360,26 @@ export const AppRouter: React.FC = () => {
             <ErrorBoundary pageName="Evidence Ledger">
               <Suspense fallback={<PageFallback />}>
                 <EvidenceLedgerPage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/readiness/system-design"
+          element={
+            <ErrorBoundary pageName="System Design Concepts">
+              <Suspense fallback={<PageFallback />}>
+                <SystemDesignPage />
+              </Suspense>
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/readiness/cs-distributed"
+          element={
+            <ErrorBoundary pageName="CS Concepts">
+              <Suspense fallback={<PageFallback />}>
+                <CSConceptsPage />
               </Suspense>
             </ErrorBoundary>
           }

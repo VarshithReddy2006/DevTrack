@@ -80,7 +80,7 @@ describe('NotFoundPage routing', () => {
   });
 
   it('still redirects a signed-out user from a protected page to /login', async () => {
-    renderAt('/dsa');
+    renderAt('/projects');
     expect(await screen.findByText('Login')).toBeTruthy();
     expect(screen.queryByText('Page Not Found')).toBeNull();
   });

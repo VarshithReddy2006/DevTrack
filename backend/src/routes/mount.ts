@@ -20,7 +20,7 @@ export function mountApiRoutes(app: IRouter, routes: Router): void {
       || ((req.method === 'GET' || req.method === 'HEAD') && /^\/portfolio\/custom-domain\/status\/?$/i.test(req.path));
     const readinessScore = (req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/score\/?$/i.test(req.path);
     const readinessZkp = /^\/readiness\/zkp(\/.*)?$/i.test(req.path);
-    const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap(\/resource)?\/?$/i.test(req.path))
+    const roadmap = ((req.method === 'GET' || req.method === 'HEAD') && /^\/readiness\/roadmap(\/(resource|crash-course))?\/?$/i.test(req.path))
       || (req.method === 'POST' && /^\/readiness\/roadmap\/generate\/?$/i.test(req.path))
       || (req.method === 'PATCH' && /^\/readiness\/roadmap\/milestones\/[^/]+\/tasks\/[^/]+\/?$/i.test(req.path));
     const search = (req.method === 'GET' || req.method === 'HEAD') && /^\/search\/?$/i.test(req.path);

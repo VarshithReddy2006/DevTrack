@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   toggleMilestoneTask: vi.fn(),
   getSkillResource: vi.fn(),
   toggleSkillProgress: vi.fn(),
+  getCrashCoursePlan: vi.fn(),
   setIntent: vi.fn(),
 }));
 
@@ -44,6 +45,7 @@ vi.mock('../../services/readinessService', async (importOriginal) => {
       toggleMilestoneTask: mocks.toggleMilestoneTask,
       getSkillResource: mocks.getSkillResource,
       toggleSkillProgress: mocks.toggleSkillProgress,
+      getCrashCoursePlan: mocks.getCrashCoursePlan,
       setIntent: mocks.setIntent,
     },
   };
@@ -113,6 +115,11 @@ describe('RoadmapIntelligencePage', () => {
         nextThreeSkills: ['Docker', 'Redis', 'SQL'],
         highestImpactSkill: 'Docker',
         readinessGain: 8,
+        skillGains: {
+          Docker: 12,
+          Redis: 9,
+          SQL: 6,
+        },
         estimatedWeeksToNextMilestone: 5,
         confidence: 78,
         lastSyncedAt: new Date().toISOString(),
@@ -258,13 +265,11 @@ describe('RoadmapIntelligencePage', () => {
 
     renderPage();
 
-    // Verified skills and live trust telemetry render cleanly
+    // Verified skills render cleanly and legacy Trust & Confidence strip is omitted
     expect(await screen.findByText('Target: Full Stack Developer · 10 hrs/wk')).toBeInTheDocument();
     expect(screen.getByText('Verified · GitHub')).toBeInTheDocument();
     expect(screen.getByText('Verified · Resume')).toBeInTheDocument();
-    expect(screen.getByText('Moderate (78%)')).toBeInTheDocument();
-    expect(screen.getByText('64% covered')).toBeInTheDocument();
-    expect(screen.getByText('Just now')).toBeInTheDocument();
+    expect(screen.queryByText('Trust & Confidence')).toBeNull();
 
     // Milestone timeline rendered and checkbox persists via API
     expect(await screen.findByText('2-Week Sprint Roadmap')).toBeInTheDocument();
@@ -289,5 +294,138 @@ describe('RoadmapIntelligencePage', () => {
       'href',
       expect.stringContaining('/projects?create=1&title=API%20Request%20Caching')
     );
+    expect(screen.getByText('+12% readiness gain')).toBeInTheDocument();
+    expect(screen.getByText('+9% readiness gain')).toBeInTheDocument();
+  });
+
+  it('switches to Crash Course Blitz mode, loads Pareto crash plan, and shows sync banner when completed skills overlap active milestones', async () => {
+    mocks.getDomainIntelligence.mockResolvedValue({
+      success: true,
+      data: {
+        domain: 'roadmap',
+        noRoleSelected: false,
+        targetRole: 'Backend Developer',
+        goal: 'First Job',
+        experienceLevel: 'Intermediate',
+        weeklyHours: 10,
+        targetDeadlineWeeks: 12,
+        currentStage: 'Intermediate',
+        roadmapProgress: 45,
+        verifiedSkills: ['Docker'],
+        verifiedSkillSources: [{ skill: 'Docker', source: 'resume' }],
+        completedRoadmapSkills: [],
+        missingSkills: ['Redis', 'SQL'],
+        prioritySkills: ['Redis', 'SQL'],
+        nextSkill: 'Redis',
+        nextThreeSkills: ['Redis', 'SQL'],
+        highestImpactSkill: 'Redis',
+        readinessGain: 10,
+        skillGains: { Redis: 11, SQL: 7 },
+        estimatedWeeksToNextMilestone: 4,
+        confidence: 25,
+        lastSyncedAt: new Date().toISOString(),
+        verificationCoverage: 50,
+        nextSkillResource: {
+          skill: 'Redis',
+          whyLearn: 'Fast caching.',
+          estimatedTime: '1 Week',
+          practiceProject: { title: 'Cache Layer', description: 'Cache queries.' },
+          resources: [],
+        },
+      },
+    });
+
+    mocks.getMilestoneRoadmap.mockResolvedValue({
+      id: 'rm-sync',
+      targetRoleId: 'backend-developer',
+      targetRole: 'Backend Developer',
+      targetSource: 'role_catalog',
+      targetDeadlineWeeks: 12,
+      baselineReadinessScore: 55,
+      missingSkills: ['Docker', 'Redis'],
+      deferredSkills: [],
+      source: 'template',
+      degradedReason: null,
+      generatedAt: new Date().toISOString(),
+      progress: 0,
+      milestones: [
+        {
+          milestoneId: 'm1',
+          sequence: 1,
+          startWeek: 1,
+          endWeek: 2,
+          skills: ['Docker'],
+          objective: 'Containerize services',
+          projectArchitecture: 'API service',
+          keyConcepts: ['Dockerfile'],
+          dsaPatterns: ['Trees'],
+          verificationCriteria: ['Builds cleanly'],
+          tasks: [
+            {
+              taskId: 't1',
+              kind: 'build',
+              title: 'Write Dockerfile',
+              completed: false,
+              completedAt: null,
+            },
+          ],
+          completed: false,
+          completedAt: null,
+          progress: 0,
+        },
+      ],
+    });
+
+    mocks.getCrashCoursePlan.mockResolvedValue({
+      window: '7d',
+      targetRole: 'Backend Developer',
+      paretoSkillCount: 1,
+      totalMinutes: 840,
+      totalHoursLabel: '14 hrs',
+      blocks: [
+        {
+          blockId: 'cc-redis',
+          day: 1,
+          dayLabel: 'Days 1-2',
+          skill: 'Redis',
+          title: 'Redis Blitz',
+          paretoPriority: 10,
+          revisionMinutes: 30,
+          practiceMinutes: 45,
+          whySelected: 'High-impact Backend skill.',
+          practiceProject: { title: 'Cache Layer', description: 'Cache queries.' },
+          crashCourse: {
+            revisionMinutes: 30,
+            paretoPriority: 10,
+            coreConcepts: ['Cache-aside pattern keeps DB source of truth.'],
+            gotchas: ['Missing TTL can fill memory.'],
+            rapidQA: [
+              {
+                question: 'What eviction policy suits LRU caches?',
+                answer: 'allkeys-lru evicts least recently used keys under memory pressure.',
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    renderPage();
+
+    // Desync banner renders when completed skill ("Docker") overlaps incomplete milestone
+    expect(
+      await screen.findByText(/Skills updated — Regenerate Sprint Plan/i)
+    ).toBeInTheDocument();
+
+    // Legacy Trust & Confidence strip is omitted
+    expect(screen.queryByText('Trust & Confidence')).toBeNull();
+
+    // Switch to Crash Course Blitz
+    fireEvent.click(screen.getByRole('button', { name: /Crash Course Blitz/i }));
+    await waitFor(() => {
+      expect(mocks.getCrashCoursePlan).toHaveBeenCalledWith('7d', expect.anything());
+    });
+    expect(await screen.findByText('Backend Developer Crash Course')).toBeInTheDocument();
+    expect(screen.getByText('Redis Rapid Cheat Sheet')).toBeInTheDocument();
   });
 });

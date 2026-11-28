@@ -5,7 +5,7 @@ export interface IUserSkillProgress extends Document {
   skill: string;
   completed: boolean;
   completedAt?: Date;
-  source?: 'manual';
+  source?: 'manual' | 'roadmap';
 }
 
 const userSkillProgressSchema = new Schema<IUserSkillProgress>(
@@ -14,7 +14,7 @@ const userSkillProgressSchema = new Schema<IUserSkillProgress>(
     skill: { type: String, required: true },
     completed: { type: Boolean, required: true, default: false },
     completedAt: { type: Date },
-    source: { type: String, enum: ['manual'], default: 'manual' },
+    source: { type: String, enum: ['manual', 'roadmap'], default: 'manual' },
   },
   { timestamps: true }
 );

@@ -72,6 +72,8 @@
 
   html,
   body {
+    overflow-x: hidden;
+    max-width: 100%;
     color: #0F172A;
     background: var(--background-image-dt-atmosphere);
     text-rendering: optimizeLegibility;

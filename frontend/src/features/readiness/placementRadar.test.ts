@@ -1,6 +1,6 @@
 import { it, expect } from "vitest";
 import { radarReportText, type PlacementRadarReport } from "./placementRadar";
-it("exports literal data with unknown evidence and seven-day actions, not HTML", () => {
+it("exports literal data with unknown evidence and signals, without 7-day plan text or HTML", () => {
   const report: PlacementRadarReport = {
     version: "v1",
     generatedAt: "2026-11-22",
@@ -25,7 +25,7 @@ it("exports literal data with unknown evidence and seven-day actions, not HTML",
   };
   const text = radarReportText(report, 65);
   expect(text).toContain("Core CS: Unknown");
-  expect(text).toContain("Day 1 (30 min): Review OS");
+  expect(text).not.toContain("Seven-day practice plan");
   expect(text).toContain("not an employer cutoff");
   expect(text).toContain("<script> is literal text");
 });

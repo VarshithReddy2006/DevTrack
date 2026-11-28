@@ -78,4 +78,31 @@ describe("placement practice evidence", () => {
       ),
     );
   });
+  it("scores architecture and Core CS from mastered concepts and excludes optional Distributed Systems from Core CS penalties", () => {
+    const result = calculatePlacementRadar(
+      {
+        ...base,
+        systemDesignConcept: {
+          mastered: 6,
+          total: 12,
+          masteredTitles: ["Caching Patterns", "Load Balancing"],
+          lastUpdatedAt: now,
+        },
+        coreCsConcept: {
+          mastered: 13,
+          total: 13,
+          masteredTitles: ["Processes vs Threads", "ACID & MVCC"],
+          optionalMastered: 0,
+          optionalTotal: 7,
+          lastUpdatedAt: now,
+        },
+      },
+      now,
+    );
+    expect(result.axes[2].score).toBe(50);
+    expect(result.axes[2].evidence[0]).toContain("System Design: 6/12 concepts mastered");
+    expect(result.axes[3].score).toBe(100);
+    expect(result.axes[3].evidence[0]).toContain("Core CS: 13/13 fundamentals mastered");
+    expect(result.coverage).toBe(2);
+  });
 });

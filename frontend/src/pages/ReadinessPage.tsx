@@ -1,19 +1,14 @@
 import { PlacementRadarPanel } from '../features/readiness/components/PlacementRadarPanel';
-import { ArchitectureSignalsViewer } from '../features/readiness/components/ArchitectureSignalsViewer';
 import React from 'react';
 import { motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Code2, Map, TrendingUp, MessageSquare, Target, Flame, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Code2, Cpu, Layers, Map, TrendingUp, MessageSquare, Target, Flame, ShieldCheck, RefreshCw } from 'lucide-react';
 import axiosClient from '../utils/axiosClient';
 import { NetworkErrorPanel } from '../components/shared/NetworkErrorPanel';
 import { useReadinessData } from '../features/readiness/hooks/useReadinessData';
 import { ReadinessHero } from '../features/readiness/components/ReadinessHero';
 import { DomainCard } from '../features/readiness/components/DomainCard';
-import { ActiveBlockersPanel } from '../features/readiness/components/ActiveBlockersPanel';
-import { NextBestActionsPanel } from '../features/readiness/components/NextBestActionsPanel';
-import { EvolutionPreviewPanel } from '../features/readiness/components/EvolutionPreviewPanel';
-import { TrustConfidenceLayer } from '../features/readiness/components/TrustConfidenceLayer';
 import { useFeatureFlags } from '../features/flags/hooks/useFeatureFlags';
 import { INTERVIEW_STUDIO_FLAG, INTERVIEW_STUDIO_PATH } from '../features/interview/interview';
 
@@ -57,34 +52,6 @@ const ReadinessPage: React.FC = () => {
   }
 
 
-
-  // Extract active blockers from roadmap
-  const activeBlockers = (data.adaptiveRoadmap || [])
-    .filter((n: any) => n.isPrioritizedBlocker)
-    .map((n: any) => ({
-      id: n.id,
-      label: n.label || n.id,
-      reason: 'Limiting progression velocity',
-    }));
-
-  // Add weak areas as blockers
-  const weakAreaBlockers = (data.dynamicState?.roleAlignment?.weakAreas || []).map((area: string, i: number) => ({
-    id: `weak_${i}`,
-    label: area,
-    reason: `Reducing ${data.dynamicState?.roleAlignment?.role || 'role'} alignment`,
-  }));
-  const allBlockers = [...activeBlockers, ...weakAreaBlockers].slice(0, 5);
-
-  // Build evolution milestones from intelligence feed achievements
-  const milestones = (data.intelligenceFeed || [])
-    .filter((f: any) => f.type === 'achievement' || f.type === 'insight')
-    .slice(0, 4)
-    .map((f: any) => ({
-      id: f.id,
-      label: f.message,
-      type: f.type === 'achievement' ? 'achievement' : 'progress',
-      timestamp: f.timestamp,
-    }));
 
   // Get first next-best-action per domain for domain cards
   const dsaAction = data.nextBestActions?.find((a: any) => a.category === 'dsa');
@@ -148,6 +115,28 @@ const ReadinessPage: React.FC = () => {
       gradientTo: '#E0F2FE',
       summary: 'See what is verified, partial or flagged',
     },
+    {
+      id: 'system-design',
+      title: 'System Design Concepts',
+      description: 'Beginner to Case Studies architecture',
+      route: '/readiness/system-design',
+      icon: <Layers size={18} />,
+      accentColor: '#4F46E5',
+      gradientFrom: '#EEF2FF',
+      gradientTo: '#E0E7FF',
+      summary: 'Protocols, caching, sharding, queues & 5 real-world blueprints',
+    },
+    {
+      id: 'cs-distributed',
+      title: 'CS Concepts',
+      description: 'OS, DBMS, Networks + optional Distributed',
+      route: '/readiness/cs-distributed',
+      icon: <Cpu size={18} />,
+      accentColor: '#0F766E',
+      gradientFrom: '#F0FDFA',
+      gradientTo: '#CCFBF1',
+      summary: 'Core fundamentals scored directly + optional Distributed Systems track',
+    },
   ];
 
   return (
@@ -199,15 +188,14 @@ const ReadinessPage: React.FC = () => {
         {/* 1. READINESS HERO */}
         <ReadinessHero data={data} />
         <PlacementRadarPanel />
-        <ArchitectureSignalsViewer snapshot={data} />
 
-        {/* 2. CORE INTELLIGENCE DOMAINS */}
+        {/* 2. INTELLIGENCE WORKSPACES */}
         <div>
           <div className="flex items-center gap-2 mb-4">
             <Flame size={14} className="text-indigo-500" />
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Intelligence Workspaces</span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {domainConfigs.map((cfg, i) => (
               <DomainCard
                 key={cfg.id}
@@ -219,42 +207,6 @@ const ReadinessPage: React.FC = () => {
             ))}
           </div>
         </div>
-
-        {/* 3 & 4. BLOCKERS + ACTIONS + EVOLUTION */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left Column: Blockers + Actions */}
-          <div className="lg:col-span-7 flex flex-col gap-6 min-w-0">
-            <ActiveBlockersPanel blockers={allBlockers} />
-            <NextBestActionsPanel data={data} />
-          </div>
-
-          {/* Right Column: Evolution */}
-          <div className="lg:col-span-5 flex flex-col gap-6 min-w-0">
-            <EvolutionPreviewPanel milestones={milestones} />
-          </div>
-        </div>
-
-        {/* 5. FULL-WIDTH TRUST & CONFIDENCE STRIP */}
-        <TrustConfidenceLayer
-          confidence={data.dynamicState?.confidence || 0}
-          isDegraded={data.rawMetrics?.dsa?.isDegraded || false}
-          lastSyncedAt={
-            data.rawMetrics?.dsa?.computedAt ||
-            data.rawMetrics?.projects?.computedAt ||
-            data.rawMetrics?.core?.computedAt ||
-            null
-          }
-          providerCount={Object.values(data.rawMetrics || {}).filter(Boolean).length}
-          verificationCoverage={Math.min(
-            Math.round(
-              ((data.rawMetrics?.dsa ? 25 : 0) +
-                (data.rawMetrics?.projects ? 25 : 0) +
-                (data.rawMetrics?.skills ? 25 : 0) +
-                (data.rawMetrics?.benchmarks ? 25 : 0))
-            ),
-            100
-          )}
-        />
       </motion.div>
     </div>
   );

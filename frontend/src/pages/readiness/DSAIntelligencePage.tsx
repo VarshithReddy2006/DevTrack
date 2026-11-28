@@ -15,7 +15,6 @@ import {
   Zap,
 } from 'lucide-react';
 import { useDSAIntelligence, useSyncDSAIntelligence } from '../../features/readiness/hooks/useDSAIntelligence';
-import { TrustConfidenceLayer } from '../../features/readiness/components/TrustConfidenceLayer';
 import { EmptyState } from '../../components/shared/EmptyState';
 import type {
   TopicDifficultyBreakdown,
@@ -758,15 +757,6 @@ const DSAIntelligencePage: React.FC = () => {
             )}
           </section>
         </div>
-
-        {/* Trust & Confidence */}
-        <TrustConfidenceLayer
-          confidence={data.confidenceScore}
-          isDegraded={data.confidenceScore < 40}
-          isSyncError={hasSyncError}
-          lastSyncedAt={data.lastUpdated || null}
-          verificationCoverage={data.verificationCoverage}
-        />
       </div>
     </div>
   );

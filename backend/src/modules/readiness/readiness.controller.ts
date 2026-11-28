@@ -76,6 +76,7 @@ export const ReadinessController = {
         nextThreeSkills: roadmapIntelligence?.nextThreeSkills ?? [],
         highestImpactSkill: roadmapIntelligence?.highestImpactSkill ?? '',
         readinessGain: roadmapIntelligence?.readinessGain ?? 0,
+        skillGains: roadmapIntelligence?.skillGains ?? {},
         estimatedWeeksToNextMilestone: roadmapIntelligence?.estimatedWeeksToNextMilestone ?? 0,
         nextSkillResource: roadmapIntelligence?.nextSkillResource ?? null,
         skillResources: roadmapIntelligence?.skillResources ?? {},

@@ -52,7 +52,5 @@ export function radarReportText(
     `Contest ratings (platform scales differ): ${report.signals.contestRatings.join(", ") || "Unknown"}`,
     `Review retention: ${report.signals.retentionPercent ?? "Unknown"}%; reviews: ${report.signals.reviews7d}`,
     `Solve consistency: ${report.signals.consistencyPercent ?? "Unknown"}%`,
-    "Seven-day practice plan",
-    ...report.plan.map((p) => `Day ${p.day} (${p.minutes} min): ${p.task}`),
   ].join("\n");
 }

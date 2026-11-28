@@ -3,7 +3,6 @@ import { motion } from 'framer-motion';
 import { TrendingUp, Zap, AlertTriangle, ArrowRight, Activity, Calendar } from 'lucide-react';
 import { useReadinessDomain } from '../../features/readiness/hooks/useReadinessData';
 import { WorkspaceHeader } from '../../features/readiness/components/WorkspaceHeader';
-import { TrustConfidenceLayer } from '../../features/readiness/components/TrustConfidenceLayer';
 import type { EvolutionIntelligenceNormalized } from '../../services/readinessService';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { useNavigate } from 'react-router-dom';
@@ -219,8 +218,6 @@ const EvolutionIntelligencePage: React.FC = () => {
               </div>
             )}
           </motion.div>
-
-          <TrustConfidenceLayer confidence={100} verificationCoverage={100} />
         </div>
       </div>
     </div>

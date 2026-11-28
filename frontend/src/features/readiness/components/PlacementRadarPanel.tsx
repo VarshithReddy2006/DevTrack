@@ -87,7 +87,7 @@ export function PlacementRadarPanel() {
               Placement practice radar
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Five evidence axes, a seven-day practice plan, and an exportable report.
+              Five evidence axes, practice diagnostics, and an exportable report.
             </p>
           </div>
         </div>
@@ -283,41 +283,6 @@ export function PlacementRadarPanel() {
                   : `${data.signals.consistencyPercent}%`}
               </p>
             </div>
-          </div>
-
-          {/* 7-Day Practice Plan */}
-          <div>
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-              <h3 className="text-sm font-bold text-slate-900">Seven-day practice plan</h3>
-              {data.coverage < 5 && (
-                <span className="text-[11px] font-medium text-slate-500">
-                  Axes without recent telemetry include evidence-collection prompts.
-                </span>
-              )}
-            </div>
-            <ol className="space-y-2">
-              {data.plan.map((p) => {
-                const cleanTask = p.task
-                  .replace(/\s*Collect evidence before interpreting this axis\.?/gi, "")
-                  .trim();
-                return (
-                  <li
-                    key={p.day}
-                    className="flex flex-wrap sm:flex-nowrap items-center gap-3 rounded-xl border border-slate-200/70 bg-slate-50/40 px-3.5 py-2.5 text-sm"
-                  >
-                    <span className="inline-flex items-center rounded-md bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-xs font-bold text-indigo-700 shrink-0 tabular-nums">
-                      Day {p.day}
-                    </span>
-                    <span className="inline-flex items-center rounded-md bg-slate-100 border border-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-600 shrink-0 tabular-nums">
-                      {p.minutes} min
-                    </span>
-                    <span className="text-xs font-medium text-slate-700 leading-relaxed min-w-0">
-                      {cleanTask}
-                    </span>
-                  </li>
-                );
-              })}
-            </ol>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">

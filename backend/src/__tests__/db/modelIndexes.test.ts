@@ -101,6 +101,7 @@ import '../../db/models/syncJob.model.js';
 import '../../db/models/unifiedRuntimeState.model.js';
 import '../../db/models/user.model.js';
 import '../../db/models/userAnalytics.model.js';
+import '../../db/models/userConceptProgress.model.js';
 import '../../db/models/userDailyChallenge.model.js';
 import '../../db/models/userFeedback.model.js';
 import '../../db/models/userProfile.model.js';

@@ -130,6 +130,106 @@ export type EngineeringIntelligence = DomainIntelligenceBase & {
   };
 };
 
+export interface CrashCourseQA {
+  question: string;
+  answer: string;
+}
+
+export interface CrashCourseContent {
+  revisionMinutes: number;
+  paretoPriority: number;
+  coreConcepts: string[];
+  gotchas: string[];
+  rapidQA: CrashCourseQA[];
+  mustSolveTopics?: string[];
+}
+
+export type CrashCourseWindow = '48h' | '7d' | '14d';
+
+export interface CrashCourseBlock {
+  blockId: string;
+  day: number;
+  dayLabel: string;
+  skill: string;
+  title: string;
+  whySelected: string;
+  revisionMinutes: number;
+  practiceMinutes: number;
+  paretoPriority: number;
+  crashCourse: CrashCourseContent;
+  practiceProject: { title: string; description: string };
+}
+
+export interface CrashCoursePlan {
+  window: CrashCourseWindow;
+  targetRole: string;
+  paretoSkillCount: number;
+  totalMinutes: number;
+  totalHoursLabel: string;
+  blocks: CrashCourseBlock[];
+}
+
+export type ConceptDomain = 'system-design' | 'cs-concepts';
+export type ConceptConfidence = 'got_it' | 'revise_again';
+export type ConceptLevel = 'beginner' | 'intermediate' | 'advanced' | 'case-study';
+export type CsSubTrack = 'os' | 'dbms' | 'networks' | 'distributed-systems';
+
+export interface ConceptQA {
+  id: string;
+  question: string;
+  answer: string;
+}
+
+export interface TradeOffComparison {
+  topic: string;
+  whenToUse: string;
+  whenToAvoid: string;
+  alternative?: string;
+}
+
+export interface ConceptItem {
+  id: string;
+  domain: ConceptDomain;
+  title: string;
+  subtitle: string;
+  level: ConceptLevel;
+  track: 'system-design' | 'core-cs' | 'distributed-systems';
+  subTrack?: CsSubTrack;
+  isOptional: boolean;
+  isHighFrequencyCrashCourse: boolean;
+  estimatedMinutes: number;
+  summary: string;
+  architectureFlow: string[];
+  tradeOffs: TradeOffComparison[];
+  scaleBenchmarks: Array<{ label: string; value: string; note?: string }>;
+  rapidQA: ConceptQA[];
+  practicePrompt: string;
+  completed: boolean;
+  confidence: ConceptConfidence | null;
+  updatedAt: string | null;
+}
+
+export interface ConceptWorkspaceSummary {
+  totalConcepts: number;
+  completedConcepts: number;
+  progressPercent: number;
+  coreTotal: number;
+  coreCompleted: number;
+  coreProgressPercent: number;
+  optionalTotal: number;
+  optionalCompleted: number;
+  optionalProgressPercent: number;
+  gotItCount: number;
+  reviseAgainCount: number;
+  lastUpdatedAt: string | null;
+}
+
+export interface ConceptWorkspaceResponse {
+  domain: ConceptDomain;
+  summary: ConceptWorkspaceSummary;
+  concepts: ConceptItem[];
+}
+
 export interface LearningResource {
   skill: string;
   whyLearn: string;
@@ -144,6 +244,7 @@ export interface LearningResource {
     url: string;
     provider: string;
   }>;
+  crashCourse?: CrashCourseContent;
   isFallback?: boolean;
 }
 
@@ -171,6 +272,7 @@ export type RoadmapDomainNormalized = {
   nextThreeSkills: string[];
   highestImpactSkill: string;
   readinessGain: number;
+  skillGains?: Record<string, number>;
   estimatedWeeksToNextMilestone: number;
   nextSkillResource?: LearningResource | null;
   skillResources?: Record<string, LearningResource>;
@@ -181,7 +283,7 @@ export type RoadmapDomainNormalized = {
 
 export interface MilestoneRoadmapTaskApi {
   taskId: string;
-  kind: 'project' | 'dsa' | 'concept' | 'verification';
+  kind: 'learn' | 'build' | 'practice' | 'verify';
   title: string;
   completed: boolean;
   completedAt: string | null;
@@ -192,6 +294,7 @@ export interface MilestoneRoadmapItemApi {
   sequence: number;
   startWeek: number;
   endWeek: number;
+  estimatedHours?: number;
   skills: string[];
   objective: string;
   projectArchitecture: string;
@@ -210,6 +313,7 @@ export interface MilestoneRoadmapApiResponse {
   targetRole: string;
   targetSource: 'role_catalog' | 'job_target';
   targetDeadlineWeeks: number;
+  weeklyHours?: number;
   baselineReadinessScore: number | null;
   missingSkills: string[];
   deferredSkills: string[];
@@ -220,9 +324,56 @@ export interface MilestoneRoadmapApiResponse {
   milestones: MilestoneRoadmapItemApi[];
 }
 
+function formatMilestoneDateRange(generatedAt: string, startWeek: number, endWeek: number): string | undefined {
+  const base = new Date(generatedAt);
+  if (!Number.isFinite(base.getTime())) return undefined;
+  const dayMs = 86_400_000;
+  const start = new Date(base.getTime() + (startWeek - 1) * 7 * dayMs);
+  const end = new Date(base.getTime() + endWeek * 7 * dayMs);
+  const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
+function taskShortcut(
+  kind: MilestoneRoadmapTaskApi['kind'] | string,
+  title: string,
+  skills: string[]
+): { href?: string; actionLabel?: string } {
+  const primarySkill = skills[0] || 'Core Engineering';
+  const techCsv = skills.join(',');
+  switch (kind) {
+    case 'learn':
+      return {
+        href: `/focus?mission=${encodeURIComponent(title.replace(/^Learn:\s*/i, ''))}&duration=25&mode=core`,
+        actionLabel: '25m Focus',
+      };
+    case 'build':
+      return {
+        href: `/projects?create=1&title=${encodeURIComponent(`${primarySkill} Architecture Project`)}&description=${encodeURIComponent(title.replace(/^Build:\s*/i, ''))}&tech=${encodeURIComponent(techCsv)}`,
+        actionLabel: 'Create in Projects',
+      };
+    case 'practice':
+      return {
+        href: '/readiness/dsa',
+        actionLabel: 'Practice DSA',
+      };
+    case 'verify':
+      return {
+        href: '/readiness/evidence',
+        actionLabel: 'Attach Evidence',
+      };
+    default:
+      return {};
+  }
+}
+
 export function mapMilestoneRoadmapToTimeline(api: MilestoneRoadmapApiResponse | null): RoadmapMilestone[] {
   if (!api || !Array.isArray(api.milestones)) return [];
   let foundActive = false;
+  const weeklyHours = api.weeklyHours && api.weeklyHours > 0 ? api.weeklyHours : 10;
+  const generatedMs = new Date(api.generatedAt).getTime();
+  const nowMs = Date.now();
+
   return [...api.milestones]
     .sort((a, b) => a.sequence - b.sequence || a.startWeek - b.startWeek)
     .map((m) => {
@@ -236,19 +387,38 @@ export function mapMilestoneRoadmapToTimeline(api: MilestoneRoadmapApiResponse |
       const title = m.skills?.length
         ? m.skills.join(' & ')
         : `Sprint ${m.sequence}`;
+      const weekSpan = Math.max(1, m.endWeek - m.startWeek + 1);
+      const estimatedHours = m.estimatedHours ?? weekSpan * weeklyHours;
+      const dateRangeLabel = formatMilestoneDateRange(api.generatedAt, m.startWeek, m.endWeek);
+      const milestoneEndMs = Number.isFinite(generatedMs)
+        ? generatedMs + m.endWeek * 7 * 86_400_000
+        : Number.POSITIVE_INFINITY;
+      const paceStatus: 'on_track' | 'behind_pace' =
+        !m.completed && status === 'active' && nowMs > milestoneEndMs
+          ? 'behind_pace'
+          : 'on_track';
+
       return {
         id: m.milestoneId,
         title,
         objective: m.objective,
         weekStart: m.startWeek,
         weekEnd: m.endWeek,
-        estimatedHours: Math.max(4, (m.tasks?.length || 1) * 3),
+        estimatedHours,
         status,
-        tasks: (m.tasks || []).map((t) => ({
-          id: t.taskId,
-          title: t.title,
-          completed: t.completed,
-        })),
+        dateRangeLabel,
+        paceStatus,
+        skills: m.skills,
+        tasks: (m.tasks || []).map((t) => {
+          const shortcut = taskShortcut(t.kind, t.title, m.skills ?? []);
+          return {
+            id: t.taskId,
+            title: t.title,
+            completed: t.completed,
+            kind: t.kind,
+            ...shortcut,
+          };
+        }),
       };
     });
 }
@@ -380,6 +550,37 @@ export const readinessService = {
     const res = await axiosClient.get<{ success: boolean; data: LearningResource }>(
       `/readiness/roadmap/resource?skill=${encodeURIComponent(skill)}`,
       { signal: options?.signal }
+    );
+    return res.data.data;
+  },
+
+  async getCrashCoursePlan(window: CrashCourseWindow = '7d', options?: { signal?: AbortSignal }): Promise<CrashCoursePlan> {
+    const res = await axiosClient.get<{ success: boolean; data: CrashCoursePlan }>(
+      `/readiness/roadmap/crash-course?duration=${encodeURIComponent(window)}`,
+      { signal: options?.signal }
+    );
+    return res.data.data;
+  },
+
+  async getConceptWorkspace(
+    domain: ConceptDomain,
+    options?: { signal?: AbortSignal }
+  ): Promise<ConceptWorkspaceResponse> {
+    const res = await axiosClient.get<{ success: boolean; data: ConceptWorkspaceResponse }>(
+      `/readiness/concepts/${encodeURIComponent(domain)}`,
+      { signal: options?.signal }
+    );
+    return res.data.data;
+  },
+
+  async updateConceptProgress(
+    domain: ConceptDomain,
+    conceptId: string,
+    patch: { completed?: boolean; confidence?: ConceptConfidence | null }
+  ): Promise<ConceptWorkspaceResponse> {
+    const res = await axiosClient.patch<{ success: boolean; data: ConceptWorkspaceResponse }>(
+      `/readiness/concepts/${encodeURIComponent(domain)}/${encodeURIComponent(conceptId)}`,
+      patch
     );
     return res.data.data;
   }

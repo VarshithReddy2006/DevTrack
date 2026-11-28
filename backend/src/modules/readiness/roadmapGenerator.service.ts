@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { Types } from 'mongoose';
 import { CareerRoadmap, type ICareerRoadmap, type ICareerRoadmapMilestone, type ICareerRoadmapTask, type RoadmapDegradedReason, type RoadmapSource, type RoadmapTargetSource } from '../../db/models/careerRoadmap.model.js';
+import { CareerIntent } from '../../db/models/careerIntent.model.js';
 import { Project } from '../../db/models/project.model.js';
 import { ReadinessInput } from '../../db/models/readinessInput.model.js';
 import { ReadinessCore } from '../../db/models/readinessCore.model.js';
@@ -19,7 +20,8 @@ import { AIQuotaExceededError } from '../ai/quota.service.js';
 import { boundedText, parseModelOutput } from '../job-targets/prompts/modelOutput.js';
 import { ANTI_HIJACK_RULES, wrapUntrusted } from '../job-targets/prompts/untrustedText.js';
 import { logger } from '../../shared/logger.js';
-import { ROLE_SKILL_MATRIX, normalizeSkill } from './role/roleSkills.js';
+import { getResourceForSkill, type CrashCourseContent } from './resources/learningResources.js';
+import { getRequiredSkills, ROLE_SKILL_MATRIX, normalizeSkill } from './role/roleSkills.js';
 
 export const ROADMAP_BLOCK_WEEKS = 2;
 export const ROADMAP_MIN_WEEKS = 2;
@@ -241,9 +243,9 @@ function genericTemplate(skill: string): SkillTemplate {
 }
 
 function scopeFor(score: number | null): string {
-  if (score === null || score < 40) return 'Start with a focused, single-service build';
-  if (score < 70) return 'Build an end-to-end feature';
-  return 'Build a production-grade component';
+  if (score === null || score < 40) return 'Focused single-service prototype';
+  if (score < 70) return 'End-to-end feature module';
+  return 'Production-grade component';
 }
 
 const unique = (values: string[], max: number) => [...new Set(values)].slice(0, max);
@@ -337,9 +339,12 @@ async function aiMilestones(
 }
 
 function tasksFor(milestoneId: string, content: MilestoneContent): ICareerRoadmapTask[] {
+  const buildTitle = /^\s*build(?::|\s+)/i.test(content.projectArchitecture)
+    ? `Build: ${content.projectArchitecture.replace(/^\s*build(?::|\s)+/i, '')}`
+    : `Build: ${content.projectArchitecture}`;
   const drafts: Array<Pick<ICareerRoadmapTask, 'kind' | 'title'>> = [
     ...content.keyConcepts.map(concept => ({ kind: 'learn' as const, title: `Learn: ${concept}` })),
-    { kind: 'build', title: `Build: ${content.projectArchitecture}` },
+    { kind: 'build', title: buildTitle },
     { kind: 'practice', title: `Practise DSA: ${content.dsaPatterns.join(', ')}` },
     ...content.verificationCriteria.map(criterion => ({ kind: 'verify' as const, title: `Verify: ${criterion}` })),
   ];
@@ -352,6 +357,7 @@ export interface RoadmapView {
   targetRole: string;
   targetSource: RoadmapTargetSource;
   targetDeadlineWeeks: number;
+  weeklyHours: number;
   baselineReadinessScore: number | null;
   missingSkills: string[];
   deferredSkills: string[];
@@ -359,7 +365,7 @@ export interface RoadmapView {
   degradedReason: RoadmapDegradedReason | null;
   generatedAt: Date;
   progress: number;
-  milestones: Array<ICareerRoadmapMilestone & { completed: boolean; completedAt: Date | null; progress: number }>;
+  milestones: Array<ICareerRoadmapMilestone & { completed: boolean; completedAt: Date | null; progress: number; estimatedHours: number }>;
 }
 
 type RoadmapRecord = Pick<ICareerRoadmap, 'targetRoleId' | 'targetRole' | 'targetSource' | 'targetDeadlineWeeks'
@@ -369,7 +375,8 @@ type RoadmapRecord = Pick<ICareerRoadmap, 'targetRoleId' | 'targetRole' | 'targe
 const percent = (done: number, total: number) => (total > 0 ? Math.round((done / total) * 100) : 0);
 
 /** API shape. Milestone completion is derived from its tasks so it can never disagree with them. */
-export function toRoadmapView(doc: RoadmapRecord): RoadmapView {
+export function toRoadmapView(doc: RoadmapRecord, weeklyHours = 10): RoadmapView {
+  const effectiveWeeklyHours = Number.isFinite(weeklyHours) && weeklyHours > 0 ? weeklyHours : 10;
   let done = 0;
   let total = 0;
   const milestones = doc.milestones.map(milestone => {
@@ -383,11 +390,13 @@ export function toRoadmapView(doc: RoadmapRecord): RoadmapView {
     const completedAt = completed
       ? new Date(Math.max(...finished.map(task => task.completedAt?.getTime() ?? 0)))
       : null;
+    const weekSpan = Math.max(1, milestone.endWeek - milestone.startWeek + 1);
     return {
       milestoneId: milestone.milestoneId,
       sequence: milestone.sequence,
       startWeek: milestone.startWeek,
       endWeek: milestone.endWeek,
+      estimatedHours: weekSpan * effectiveWeeklyHours,
       skills: milestone.skills,
       objective: milestone.objective,
       projectArchitecture: milestone.projectArchitecture,
@@ -406,6 +415,7 @@ export function toRoadmapView(doc: RoadmapRecord): RoadmapView {
     targetRole: doc.targetRole,
     targetSource: doc.targetSource,
     targetDeadlineWeeks: doc.targetDeadlineWeeks,
+    weeklyHours: effectiveWeeklyHours,
     baselineReadinessScore: doc.baselineReadinessScore ?? null,
     missingSkills: doc.missingSkills,
     deferredSkills: doc.deferredSkills,
@@ -415,6 +425,12 @@ export function toRoadmapView(doc: RoadmapRecord): RoadmapView {
     progress: percent(done, total),
     milestones,
   };
+}
+
+async function resolveWeeklyHours(userId: string): Promise<number> {
+  const intent = await CareerIntent.findOne({ userId: String(userId) }).select('weeklyHours').lean();
+  const hours = Number(intent?.weeklyHours ?? 10);
+  return Number.isFinite(hours) && hours > 0 ? hours : 10;
 }
 
 /** Generates a roadmap for the target and replaces the user's previous one. */
@@ -441,37 +457,44 @@ export async function generateRoadmap(userId: string, input: GenerateRoadmapInpu
     return { milestoneId, ...plan, ...content, tasks: tasksFor(milestoneId, content) };
   });
 
-  const saved = await CareerRoadmap.findOneAndUpdate(
-    { userId },
-    {
-      $set: {
-        targetRoleId: target.targetRoleId,
-        targetRole: target.targetRole,
-        targetSource: target.targetSource,
-        targetDeadlineWeeks: deadlineWeeks,
-        baselineReadinessScore: readinessScore,
-        missingSkills,
-        deferredSkills,
-        source,
-        degradedReason: 'degradedReason' in ai ? ai.degradedReason : null,
-        milestones,
-        generatedAt: new Date(),
+  const [saved, weeklyHours] = await Promise.all([
+    CareerRoadmap.findOneAndUpdate(
+      { userId },
+      {
+        $set: {
+          targetRoleId: target.targetRoleId,
+          targetRole: target.targetRole,
+          targetSource: target.targetSource,
+          targetDeadlineWeeks: deadlineWeeks,
+          baselineReadinessScore: readinessScore,
+          missingSkills,
+          deferredSkills,
+          source,
+          degradedReason: 'degradedReason' in ai ? ai.degradedReason : null,
+          milestones,
+          generatedAt: new Date(),
+        },
       },
-    },
-    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
-  ).lean();
-  return toRoadmapView(saved!);
+      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
+    ).lean(),
+    resolveWeeklyHours(userId),
+  ]);
+  return toRoadmapView(saved!, weeklyHours);
 }
 
 export async function getRoadmap(userId: string): Promise<RoadmapView> {
-  const roadmap = await CareerRoadmap.findOne({ userId }).lean();
+  const [roadmap, weeklyHours] = await Promise.all([
+    CareerRoadmap.findOne({ userId }).lean(),
+    resolveWeeklyHours(userId),
+  ]);
   if (!roadmap) throw new RoadmapError('No roadmap generated yet', 'ROADMAP_NOT_FOUND', 404);
-  return toRoadmapView(roadmap);
+  return toRoadmapView(roadmap, weeklyHours);
 }
 
 /**
  * Marks one task complete or incomplete. Only a task in the opposite state is written, so
  * repeating a request is a no-op and keeps the original completion time.
+ * When all tasks in a milestone reach completed, its skills are credited in UserSkillProgress.
  */
 export async function setTaskCompletion(userId: string, milestoneId: string, taskId: string, completed: boolean): Promise<RoadmapView> {
   const updated = await CareerRoadmap.findOneAndUpdate(
@@ -484,12 +507,115 @@ export async function setTaskCompletion(userId: string, milestoneId: string, tas
     },
     { arrayFilters: [{ 'm.milestoneId': milestoneId }, { 't.taskId': taskId }], new: true },
   ).lean();
-  if (updated) return toRoadmapView(updated);
+  if (updated) {
+    if (completed) {
+      const targetMilestone = updated.milestones.find(m => m.milestoneId === milestoneId);
+      if (targetMilestone && targetMilestone.tasks.length > 0 && targetMilestone.tasks.every(t => t.completed)) {
+        await Promise.all(
+          (targetMilestone.skills ?? [])
+            .map(s => normalizeSkill(s))
+            .filter(Boolean)
+            .map(skill =>
+              UserSkillProgress.findOneAndUpdate(
+                { userId: String(userId), skill },
+                { userId: String(userId), skill, completed: true, completedAt: new Date(), source: 'roadmap' },
+                { upsert: true, new: true }
+              )
+            )
+        );
+      }
+    }
+    return toRoadmapView(updated, await resolveWeeklyHours(userId));
+  }
 
   const current = await CareerRoadmap.findOne({
     userId,
     milestones: { $elemMatch: { milestoneId, 'tasks.taskId': taskId } },
   }).lean();
   if (!current) throw new RoadmapError('Roadmap task not found', 'ROADMAP_TASK_NOT_FOUND', 404);
-  return toRoadmapView(current);
+  return toRoadmapView(current, await resolveWeeklyHours(userId));
+}
+
+export type CrashCourseWindow = '48h' | '7d' | '14d';
+
+export interface CrashCourseBlock {
+  blockId: string;
+  day: number;
+  dayLabel: string;
+  skill: string;
+  title: string;
+  whySelected: string;
+  revisionMinutes: number;
+  practiceMinutes: number;
+  paretoPriority: number;
+  crashCourse: CrashCourseContent;
+  practiceProject: { title: string; description: string };
+}
+
+export interface CrashCoursePlan {
+  window: CrashCourseWindow;
+  targetRole: string;
+  paretoSkillCount: number;
+  totalMinutes: number;
+  totalHoursLabel: string;
+  blocks: CrashCourseBlock[];
+}
+
+const CRASH_COURSE_LIMITS: Record<CrashCourseWindow, { skills: number; practiceMinutes: number; days: number }> = {
+  '48h': { skills: 3, practiceMinutes: 120, days: 2 },
+  '7d': { skills: 5, practiceMinutes: 145, days: 7 },
+  '14d': { skills: 7, practiceMinutes: 170, days: 14 },
+};
+
+export async function getCrashCoursePlan(userId: string, window: CrashCourseWindow = '7d'): Promise<CrashCoursePlan> {
+  const intent = await CareerIntent.findOne({ userId: String(userId) }).select('dreamRole').lean();
+  const targetRole = intent?.dreamRole || 'Backend Developer';
+  const requiredSkills = getRequiredSkills(targetRole);
+  const missing = await findMissingSkills(userId, requiredSkills);
+  const pool = missing.length > 0 ? missing : requiredSkills;
+
+  const cfg = CRASH_COURSE_LIMITS[window];
+  const ranked = pool
+    .map((skill, index) => {
+      const resource = getResourceForSkill(skill);
+      return {
+        skill,
+        index,
+        resource,
+        paretoPriority: resource.crashCourse.paretoPriority,
+      };
+    })
+    .sort((a, b) => b.paretoPriority - a.paretoPriority || a.index - b.index)
+    .slice(0, cfg.skills);
+
+  const blocks: CrashCourseBlock[] = ranked.map((entry, idx) => {
+    const day = Math.min(cfg.days, Math.floor((idx * cfg.days) / ranked.length) + 1);
+    return {
+      blockId: `cc-${window}-${idx + 1}`,
+      day,
+      dayLabel: window === '48h' ? (day === 1 ? 'Day 1 (Hours 1–24)' : 'Day 2 (Hours 25–48)') : `Day ${day}`,
+      skill: entry.skill,
+      title: `${entry.skill} Rapid Blitz`,
+      whySelected: `High-frequency interview topic (Pareto ${entry.paretoPriority}/10) for ${targetRole}`,
+      revisionMinutes: entry.resource.crashCourse.revisionMinutes,
+      practiceMinutes: cfg.practiceMinutes,
+      paretoPriority: entry.paretoPriority,
+      crashCourse: entry.resource.crashCourse,
+      practiceProject: entry.resource.practiceProject,
+    };
+  });
+
+  const totalMinutes = blocks.reduce((sum, b) => sum + b.revisionMinutes + b.practiceMinutes, 0);
+  const hrs = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  const totalHoursLabel = mins > 0 ? `~${hrs}h ${mins}m` : `~${hrs}h`;
+
+  return {
+    window,
+    targetRole,
+    paretoSkillCount: blocks.length,
+    totalMinutes,
+    totalHoursLabel,
+    blocks,
+  };
 }

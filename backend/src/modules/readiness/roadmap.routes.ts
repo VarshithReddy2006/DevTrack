@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { rateLimiters } from '../../middleware/rateLimitAdvanced.js';
 import { withAuth } from '../../shared/controllerUtils.js';
 import { ApiResponse, errorResponse, successResponse } from '../../shared/response.js';
-import { generateRoadmap, generateRoadmapSchema, getRoadmap, RoadmapError, setTaskCompletion } from './roadmapGenerator.service.js';
+import { generateRoadmap, generateRoadmapSchema, getCrashCoursePlan, getRoadmap, RoadmapError, setTaskCompletion, type CrashCourseWindow } from './roadmapGenerator.service.js';
 import { getResourceForSkill } from './resources/learningResources.js';
 
 const taskParamsSchema = z.object({
@@ -37,6 +37,24 @@ router.get('/resource', withAuth('[roadmap]', 'get skill resource', async (_user
   }
   ApiResponse.success(res, getResourceForSkill(skill));
 }));
+
+const crashCourseWindowSchema = z.enum(['48h', '7d', '14d']);
+
+router.get('/crash-course', withAuth('[roadmap]', 'get crash course plan', (userId, req, res) =>
+  respond(res, async () => {
+    const rawWindow = typeof req.query.duration === 'string'
+      ? req.query.duration
+      : typeof req.query.window === 'string'
+        ? req.query.window
+        : '7d';
+    const parsed = crashCourseWindowSchema.safeParse(rawWindow);
+    if (!parsed.success) {
+      ApiResponse.badRequest(res, 'Invalid duration. Expected 48h, 7d, or 14d');
+      return;
+    }
+    const plan = await getCrashCoursePlan(userId, parsed.data as CrashCourseWindow);
+    ApiResponse.success(res, plan);
+  })));
 
 router.post('/generate', rateLimiters.ai, withAuth('[roadmap]', 'generate roadmap', async (userId, req, res) => {
   const parsed = generateRoadmapSchema.safeParse(req.body ?? {});

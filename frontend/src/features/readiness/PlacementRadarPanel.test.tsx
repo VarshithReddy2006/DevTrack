@@ -53,7 +53,8 @@ it("shows unknown evidence, changes goal, prints and isolates account cache", as
       <PlacementRadarPanel />
     </QueryClientProvider>,
   );
-  expect(await screen.findByText("Review OS", { exact: false })).toBeVisible();
+  expect(await screen.findByText("Evidence and diagnosis (last seven days)")).toBeVisible();
+  expect(screen.queryByText("Seven-day practice plan")).toBeNull();
   expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(5);
   fireEvent.change(screen.getByRole("combobox"), {
     target: { value: "advanced" },
@@ -69,7 +70,7 @@ it("shows unknown evidence, changes goal, prints and isolates account cache", as
       <PlacementRadarPanel />
     </QueryClientProvider>,
   );
-  await screen.findByText("Review OS", { exact: false });
+  await screen.findByText("Evidence and diagnosis (last seven days)");
   expect(state.get).toHaveBeenCalledTimes(2);
   client.clear();
 });

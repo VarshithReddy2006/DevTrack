@@ -1,12 +1,14 @@
 import { ReadinessDsa } from "../../db/models/readinessDsa.model.js";
 import { loadReadinessScoreInputs } from "./readinessScore.service.js";
+import { getRadarConceptSignals } from "./concepts/concepts.service.js";
 import { calculatePlacementRadar } from "./placementRadar.calculation.js";
 export async function getPlacementRadar(userId: string, now = new Date()) {
-  const [inputs, dsa] = await Promise.all([
+  const [inputs, dsa, conceptSignals] = await Promise.all([
     loadReadinessScoreInputs(userId, now),
     ReadinessDsa.findOne({ userId })
       .select({ topics: { $slice: 200 }, solveConsistency: 1, computedAt: 1 })
       .lean(),
+    getRadarConceptSignals(userId),
   ]);
   const projects = inputs.projects;
   const dsaFresh =
@@ -23,6 +25,8 @@ export async function getPlacementRadar(userId: string, now = new Date()) {
             coverage: projects.evidenceCoverage,
           }
         : null,
+      systemDesignConcept: conceptSignals.systemDesignConcept,
+      coreCsConcept: conceptSignals.coreCsConcept,
       contestRatings: inputs.contests.map((c) => c.rating),
       contestPlatforms: inputs.contests
         .filter((c) => typeof c.platform === "string" && c.platform.length > 0)

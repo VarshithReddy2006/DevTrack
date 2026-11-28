@@ -461,6 +461,17 @@ async function buildRoadmapIntelligence(
     )
   );
 
+  const baseGain = requiredSkills.length > 0 ? Math.max(5, Math.round(100 / requiredSkills.length)) : 10;
+  const rankMultipliers = [1.5, 1.12, 0.75];
+  const skillGains: Record<string, number> = {};
+  missingSkills.forEach((skill, idx) => {
+    const multiplier = idx < rankMultipliers.length
+      ? rankMultipliers[idx]
+      : Math.max(0.4, 0.65 - (idx - 3) * 0.05);
+    skillGains[skill] = Math.max(3, Math.round(baseGain * multiplier));
+  });
+  const topSkillGain = nextSkill ? (skillGains[nextSkill] ?? baseGain) : baseGain;
+
   const intelligence = {
     noRoleSelected: false,
     targetRole,
@@ -478,7 +489,8 @@ async function buildRoadmapIntelligence(
     nextSkill,
     nextThreeSkills: prioritySkills,
     highestImpactSkill: nextSkill,
-    readinessGain: requiredSkills.length > 0 ? Math.round(100 / requiredSkills.length) : 10,
+    readinessGain: topSkillGain,
+    skillGains,
     estimatedWeeksToNextMilestone,
     nextSkillResource,
     skillResources,

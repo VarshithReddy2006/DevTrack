@@ -146,13 +146,14 @@ it('renders categorized Data Structures and Algorithms with difficulty pills, ti
   );
 });
 
-it('synchronizes Trust & Confidence status with live reconnecting state instead of contradicting as Operational', async () => {
+it('omits the legacy Trust & Confidence strip from DSA Intelligence', async () => {
   useUIStore.setState({ sseStatus: 'reconnecting' });
   fetchData.mockResolvedValueOnce(activeState);
   renderPage();
 
-  expect(await screen.findByText('Reconnecting…')).toBeInTheDocument();
-  expect(screen.queryByText('Operational')).toBeNull();
+  expect(await screen.findByText('Total Analyzed')).toBeInTheDocument();
+  expect(screen.queryByText('Trust & Confidence')).toBeNull();
+  expect(screen.queryByText('Reconnecting…')).toBeNull();
 });
 
 it('keeps the zero state visible and makes Sync Data available after a failed sync', async () => {

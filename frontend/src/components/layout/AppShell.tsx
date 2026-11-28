@@ -7,7 +7,6 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { UserButton } from '@clerk/clerk-react';
 import {
   LayoutDashboard,
-  Code2,
   FolderKanban,
   UserRound,
   Settings,
@@ -47,7 +46,6 @@ interface NavItem {
 const coreNav: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={20} />, path: '/dashboard' },
   { id: 'focus', label: 'Focus', icon: <Target size={20} />, path: '/focus' },
-  { id: 'dsa', label: 'DSA', icon: <Code2 size={20} />, path: '/dsa' },
   { id: 'projects', label: 'Projects', icon: <FolderKanban size={20} />, path: '/projects' },
   { id: 'resume', label: 'Resume', icon: <FileText size={20} />, path: '/resume' },
   { id: 'readiness', label: 'Readiness', icon: <TrendingUp size={20} />, path: '/readiness' },
@@ -103,7 +101,7 @@ export const AppShell = () => {
   const mainMargin = collapsed ? 'md:ml-[5.25rem]' : 'md:ml-[14.5rem]';
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#09090B] text-[#111827] dark:text-[#F8FAFC] flex transition-colors duration-300">
+    <div className="min-h-screen max-w-full overflow-x-hidden bg-[#F8FAFC] dark:bg-[#09090B] text-[#111827] dark:text-[#F8FAFC] flex transition-colors duration-300">
       {/* ─── DESKTOP SIDEBAR ─── */}
       <aside
         className={cn(
@@ -245,7 +243,7 @@ export const AppShell = () => {
       </AnimatePresence>
 
       {/* ─── MAIN CONTENT AREA ─── */}
-      <main className={cn('flex-1 min-w-0 min-h-screen flex flex-col transition-all duration-300', mainMargin)}>
+      <main className={cn('flex-1 min-w-0 max-w-full overflow-x-hidden min-h-screen flex flex-col transition-all duration-300', mainMargin)}>
         {/* ─── TOPBAR (72px sticky with refined center layer) ─── */}
         <header className="sticky top-0 z-30 h-[72px] bg-gradient-to-b from-[#F8FAFC] to-[#F8FAFC]/90 dark:from-[#09090B] dark:to-[#09090B]/90 backdrop-blur-2xl border-b border-slate-200/50 dark:border-zinc-800/80 shadow-sm flex items-center transition-colors duration-300">
           <div className="w-full max-w-[1440px] mx-auto px-4 md:px-8 flex items-center justify-between gap-4">
@@ -305,7 +303,7 @@ export const AppShell = () => {
         </header>
 
         {/* ─── PAGE CONTENT ─── */}
-        <div className="flex-1 overflow-y-auto pb-20 md:pb-0">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden pb-20 md:pb-0">
           <div className="max-w-[1440px] mx-auto px-4 md:px-10 lg:px-14 py-8 md:py-10">
             <Outlet />
           </div>

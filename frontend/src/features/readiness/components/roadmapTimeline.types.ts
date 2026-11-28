@@ -4,6 +4,8 @@ export interface RoadmapTask {
   title: string;
   completed: boolean;
   href?: string;
+  actionLabel?: string;
+  kind?: 'learn' | 'build' | 'practice' | 'verify';
 }
 
 export interface RoadmapMilestone {
@@ -14,6 +16,9 @@ export interface RoadmapMilestone {
   weekEnd: number;
   estimatedHours: number;
   status: 'completed' | 'active' | 'locked';
+  dateRangeLabel?: string;
+  paceStatus?: 'on_track' | 'behind_pace';
+  skills?: readonly string[];
   tasks: readonly RoadmapTask[];
 }
 
