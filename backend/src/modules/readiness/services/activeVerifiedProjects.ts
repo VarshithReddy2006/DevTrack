@@ -39,5 +39,7 @@ export async function getActiveVerifiedProjects(userId: string): Promise<any[]> 
       fileStructure: project.provenance?.files ?? [],
       hasDocumentation: project.provenance?.files?.some(file => /(^|\/)readme/i.test(file)) ?? false,
       hasTests: project.provenance?.hasTests ?? false,
+      readmeContent: project.provenance?.readmeContent,
+      commitMessages: project.provenance?.commitMessages,
     }));
 }

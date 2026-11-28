@@ -17,6 +17,7 @@ vi.mock('../../../modules/readiness/services/VerifiedProjectIngestionService.js'
 }));
 
 import { getActiveVerifiedProjects } from '../../../modules/readiness/services/activeVerifiedProjects.js';
+import { ProjectIntelligenceEngine } from '../../../modules/readiness/intelligence/ProjectIntelligenceEngine.js';
 
 const record = (over: Record<string, unknown>) => ({
   userId: 'u1',
@@ -52,6 +53,36 @@ describe('getActiveVerifiedProjects', () => {
     expect(p).toMatchObject({
       commitCount: 12, fileCount: 2, hasTests: true, hasDocumentation: true, isFork: false,
     });
+  });
+
+  const synced = (extra: Record<string, unknown>) => record({
+    metrics: { userCommitCount: 2 },
+    provenance: { source: 'github', contributorId: 'c1', discoveredBySync: true, ...extra },
+  });
+
+  it('lets the generic README check fire and scores a real README', async () => {
+    verifiedFind.mockReturnValue([synced({ readmeContent: '# demo' }), synced({ readmeContent: 'x'.repeat(1500) })]);
+    const [thin, full] = await getActiveVerifiedProjects('u1');
+
+    expect(ProjectIntelligenceEngine.detectClonedRepository(thin)).toBe(true);
+    expect(ProjectIntelligenceEngine.detectClonedRepository(full)).toBe(false);
+    expect(ProjectIntelligenceEngine.calculateIndividualProjectQuality(full)
+      - ProjectIntelligenceEngine.calculateIndividualProjectQuality(thin)).toBeCloseTo(14.94);
+  });
+
+  it('lets the generic commit check fire', async () => {
+    verifiedFind.mockReturnValue([synced({ commitMessages: ['Initial commit'] })]);
+    const [p] = await getActiveVerifiedProjects('u1');
+
+    expect(ProjectIntelligenceEngine.detectClonedRepository(p)).toBe(true);
+  });
+
+  it('does not flag records whose README and commits were never collected', async () => {
+    verifiedFind.mockReturnValue([synced({})]);
+    const [p] = await getActiveVerifiedProjects('u1');
+
+    expect(p.readmeContent).toBeUndefined();
+    expect(ProjectIntelligenceEngine.detectClonedRepository(p)).toBeFalsy();
   });
 
   it('keeps legacy records that have no provenance', async () => {
