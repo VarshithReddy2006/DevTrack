@@ -2,6 +2,9 @@ import { FocusSession } from '../../db/models/focusSession.model.js';
 import { createLocalHourReader, localDateString } from '../../shared/date.js';
 import { getUserTimezone } from '../../shared/userTimezone.js';
 
+const ABANDONMENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+const EMOTIONAL_STATE_WINDOW_MS = 48 * 60 * 60 * 1000;
+
 export class CoachingService {
   /**
    * Generates heuristic coaching insights based on user focus history.
@@ -48,7 +51,11 @@ export class CoachingService {
     }
 
     // Heuristic 3: Consistency
-    const abandoned = await FocusSession.countDocuments({ userId, status: 'abandoned' });
+    const abandoned = await FocusSession.countDocuments({
+      userId,
+      status: 'abandoned',
+      startedAt: { $gte: new Date(Date.now() - ABANDONMENT_WINDOW_MS) },
+    });
     if (abandoned > 5) {
       insights.push("You've abandoned a few sessions lately. Try shorter intervals to rebuild momentum.");
     } else {
@@ -62,7 +69,10 @@ export class CoachingService {
    * Detects emotional state based on recent activity.
    */
   static async detectEmotionalState(userId: string) {
-    const recentSessions = await FocusSession.find({ userId })
+    const recentSessions = await FocusSession.find({
+      userId,
+      startedAt: { $gte: new Date(Date.now() - EMOTIONAL_STATE_WINDOW_MS) },
+    })
       .sort({ startedAt: -1 })
       .limit(10)
       .lean();
