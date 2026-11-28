@@ -16,6 +16,8 @@ import { eventBus } from '../../shared/sse/index.js';
 import { ensureUserXp, readFocusXpForDay } from '../xp/focusXpLedger.js';
 import { computeActiveSec, decideFocusXp, FOCUS_HEARTBEAT_SECONDS } from './focusXpDecision.js';
 import { analyzeKeystrokeEntropy, type KeystrokeAnalysis } from '../focus/keystrokeEntropy.service.js';
+import { getCanonicalStreakData } from '../streak/streak.service.js';
+import { localDateString, localDayBounds, resolveTimezone } from '../../shared/date.js';
 
 export interface FocusSessionResult {
   sessionId: string;
@@ -64,6 +66,9 @@ export interface FocusHistoryItem {
   startedAt: Date;
   completedAt: Date | null;
   heartbeatCount: number;
+  /** Null until completion has decided the XP, which abandoned sessions never reach. */
+  xpAwarded: number | null;
+  xpReason: string | null;
 }
 
 export interface FocusHistoryResult {
@@ -80,6 +85,15 @@ export interface FocusSummaryResult {
   totalDurationMinutes: number;
   averageQualityScore: number;
   modeBreakdown: Record<string, { sessions: number; totalMinutes: number }>;
+  /** Completed sessions of the current calendar day in the user's timezone, whatever `days` is. */
+  today: FocusDayTotals;
+  currentStreak: number;
+}
+
+export interface FocusDayTotals {
+  date: string;
+  completedSessions: number;
+  totalDurationMinutes: number;
 }
 
 /** A running session with no sign of life for this long is considered abandoned. */
@@ -710,6 +724,8 @@ export class FocusEngine {
         startedAt: s.startedAt,
         completedAt: s.completedAt ?? null,
         heartbeatCount: s.heartbeatCount ?? 0,
+        xpAwarded: s.xp?.amount ?? null,
+        xpReason: s.xp?.reason ?? null,
       })),
       total,
       limit,
@@ -734,7 +750,11 @@ export class FocusEngine {
       query.startedAt = { $gte: since };
     }
 
-    const sessions = await FocusSession.find(query).lean();
+    const [sessions, today, streak] = await Promise.all([
+      FocusSession.find(query).lean(),
+      this.getFocusDayTotals(userObjId, new Date()),
+      getCanonicalStreakData(userId),
+    ]);
 
     let completedSessions = 0;
     let abandonedSessions = 0;
@@ -774,6 +794,25 @@ export class FocusEngine {
       totalDurationMinutes,
       averageQualityScore,
       modeBreakdown,
+      today,
+      currentStreak: streak.currentStreak,
+    };
+  }
+
+  /** A session counts on the local day it was completed. */
+  private async getFocusDayTotals(userId: Types.ObjectId, now: Date): Promise<FocusDayTotals> {
+    const user = await User.findById(userId).select('timezone').lean();
+    const timezone = resolveTimezone(user?.timezone);
+    const date = localDateString(now, timezone);
+    const { start, end } = localDayBounds(date, timezone);
+    const sessions = await FocusSession.find({ userId, status: 'completed', completedAt: { $gte: start, $lt: end } })
+      .select('actualDurationMinutes activeDurationMs')
+      .lean();
+    return {
+      date,
+      completedSessions: sessions.length,
+      totalDurationMinutes: sessions.reduce(
+        (total, s) => total + (s.actualDurationMinutes ?? Math.round((s.activeDurationMs ?? 0) / 60000)), 0),
     };
   }
 }
