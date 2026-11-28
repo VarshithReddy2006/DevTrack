@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getSettings, updateSettings, type UserSettingsResponse } from '../services/settingsService';
+import { useDashboardStore } from './dashboardStore';
 import { hasPlatformChanges, isPlatformSetting, platformIds, platformPayload, platformValues, type PlatformValues } from '../features/settings/settingsContract';
 
 interface SettingsState {
@@ -65,6 +66,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       const settings = await updateSettings(platformPayload(current.values, current.savedValues));
       if (get().saveRequest !== request) return;
+      // A saved handle changes which platforms are connected.
+      useDashboardStore.getState().invalidate();
       const latest = get();
       const savedValues = platformValues(settings);
       const values = { ...savedValues };

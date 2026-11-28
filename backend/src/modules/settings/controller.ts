@@ -10,6 +10,9 @@ import { successResponse, commonErrors } from '../../shared/response.js';
 import type { AuthenticatedRequest } from '../../middleware/auth.js';
 import { logger } from '../../shared/logger.js';
 import { z } from 'zod';
+import {
+  SYNC_PLATFORMS, applySavedHandle, mirrorHandleToProfile, savedSettingsHandle, submittedSettingsHandle,
+} from '../platform-sync/platform-connection.service.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,11 +153,25 @@ export async function updateSettings(
     return;
   }
 
+  const previousSettings = await UserSettings.findOne({ userId }).select('platforms').lean();
+
   const updatedSettings = await UserSettings.findOneAndUpdate(
     { userId },
     { $set: updateData },
     { upsert: true, new: true, runValidators: true },
   );
+
+  // Sync reads ConnectedPlatform, so a saved or cleared handle has to reach it.
+  for (const platform of SYNC_PLATFORMS) {
+    const sent = platforms[platform];
+    if (!sent) continue;
+    const saved = previousSettings?.platforms?.[platform];
+    const next = submittedSettingsHandle(platform, sent, saved);
+    if (next === undefined) continue;
+    if (await applySavedHandle(userId, platform, next, savedSettingsHandle(platform, saved))) {
+      await mirrorHandleToProfile(userId, platform, next);
+    }
+  }
 
   const activityDescription = describeChanges(platforms);
   ActivityEvent.create({

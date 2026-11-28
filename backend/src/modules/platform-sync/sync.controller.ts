@@ -12,10 +12,11 @@ import type { AuthenticatedRequest } from '../../middleware/auth.js';
 import * as syncService from './sync.service.js';
 import { successResponse, commonErrors } from '../../shared/response.js';
 import { logger } from '../../shared/logger.js';
-import { UserSettings, ConnectedPlatform, PlatformStats } from '../../db/models/index.js';
+import { UserSettings, PlatformStats } from '../../db/models/index.js';
 import { Types } from 'mongoose';
 import { createActivity } from '../activity/activity.service.js';
 import { syncState } from '../../shared/syncState.js';
+import { applySavedHandle } from './platform-connection.service.js';
 
 // Platforms that support sync
 const SUPPORTED_PLATFORMS = ['leetcode', 'codeforces', 'codechef', 'github'];
@@ -197,15 +198,7 @@ export async function syncGithub(req: AuthenticatedRequest, res: Response): Prom
     logger.info(`GitHub sync triggered for user ${userId}, github: ${githubUsername}`);
 
     // 2. Ensure ConnectedPlatform record exists (auto-create from settings)
-    await ConnectedPlatform.findOneAndUpdate(
-      { userId: new Types.ObjectId(userId), platformName: 'github' },
-      {
-        username: githubUsername,
-        profileUrl: `https://github.com/${githubUsername}`,
-        isConnected: true,
-      },
-      { upsert: true, new: true },
-    );
+    await applySavedHandle(userId, 'github', githubUsername, githubUsername);
 
     // 3. Delegate to existing sync pipeline
     const result = await syncService.syncPlatform(userId, 'github');

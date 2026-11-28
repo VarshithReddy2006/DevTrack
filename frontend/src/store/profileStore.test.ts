@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useProfileStore } from './profileStore';
+import { useDashboardStore } from './dashboardStore';
 import { getProfile, updateProfile } from '../services/profileService';
 
 vi.mock('../services/profileService', () => ({
@@ -17,6 +18,15 @@ beforeEach(() => {
 });
 
 describe('profile persistence', () => {
+  it('marks the dashboard cache stale after a save, since saved handles change the connected platforms', async () => {
+    await useProfileStore.getState().fetchProfile();
+    vi.mocked(updateProfile).mockResolvedValue(response(initial()));
+    useDashboardStore.getState().setData({});
+    useProfileStore.getState().updateField('leetcodeUsername','');
+    await useProfileStore.getState().saveProfile();
+    expect(useDashboardStore.getState().lastFetchedAt).toBeNull();
+  });
+
   it('round-trips location and added/removed tags through the save payload', async () => {
     const stored=initial();
     vi.mocked(getProfile).mockImplementation(async()=>response(structuredClone(stored)));
