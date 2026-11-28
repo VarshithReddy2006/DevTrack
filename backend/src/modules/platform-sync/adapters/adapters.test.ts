@@ -124,8 +124,8 @@ it('keeps optional Codeforces rating failures nonfatal and counts unique accepte
 });
 
 it.each([ccHtml, '<div class="problems-solved"><div class="heading">Solved 18</div></div>Global Rank: 52',
-  '<div class="rating-number">bad</div><div class="rating-header"><span class="highest">bad</span></div>',
-  '<section class="problems-solved"><h5>nothing yet</h5></section><div class="profile-loaction-item">Global Rank: none</div>'])
+  '<div class="rating-number">bad</div><div class="rating-header"><span class="highest">bad</span></div><h3>Total Problems Solved: 0</h3>',
+  '<section class="problems-solved"><h3>Total Problems Solved: 0</h3></section><div class="profile-loaction-item">Global Rank: none</div>'])
 ('scrapes CodeChef profile fields and safe empty states', async html => {
   provider({ html });
   const adapter = new CodeChefAdapter();

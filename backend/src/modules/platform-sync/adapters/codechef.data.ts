@@ -73,44 +73,11 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
     }
   }
 
-  // Parse total solved problems - selector: section.problems-solved h5
-  let totalSolved = 0;
-  const problemsSolvedEl = $('section.problems-solved h5').first();
-  if (problemsSolvedEl.length) {
-    const problemsText = problemsSolvedEl.text();
-    // Text example: "Total Problems Solved: 277"
-    const match = problemsText.match(/(\d+[\d,]*)/);
-    if (match) {
-      const parsed = parseInt(match[1].replace(/,/g, ''), 10);
-      if (!isNaN(parsed)) {
-        totalSolved = parsed;
-      }
-    }
-  }
-
-  // Fallback: also check for .problems-solved .heading
-  if (totalSolved === 0) {
-    const headingEl = $('.problems-solved .heading').first();
-    if (headingEl.length) {
-      const headingText = headingEl.text();
-      const match = headingText.match(/(\d+[\d,]*)/);
-      if (match) {
-        const parsed = parseInt(match[1].replace(/,/g, ''), 10);
-        if (!isNaN(parsed)) {
-          totalSolved = parsed;
-        }
-      }
-    }
-  }
-
-  // Final Regex Fallback (Robust Parsing)
-  // ALWAYS prefer "Total Problems Solved" text if present, as it's the authoritative metric
-  const solvedMatch = html.match(/Total Problems Solved\s*:?\s*([\d,]+)/i);
-  if (solvedMatch) {
-    const parsed = parseInt(solvedMatch[1].replace(/,/g, ''), 10);
-    if (!isNaN(parsed) && parsed > 0) {
-      totalSolved = parsed;
-    }
+  const totalSolved = parseTotalSolved($, html);
+  if (totalSolved === null) {
+    // Bot check pages and layout changes also answer 200. Failing keeps the stored stats.
+    logger.error('CodeChef solved count not found in page', { username, url });
+    throw new Error('Could not read the solved count from the CodeChef profile page');
   }
 
   if (!globalRank || globalRank === '0' || globalRank === '') {
@@ -138,11 +105,6 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
     stars,
   });
 
-  // Return empty state if no data found (user might exist but have no activity)
-  if (rating === null && totalSolved === 0) {
-    logger.warn('CodeChef user exists but no stats found - possible private profile or new user', { username });
-  }
-
   return {
     username,
     totalSolved,
@@ -162,4 +124,20 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
       scrapedAt: new Date().toISOString(),
     },
   };
+}
+
+/** Returns null when the page has no readable solved count. A real zero returns 0. */
+function parseTotalSolved($: cheerio.CheerioAPI, html: string): number | null {
+  // "Total Problems Solved" is the authoritative metric, so it wins over any selector.
+  const total = html.match(/Total Problems Solved\s*:?\s*(\d[\d,]*)/i);
+  if (total) return parseInt(total[1].replace(/,/g, ''), 10);
+
+  // Older layouts. The section also holds unrelated headings such as "Problems Authored (216)",
+  // so only a number that follows the word "Solved" counts.
+  for (const element of $('section.problems-solved h5, .problems-solved .heading').toArray()) {
+    const match = $(element).text().match(/Solved\D*(\d[\d,]*)/i);
+    if (match) return parseInt(match[1].replace(/,/g, ''), 10);
+  }
+
+  return null;
 }
