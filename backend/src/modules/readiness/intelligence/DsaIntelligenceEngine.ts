@@ -152,6 +152,10 @@ export const DsaIntelligenceEngine = {
       } catch {
         // Non-fatal in unit tests or isolated environments without full DSA repository fixtures
       }
+
+      if (effectiveTotalSolves === 0) {
+        confidenceScore = 0;
+      }
       
       const confidenceReasoning = this.generateConfidenceReasoning(
         effectiveTotalSolves,
