@@ -254,3 +254,12 @@ describe('node-cron removal', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe('quest expiration schedule', () => {
+  it('runs the weekly sweep on Monday, after the 00:00 UTC week rollover', async () => {
+    await scheduleMaintenanceTasks();
+
+    const weekly = [...fx.repeatables.values()].filter(job => job.name === 'expire-quests-weekly');
+    expect(weekly.map(job => job.opts.repeat)).toEqual([{ pattern: '5 0 * * 1', tz: 'UTC' }]);
+  });
+});

@@ -66,14 +66,21 @@ export async function runQuestExpirationWorkerSweep(
 
 /**
  * Registers repeatable BullMQ jobs for daily reset (00:00 UTC) and
- * weekly rollover (Sunday 23:59 UTC) quest expiration sweeps.
+ * weekly rollover (Monday 00:05 UTC) quest expiration sweeps.
  */
 export async function scheduleQuestExpiration(
-  queue: Pick<Queue<SystemMaintenanceJobData>, 'add'>
+  queue: Pick<Queue<SystemMaintenanceJobData>, 'add' | 'removeRepeatable'>
 ): Promise<void> {
+  // Retire the Sunday 23:59 schedule, which ran before the weekly quests had expired.
+  await queue.removeRepeatable(
+    'expire-quests-weekly',
+    { pattern: '59 23 * * 0', tz: 'UTC' },
+    'quests-expire-weekly'
+  );
+
   for (const [name, pattern] of [
     ['daily', '0 0 * * *'],
-    ['weekly', '59 23 * * 0'],
+    ['weekly', '5 0 * * 1'],
   ] as const) {
     await queue.add(
       `expire-quests-${name}`,

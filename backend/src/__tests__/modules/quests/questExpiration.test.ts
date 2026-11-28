@@ -406,9 +406,16 @@ describe('quest expiration and archival worker', () => {
     });
   });
 
-  it('registers daily 00:00 UTC and weekly Sunday 23:59 UTC expiration jobs', async () => {
+  it('registers daily 00:00 UTC and weekly Monday 00:05 UTC expiration jobs', async () => {
     const add = vi.fn().mockResolvedValue({});
-    await scheduleQuestExpiration({ add } as never);
+    const removeRepeatable = vi.fn().mockResolvedValue(true);
+    await scheduleQuestExpiration({ add, removeRepeatable } as never);
+
+    expect(removeRepeatable).toHaveBeenCalledWith(
+      'expire-quests-weekly',
+      { pattern: '59 23 * * 0', tz: 'UTC' },
+      'quests-expire-weekly'
+    );
 
     expect(add).toHaveBeenCalledTimes(2);
     expect(add.mock.calls[0][0]).toBe('expire-quests-daily');
@@ -422,7 +429,7 @@ describe('quest expiration and archival worker', () => {
     expect(add.mock.calls[1][0]).toBe('expire-quests-weekly');
     expect(add.mock.calls[1][1]).toEqual({ task: 'expire_quests' });
     expect(add.mock.calls[1][2]).toMatchObject({
-      repeat: { pattern: '59 23 * * 0', tz: 'UTC' },
+      repeat: { pattern: '5 0 * * 1', tz: 'UTC' },
       jobId: 'quests-expire-weekly',
       attempts: 5,
     });
