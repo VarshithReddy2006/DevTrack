@@ -4,13 +4,19 @@ The backend allocates **three daily** quests (distinct solves, qualified focus
 minutes, flashcard reviews) and **two weekly** quests (solves and focus minutes).
 All periods are half-open UTC ranges. Daily periods start at midnight; weekly
 periods start Sunday at midnight. The maintenance worker registers both UTC cron
-schedules plus a retryable startup catch-up. Listing and event consumption also
-allocate missing current-period slots, so new users need not wait for midnight.
+schedules plus a retryable startup catch-up. Listing also allocates missing
+current-period slots, so new users need not wait for midnight. Event consumption
+allocates the slots of the day and week the activity happened in, not the time the
+event is processed, so an activity at 23:59:55 handled after midnight still counts
+for that day. Periods that closed 24 hours ago or earlier are not created after the
+fact; events still credit any rows that already exist for them. Late progress does
+not reopen the claim window.
 
 Targets and rewards scale across the seven existing league divisions. A missing
 current standing uses the last finalized promotion/demotion outcome, then bronze.
 If the previous week's standing is still active and the new standing is absent,
-generation returns a retryable 503 instead of freezing a tier before rollover.
+generation for the running week returns a retryable 503 instead of freezing a tier
+before rollover. Generation for a week that is already over is not blocked.
 Already allocated slots retain their tier, target, and rewards throughout their
 period. Unique indexes cover both user/definition/period and user/slot/period, so
 a promotion cannot create extra reward slots.
