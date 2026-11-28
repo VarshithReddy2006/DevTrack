@@ -6,7 +6,7 @@ import { writeOutboxEvent } from '../../shared/events/outbox.js';
 // All XP awards MUST flow through this module — no direct UserXp writes elsewhere.
 
 import { Types, type ClientSession } from 'mongoose';
-import { UserXp, XpTransaction, UserAnalytics, Mission, FocusSession, type IUserXp } from '../../db/models/index.js';
+import { UserXp, XpTransaction, UserAnalytics, Mission, FocusSession, type IUserXp, type IXpTransaction } from '../../db/models/index.js';
 import { eventBus } from '../../shared/sse/index.js';
 import { logger } from '../../shared/logger.js';
 import {
@@ -109,13 +109,8 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
       sourceId,
       requestId,
     });
-    // Reconcile/repair UserAnalytics if it failed or was left behind
-    await scheduleOrRun(async () => {
-      const analytics = await UserAnalytics.findOne({ userId: userObjId });
-      if (!analytics || analytics.totalXp < existingTransaction.newTotalXp) {
-        await repairUserAnalytics(userId);
-      }
-    });
+    // Finish any post-commit work the first attempt did not get through
+    await scheduleOrRun(() => reconcileDuplicateAward(userId, existingTransaction, requestId));
     return {
       awarded: false,
       xpAwarded: 0,
@@ -147,9 +142,14 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
   if (sourceType === 'daily_streak') activityIncrements['lifetimeStats.dailyStreaks'] = 1;
   if (sourceType === 'sync_completed') activityIncrements['lifetimeStats.totalSyncs'] = 1;
 
+  // The committed ledger row for this event, whether this call wrote it or found it.
+  let ledgerRow: IXpTransaction | undefined;
   const executeXpUpdate = async (session: ClientSession): Promise<XpProcessingResult> => {
     const duplicate = await XpTransaction.findOne({ userId: userObjId, sourceType, sourceId }).session(session);
-    if (duplicate) return duplicateResult(duplicate);
+    if (duplicate) {
+      ledgerRow = duplicate;
+      return duplicateResult(duplicate);
+    }
     let userXp = await UserXp.findOne({ userId: userObjId }).session(session);
     if (!userXp && activeSession) {
       await UserXp.updateOne(
@@ -200,9 +200,10 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
       $inc: { ...activityIncrements, totalXp: xpAwarded, 'lifetimeStats.totalXpEarned': xpAwarded },
       $set: { currentLevel: levelAfter, xpToNextLevel: xpToNextLevel(newTotalXp, levelAfter), lastXpGainedAt: new Date() },
     }, { session });
-    await XpTransaction.create([{
+    [ledgerRow] = await XpTransaction.create([{
       userId: userObjId, sourceType, sourceId, xpAwarded,
       previousTotalXp, newTotalXp, levelBefore, levelAfter, metadata: ledgerMetadata ?? {},
+      leagueDispatchedAt: null,
     }], { session });
     return { awarded: true, xpAwarded, duplicate: false, levelBefore, levelAfter,
       leveledUp: levelAfter > levelBefore, newTotalXp };
@@ -225,16 +226,12 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
       // including its aggregate increment. Return only a committed matching row.
       const duplicate = await XpTransaction.findOne({ userId: userObjId, sourceType, sourceId });
       if (!duplicate) throw error;
-      return duplicateResult(duplicate);
+      ledgerRow = duplicate;
+      transition = duplicateResult(duplicate);
     }
   }
   if (transition.duplicate) {
-    await scheduleOrRun(async () => {
-      const analytics = await UserAnalytics.findOne({ userId: userObjId });
-      if (!analytics || analytics.totalXp < transition.newTotalXp) {
-        await repairUserAnalytics(userId);
-      }
-    });
+    await scheduleOrRun(() => reconcileDuplicateAward(userId, ledgerRow!, requestId));
     return transition;
   }
   if (!transition.awarded) return transition;
@@ -257,13 +254,7 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
       eventBus.emitLevelUp(userId, level, newTotalXp);
     }
     // ── Weekly leagues: hand the committed award to the league score worker ──
-    if (xpAwarded > 0) {
-      try {
-        await enqueueLeagueScore({ userId, sourceType, sourceId, xpAwarded, occurredAt: new Date().toISOString(), requestId });
-      } catch (err) {
-        logger.warn('[xp] League score enqueue failed (non-fatal)', { error: err });
-      }
-    }
+    await dispatchLeagueScore(userId, ledgerRow!, requestId);
 
     // ── Step 9: Runtime state sync ──────────────────────────────────────────
     try {
@@ -320,6 +311,40 @@ async function applyXpEvent(payload: XpEventPayload, missionReward?: number): Pr
     leveledUp,
     newTotalXp,
   };
+}
+
+// ─── Post-commit delivery ───────────────────────────────────────────────────
+
+/** A replayed event is already in the ledger, but its follow-up work may not be done. */
+async function reconcileDuplicateAward(userId: string, award: IXpTransaction, requestId?: string): Promise<void> {
+  const analytics = await UserAnalytics.findOne({ userId: new Types.ObjectId(userId) });
+  if (!analytics || analytics.totalXp < award.newTotalXp) {
+    await repairUserAnalytics(userId);
+  }
+  await dispatchLeagueScore(userId, award, requestId);
+}
+
+/**
+ * Enqueues the league score for a ledger row that has not been delivered yet. Never
+ * throws: the marker stays `null` on failure, so the next replay tries again. Sending
+ * one row twice is safe because the league store applies each
+ * (userId, sourceType, sourceId) once per week, and `occurredAt` comes from the row
+ * so every attempt lands in the same week.
+ */
+async function dispatchLeagueScore(userId: string, award: IXpTransaction, requestId?: string): Promise<void> {
+  // Strictly `null`: an absent marker means this row's delivery is not tracked here.
+  if (award.leagueDispatchedAt !== null || award.xpAwarded <= 0) return;
+  const { sourceType, sourceId, xpAwarded } = award;
+  try {
+    await enqueueLeagueScore({
+      userId, sourceType, sourceId, xpAwarded, occurredAt: award.createdAt.toISOString(), requestId,
+    });
+    await XpTransaction.updateOne({ _id: award._id }, { $set: { leagueDispatchedAt: new Date() } });
+  } catch (err) {
+    logger.warn('[xp] League score dispatch failed (non-fatal), a replay of this event retries it', {
+      error: err, userId, sourceType, sourceId, requestId,
+    });
+  }
 }
 
 // ─── XP award calculator ────────────────────────────────────────────────────

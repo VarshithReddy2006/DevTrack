@@ -1,5 +1,6 @@
 // src/db/models/xpTransaction.model.ts — Immutable XP transaction log
-// Every XP award creates one transaction record.
+// Every XP award creates one transaction record. The award fields never change;
+// only the delivery marker `leagueDispatchedAt` is written afterwards.
 // Idempotent via (userId + sourceType + sourceId) uniqueness.
 
 import mongoose, { Schema, type Document } from 'mongoose';
@@ -25,6 +26,11 @@ export interface IXpTransaction extends Document {
   levelBefore: number;
   levelAfter: number;
   metadata: Record<string, unknown>;
+  /**
+   * `null` until the award has been handed to the league score queue. Absent on rows
+   * whose delivery is not tracked here (quest rewards and rows older than this field).
+   */
+  leagueDispatchedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -53,6 +59,8 @@ const xpTransactionSchema = new Schema<IXpTransaction>(
     levelBefore: { type: Number, required: true, min: 1 },
     levelAfter: { type: Number, required: true, min: 1 },
     metadata: { type: Schema.Types.Mixed, default: {} },
+    // No default on purpose, see the interface above.
+    leagueDispatchedAt: { type: Date },
   },
   { timestamps: { createdAt: true, updatedAt: false } // immutable
   }
