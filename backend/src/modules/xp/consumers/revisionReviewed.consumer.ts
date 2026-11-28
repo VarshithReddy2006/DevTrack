@@ -1,5 +1,9 @@
 // src/modules/xp/consumers/revisionReviewed.consumer.ts — Awards XP on revision.reviewed domain event
 import { processXpEvent, type XpProcessingResult } from '../processor.js';
+import { User } from '../../../db/models/user.model.js';
+import { registerConsumer, type ConsumerDefinition } from '../../../shared/events/consumerRegistry.js';
+import type { RevisionReviewedPayload } from '../../../shared/events/eventContract.js';
+import { QueueNames } from '../../../shared/jobs/types.js';
 import { logger } from '../../../shared/logger.js';
 
 export interface RevisionReviewedEvent {
@@ -47,4 +51,25 @@ export async function handleRevisionReviewed(
   });
 
   return result;
+}
+
+/**
+ * Outbox delivery of the review award, which recovers a failed inline attempt. The
+ * XP ledger key makes it a no-op when the award already exists.
+ */
+export const revisionXpConsumer: ConsumerDefinition<RevisionReviewedPayload> = {
+  name: 'xp.revisionReviewed',
+  pool: 'xp',
+  queue: QueueNames.DOMAIN_READINESS,
+  dedup: 'natural',
+  async handle({ userId, payload }) {
+    // An event still queued after account erasure must not recreate XP records.
+    if (!await User.exists({ _id: userId })) return;
+    const { cardId, reviewSeq, rating } = payload;
+    await handleRevisionReviewed({ userId, cardId, reviewSeq, rating });
+  },
+};
+
+export function registerRevisionXpConsumer(): void {
+  registerConsumer('revision.reviewed', revisionXpConsumer);
 }
