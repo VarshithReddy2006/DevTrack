@@ -99,6 +99,7 @@ export async function fetchStatsData(username: string): Promise<FetchedPlatformS
   };
 }
 
+// A partial count must never be returned: it would be stored as the user's solved total.
 async function fetchUniqueSolvedProblems(handle: string): Promise<number> {
   const solvedProblems = new Set<string>();
   let from = 1;
@@ -108,14 +109,11 @@ async function fetchUniqueSolvedProblems(handle: string): Promise<number> {
     const url = `https://codeforces.com/api/user.status?handle=${encodeURIComponent(handle)}&from=${from}&count=${count}`;
     const res = await fetchWithRetry(url);
 
-    if (!res.ok) {
-      logger.warn(`Codeforces user.status API returned ${res.status} at from=${from}`);
-      break;
-    }
+    if (!res.ok) throw new Error(`Codeforces solved count API error (${res.status}) at from=${from}`);
 
     const data = await res.json() as { status: string; result?: CodeforcesSubmissionBackend[] };
-    if (data.status !== 'OK' || !data.result || data.result.length === 0) {
-      break;
+    if (data.status !== 'OK' || !Array.isArray(data.result)) {
+      throw new Error(`Invalid Codeforces solved count response at from=${from}`);
     }
 
     for (const submission of data.result) {
