@@ -166,6 +166,9 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
         isSaving: false,
         saveError: null,
       }));
+      // A saved or cleared handle changes which platforms are connected.
+      const { useDashboardStore } = await import('./dashboardStore');
+      useDashboardStore.getState().invalidate();
     } catch (error) {
       console.error('Failed to save profile:', error);
       set({ isSaving: false, saveError: 'Could not save profile. Your changes are still unsaved. Please check the fields and try again.' });

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSettingsStore } from './settingsStore';
+import { useDashboardStore } from './dashboardStore';
 import { getSettings, updateSettings, type UserSettingsResponse } from '../services/settingsService';
 
 vi.mock('../services/settingsService', () => ({ getSettings: vi.fn(), updateSettings: vi.fn() }));
@@ -15,6 +16,17 @@ beforeEach(() => {
 });
 
 describe('settings request lifecycle', () => {
+  it('marks the dashboard cache stale only when a handle save succeeds', async () => {
+    await state().fetchSettings();
+    useDashboardStore.getState().setData({});
+    vi.mocked(updateSettings).mockRejectedValueOnce(new Error('offline'));
+    state().updateField(githubId, 'saved');
+    await state().saveSettings();
+    expect(useDashboardStore.getState().lastFetchedAt).not.toBeNull();
+    await state().saveSettings();
+    expect(useDashboardStore.getState().lastFetchedAt).toBeNull();
+  });
+
   it('blocks immediate duplicate writes before React has rerendered', async () => {
     await state().fetchSettings();
     const pending = deferred<UserSettingsResponse>();

@@ -7,6 +7,7 @@ import { projectSubmission } from './submission-projections.js';
 import { dsaProblemIdentity } from '../dsa/dsa-problem-identity.js';
 import type { PlatformSubmission, PlatformContest, FetchedPlatformStats } from './adapters/types.js';
 import { enqueueSubmissionEvaluation } from '../revision/cardGenerator.service.js';
+import { PLATFORM_TOPIC_NAMES } from '../dsa/dsa.constants.js';
 
 async function admissionTransaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
@@ -137,10 +138,7 @@ export async function updatePlatformTopicAnalytics(
 ): Promise<void> {
   const userObjId = new Types.ObjectId(userId);
 
-  const topicName = platformName === 'codeforces' ? 'Competitive Programming'
-    : platformName === 'leetcode' ? 'LeetCode Problems'
-    : platformName === 'codechef' ? 'CodeChef Problems'
-    : 'General';
+  const topicName: string = PLATFORM_TOPIC_NAMES[platformName as keyof typeof PLATFORM_TOPIC_NAMES] ?? 'General';
 
   await DsaTopicProgress.findOneAndUpdate(
     { userId: userObjId, topicName },

@@ -189,6 +189,10 @@ async function syncPlatformWithLock(userId: string, platformName: string, option
     const adapter = getAdapter(platformName);
     const result = await adapter.sync(platform.username);
     if (!result.success) throw new Error(result.error || 'Platform adapter sync failed');
+    // The handle can be cleared or replaced while the provider is being fetched.
+    if (!await ConnectedPlatform.exists({ _id: platform._id, isConnected: true, username: platform.username })) {
+      throw new Error('Platform connection changed during sync. Sync again.');
+    }
     const fetched: FetchedPlatformStats = {
       username: platform.username, totalSolved: result.stats.totalSolved,
       easySolved: result.stats.easySolved, mediumSolved: result.stats.mediumSolved,
@@ -302,8 +306,9 @@ async function syncPlatformWithLock(userId: string, platformName: string, option
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
+    // A connection that changed meanwhile keeps its own sync state.
     await ConnectedPlatform.findOneAndUpdate(
-      { userId: new Types.ObjectId(userId), platformName },
+      { _id: platform._id, isConnected: true, username: platform.username },
       { syncStatus: 'error', syncError: errorMessage }
     );
 

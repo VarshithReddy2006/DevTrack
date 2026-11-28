@@ -1,9 +1,12 @@
 // src/modules/profile/profile.service.ts
-import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { invalidateCacheTag, portfolioTag } from '../../shared/redis/cacheTags.js';
 import { Types } from 'mongoose';
 import { User, UserProfile, ConnectedPlatform, PlatformStats } from '../../db/models/index.js';
 import { PLATFORMS } from '../../config/constants.js';
+import {
+  SYNC_PLATFORMS, applySavedHandle, connectPlatformAccount, mirrorHandleToProfile, mirrorHandleToSettings,
+  type SyncPlatformName,
+} from '../platform-sync/platform-connection.service.js';
 import type { ApiUserProfile, ApiConnectedPlatform, ApiSocialLinks, ApiProfileUpdatePayload, ApiPlatformStatsResponse } from '../../types/api.types.js';
 
 export async function getProfile(userId: string): Promise<ApiUserProfile | null> {
@@ -60,12 +63,23 @@ export async function updateProfile(userId: string, payload: ApiProfileUpdatePay
   if (payload.targetCompanies !== undefined) profileUpdate.targetCompanies = payload.targetCompanies;
   if (payload.socialLinks !== undefined) profileUpdate.socialLinks = payload.socialLinks;
 
+  const previousLinks = payload.socialLinks === undefined ? undefined
+    : (await UserProfile.findOne({ userId: new Types.ObjectId(userId) }).select('socialLinks').lean())?.socialLinks;
+
   if (Object.keys(profileUpdate).length > 0) {
     await UserProfile.findOneAndUpdate(
       { userId: new Types.ObjectId(userId) },
       { $set: profileUpdate },
       { upsert: true, new: true }
     );
+  }
+
+  for (const platform of SYNC_PLATFORMS) {
+    const next = payload.socialLinks?.[platform];
+    if (next === undefined) continue;
+    if (await applySavedHandle(userId, platform, next, previousLinks?.[platform])) {
+      await mirrorHandleToSettings(userId, platform, next ?? '');
+    }
   }
 
   await invalidateCacheTag(portfolioTag(userId));
@@ -134,41 +148,18 @@ export async function connectPlatform(
   platformName: string,
   username: string
 ): Promise<ApiConnectedPlatform> {
-  const platformKey = platformName.toUpperCase() as keyof typeof PLATFORMS;
-  const platformConfig = PLATFORMS[platformKey];
+  const platformLower = platformName.toLowerCase() as SyncPlatformName;
 
-  if (!platformConfig) {
+  if (!PLATFORMS[platformName.toUpperCase() as keyof typeof PLATFORMS]) {
     throw new Error(`Invalid platform: ${platformName}`);
   }
 
-  const profileUrl = platformConfig.profileUrl(username);
+  const platform = await connectPlatformAccount(userId, platformLower, username);
 
-  const platformLower = platformName.toLowerCase();
-  const platform = await ConnectedPlatform.findOneAndUpdate(
-    {
-      userId: new Types.ObjectId(userId),
-      platformName: platformLower as any,
-    },
-    {
-      $set: {
-        username,
-        profileUrl,
-        isConnected: true,
-        syncStatus: 'idle',
-        syncError: null,
-      },
-    },
-    { upsert: true, new: true }
-  );
+  // Keep both forms synchronized with the connected platform
+  await mirrorHandleToProfile(userId, platformLower, platform.username);
+  await mirrorHandleToSettings(userId, platformLower, platform.username);
 
-  // Keep UserProfile socialLinks synchronized with connected platforms
-  await UserProfile.findOneAndUpdate(
-    { userId: new Types.ObjectId(userId) },
-    { $set: { [`socialLinks.${platformLower}`]: username } },
-    { upsert: true }
-  );
-
-  await cacheManager.invalidateDashboard(userId);
   return {
     id: platform._id.toString(),
     platformName: platform.platformName,
