@@ -3,7 +3,7 @@ import { cacheManager } from '../../shared/cache/cacheManager.js';
 import { Types, type ClientSession } from 'mongoose';
 import { ActivityEvent, DailyActivity } from '../../db/models/index.js';
 import type { ApiActivityHeatmapResponse, ApiActivityFeedResponse, ApiActivityFilters, ApiActivityEntry, ApiActivitySummary } from '../../types/api.types.js';
-import { getDateRangeForYear, formatISODate, getStartOfDay, getLast365Days, calculateStreaks } from '../../shared/date.js';
+import { getDateRangeForYear, getEndOfDay, formatISODate, getStartOfDay, getLast365Days, calculateStreaks } from '../../shared/date.js';
 import { parsePaginationParams, createPagination, getSkipCount } from '../../shared/pagination.js';
 import { logger } from '../../shared/logger.js';
 
@@ -76,9 +76,19 @@ export async function getHeatmap(userId: string, year: number): Promise<ApiActiv
   const mostActiveDay = Object.entries(dayOfWeekCount)
     .sort((a, b) => b[1] - a[1])[0]?.[0] || 'Monday';
 
-  // Calculate streaks from active days
+  // Longest streak is scoped to the requested year
   const activeDates = days.filter((d) => d.count > 0).map((d) => new Date(d.date));
-  const { currentStreak, longestStreak } = calculateStreaks(activeDates);
+  const { longestStreak } = calculateStreaks(activeDates);
+
+  // The current streak runs up to today and can start before the requested year
+  const history = await DailyActivity.find({
+    userId: new Types.ObjectId(userId),
+    date: { $lte: getEndOfDay() },
+    count: { $gt: 0 },
+  })
+    .select('date')
+    .lean();
+  const { currentStreak } = calculateStreaks(history.map((a) => new Date(formatISODate(a.date))));
 
   const summary: ApiActivitySummary = {
     totalActivities,
